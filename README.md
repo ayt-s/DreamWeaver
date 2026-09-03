@@ -38,7 +38,7 @@
 | 领域 | 技术 |
 |---|---|
 | 构建 | Vite 5 + TypeScript（严格模式） |
-| UI | Tailwind CSS（设计系统化） |
+| UI | Tailwind CSS + framer-motion（动画）+ lucide-react（图标） |
 | 状态管理 | TanStack Query（服务端状态/轮询）+ Zustand（全局状态） |
 | 表单 | React Hook Form + 校验 |
 | 通信 | Axios（统一 client + CommonResult 解包）、SSE（EventSource） |
