@@ -53,6 +53,17 @@ async def _run_session(state: CreativeSessionState) -> None:
         state["status"] = TaskStatus.FAILED
         state["error_message"] = str(exc)
         _sessions[state["session_id"]] = state
+        # Phase 2 回调通知失败状态
+        from app.callback.java_notify import notify_java_completion
+        asyncio.create_task(
+            notify_java_completion(
+                video_id="",
+                session_id=state["session_id"],
+                shot_index=None,
+                status=TaskStatus.FAILED,
+                error_message=str(exc),
+            )
+        )
         # 不 re-raise：避免 "Task exception was never retrieved" 日志污染
 
 

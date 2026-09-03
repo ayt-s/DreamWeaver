@@ -44,13 +44,15 @@ public class NotifyServiceImpl implements NotifyService {
 
     /**
      * 合法状态转移表：key=from, value=Set<to>
-     * Phase 1: queued → queued (自环，用于推进到 video_generating)
-     * Phase 2: video_generating → completed / failed (回调触发)
+     * Phase 1: queued → video_generating → completed/failed（理想设计）
+     * Phase 1 实际: FastAPI 内联轮询，无中间 video_generating 通知
+     *            → 回调直接 queued → completed/failed
+     * Phase 3 扩展: 补发 video_generating 通知后可支持完整三态
      */
     private static final Map<String, Set<String>> TRANSITION_TABLE = new HashMap<>() {{
-        // FastAPI 开始生成时由 TaskServiceImpl 推进（不通过回调）
-        put("queued", Set.of("video_generating", "failed"));
-        // 视频生成完成/失败回调
+        // FastAPI 内联轮询完成 → 直接 completed/failed（Phase 1 实际路径）
+        put("queued", Set.of("completed", "failed"));
+        // Phase 2 异步回调预留：生成中 → 完成/失败（未来支持）
         put("video_generating", Set.of("completed", "failed"));
     }};
 

@@ -30,6 +30,9 @@ class Settings:
     poll_interval_s: int = 5
     video_timeout_s: int = 900          # 单任务轮询上限 15 分钟
 
+    # Phase 2 回调目标（Java Spring Boot 地址）
+    java_notify_url: str = _env("JAVA_NOTIFY_URL", "")
+
     @property
     def headers(self) -> dict:
         return {
