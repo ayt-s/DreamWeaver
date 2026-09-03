@@ -14,4 +14,7 @@ public interface TaskService {
 
     /** 查询任务状态 */
     TaskResponse getTask(Long id);
+
+    /** 任务列表（倒序，供画廊页展示） */
+    java.util.List<TaskResponse> listTasks(int limit);
 }

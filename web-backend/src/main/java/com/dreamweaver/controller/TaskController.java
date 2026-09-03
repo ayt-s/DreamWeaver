@@ -8,6 +8,8 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+
 /**
  * 任务 controller。只做参数接收 + 响应组装，不写业务逻辑。
  */
@@ -26,5 +28,11 @@ public class TaskController {
     @GetMapping("/{id}")
     public CommonResult<TaskResponse> getTask(@PathVariable Long id) {
         return CommonResult.ok(taskService.getTask(id));
+    }
+
+    @GetMapping
+    public CommonResult<List<TaskResponse>> listTasks(
+            @RequestParam(defaultValue = "20") int limit) {
+        return CommonResult.ok(taskService.listTasks(limit));
     }
 }

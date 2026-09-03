@@ -1,4 +1,4 @@
-import { TaskResponse } from './types/task';
+import { TaskResponse } from './task';
 
 declare global {
   interface Window {

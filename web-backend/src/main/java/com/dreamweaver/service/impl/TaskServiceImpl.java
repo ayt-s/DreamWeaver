@@ -1,5 +1,6 @@
 package com.dreamweaver.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.dreamweaver.common.CommonResult;
 import com.dreamweaver.config.AgentServiceProperties;
 import com.dreamweaver.dto.CreateTaskRequest;
@@ -15,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -74,6 +76,15 @@ public class TaskServiceImpl implements TaskService {
     public TaskResponse getTask(Long id) {
         Task task = taskMapper.selectById(id);
         return task == null ? null : toResponse(task);
+    }
+
+    @Override
+    public List<TaskResponse> listTasks(int limit) {
+        return taskMapper.selectList(
+                new LambdaQueryWrapper<Task>()
+                        .orderByDesc(Task::getId)
+                        .last("LIMIT " + Math.min(Math.max(limit, 1), 50))
+        ).stream().map(this::toResponse).toList();
     }
 
     private TaskResponse toResponse(Task task) {

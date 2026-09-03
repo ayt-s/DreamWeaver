@@ -1,8 +1,9 @@
+import { useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTaskEvents } from '../hooks/useTaskEvents';
 import { getTask } from '../api/tasks';
 import { useTaskStore } from '../store/taskStore';
-import { parseResultUrls, type CreativeEvent } from '../types/task';
+import { parseResultUrls } from '../types/task';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Video, CheckCircle, XCircle, Clock, AlertCircle } from 'lucide-react';
 
@@ -27,10 +28,12 @@ export default function TrajectoryPanel() {
   });
 
   const videoUrls = parseResultUrls(task?.resultJson);
-  const isDone = task?.status === 'completed' || task?.status === 'failed';
+  const recordedIds = useRef(new Set<number>());
 
-  // 任务完成时记录到历史
-  if (isDone && task && !task._recorded) {
+  // 任务完成时记录到历史（每个 id 只记一次，避免轮询重复）
+  const isDone = task?.status === 'completed' || task?.status === 'failed';
+  if (isDone && task && !recordedIds.current.has(task.id)) {
+    recordedIds.current.add(task.id);
     addCompletedTask(task);
   }
 

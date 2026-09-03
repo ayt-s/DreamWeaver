@@ -2,19 +2,12 @@ import { motion } from 'framer-motion';
 import { Video, Trash2, Calendar } from 'lucide-react';
 import type { TaskResponse } from '../types/task';
 import { parseResultUrls } from '../types/task';
-import { useTaskStore } from '../store/taskStore';
 
 interface HistoryPanelProps {
   tasks: TaskResponse[];
 }
 
 export default function HistoryPanel({ tasks }: HistoryPanelProps) {
-  const clearCompleted = useTaskStore((s) => s.clearActiveTask);
-  const removeTask = useTaskStore((s) => {
-    // TODO: add removeCompletedTask to store
-    return () => {};
-  });
-
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -34,9 +27,6 @@ export default function HistoryPanel({ tasks }: HistoryPanelProps) {
       <div className="space-y-3">
         {tasks.map((task, i) => {
           const urls = parseResultUrls(task.resultJson);
-          const date = task.createdAt
-            ? new Date(task.createdAt).toLocaleString('zh-CN')
-            : '未知时间';
 
           return (
             <motion.div
@@ -83,7 +73,7 @@ export default function HistoryPanel({ tasks }: HistoryPanelProps) {
                     {task.status.replace(/_/g, ' ')}
                   </span>
                 </div>
-                <p className="mt-1 text-xs text-slate-500">{date}</p>
+                <p className="mt-1 text-xs text-slate-500">会话 {task.sessionId}</p>
                 {urls.length > 0 && (
                   <p className="mt-1 text-xs text-violet-600">
                     {urls.length} 个视频片段

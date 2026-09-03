@@ -9,3 +9,8 @@ export async function createVideoTask(req: CreateTaskRequest): Promise<TaskRespo
 export async function getTask(id: number): Promise<TaskResponse | null> {
   return unwrap(client.get(`/tasks/${id}`));
 }
+
+// 拉取历史任务列表（后端倒序返回，limit 控制条数）
+export async function listTasks(limit = 20): Promise<TaskResponse[]> {
+  return unwrap(client.get('/tasks', { params: { limit } }));
+}
