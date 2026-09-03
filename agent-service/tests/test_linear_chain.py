@@ -1,4 +1,4 @@
-"""Phase 1 冒烟测试：mock 网关跑通完整 LangGraph 线性链路。（Phase 2 独立轮询版）
+"""Phase 1 冒烟测试：mock 网关跑通完整 LangGraph 线性链路。（Phase 3 独立轮询版）
 
 不触真实 Agnes API（无 Key 也可运行），验证：
 1. 图能构建并执行全链路
@@ -14,7 +14,11 @@ from app import graph
 
 
 class _FakePoller:
-    """测试用 poller 替身：submit 直接返回完成 future，不轮询。"""
+    """测试用 poller 替身：get_future 直接返回已完成 future，不轮询。
+
+    注意：video_generator 节点只依赖 poller 解决 future（Phase 3 架构），
+    FakePoller 必须返回已完成的 future，否则 gather 会永久等待。
+    """
 
     def __init__(self):
         self.pending_tasks: dict = {}
@@ -82,7 +86,11 @@ def patch_gateway(monkeypatch):
     monkeypatch.setattr(storyboard_mod, "gateway", MockGateway())
     monkeypatch.setattr(video_mod, "gateway", MockGateway())
     monkeypatch.setattr(nodes_video_mod, "gateway", MockGateway())
-    # 替换 poller 为假替身，避免真实轮询挂死
+    # nodes/video.py 与 tools/video.py 在 import 时已通过
+    # `from app.poller import poller` 早绑定单例引用，必须逐个模块替换，
+    # 否则节点会拿到真实 VideoPoller（其 future 无人解决 → 测试永久挂起）
+    monkeypatch.setattr(video_mod, "poller", _FakePoller())
+    monkeypatch.setattr(nodes_video_mod, "poller", _FakePoller())
     monkeypatch.setattr(poller_mod, "poller", _FakePoller())
 
 
