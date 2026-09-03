@@ -14,8 +14,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.Map;
+import java.util.HashMap;
 
 /**
  * 回调处理服务实现。
@@ -23,9 +25,14 @@ import java.util.List;
  * <p>幂等策略：
  * 1. 按 video_id + shot_index 组合查找任务（shot_index 可空时降级为 video_id）
  * 2. 终态检查：completed/failed 直接丢弃，防止晚到的旧回调覆盖新状态
- * 3. 乐观锁：通过 @Version + OptimisticLockerInnerInterceptor 自动处理，updateById 时 version+1
- * 4. 状态机校验：只允许 video_generating → completed/failed 跳转
+ * 3. 状态机校验：转移表语义，只有合法边才允许跳转
+ * 4. 乐观锁：通过 @Version + OptimisticLockerInnerInterceptor 自动处理，updateById 时 version+1
  * 5. result_json 聚合：按 shot_index 写入 URL 数组对应位置，不覆盖其他镜次
+ *
+ * <p>状态转移表（from → to）：
+ * - queued → video_generating（FastAPI 开始生成，由 TaskServiceImpl 推进）
+ * - video_generating → completed / failed（视频生成完成回调）
+ * - queued → failed（提交失败直接回滚）
  */
 @Slf4j
 @Service
@@ -35,15 +42,22 @@ public class NotifyServiceImpl implements NotifyService {
     private final TaskMapper taskMapper;
     private final ObjectMapper objectMapper;
 
-    /** 允许的状态跳转：只有 video_generating 可以转为 completed/failed */
-    private static final String GENERATING_STATUS = "video_generating";
-    private static final List<String> ALLOWED_FROM_STATUSES = List.of(GENERATING_STATUS);
+    /**
+     * 合法状态转移表：key=from, value=Set<to>
+     * Phase 1: queued → queued (自环，用于推进到 video_generating)
+     * Phase 2: video_generating → completed / failed (回调触发)
+     */
+    private static final Map<String, Set<String>> TRANSITION_TABLE = new HashMap<>() {{
+        // FastAPI 开始生成时由 TaskServiceImpl 推进（不通过回调）
+        put("queued", Set.of("video_generating", "failed"));
+        // 视频生成完成/失败回调
+        put("video_generating", Set.of("completed", "failed"));
+    }};
 
     @Override
     @Transactional
     public void handleCompletion(NotifyRequest request) {
         // 1. 幂等检查：按 video_id + shot_index 组合查找
-        // shot_index 可空时降级为只按 video_id（用 selectList 兜底 TooManyResultsException）
         List<Task> tasks = taskMapper.selectList(
             new LambdaQueryWrapper<Task>()
                 .eq(Task::getVideoId, request.getVideo_id())
@@ -70,10 +84,13 @@ public class NotifyServiceImpl implements NotifyService {
             return;
         }
 
-        // 4. 状态机校验：只允许从生成中状态跳转
-        if (!ALLOWED_FROM_STATUSES.contains(task.getStatus())) {
-            log.warn("notify 任务 {} 状态非法 (current={})，丢弃回调",
-                    task.getId(), task.getStatus());
+        // 4. 状态机校验：from → to 是否在转移表内
+        String fromStatus = task.getStatus();
+        String toStatus = request.getStatus();
+        Set<String> allowedTos = TRANSITION_TABLE.get(fromStatus);
+        if (allowedTos == null || !allowedTos.contains(toStatus)) {
+            log.warn("notify 任务 {} 非法状态跳转: {} → {}，丢弃回调",
+                    task.getId(), fromStatus, toStatus);
             return;
         }
 
@@ -87,9 +104,9 @@ public class NotifyServiceImpl implements NotifyService {
         task.setResultJson(toJsonString(videoUrls));
 
         // 6. 更新状态（通过 updateById 触发乐观锁 version+1）
-        task.setStatus(request.getStatus());
+        task.setStatus(toStatus);
         task.setUpdatedAt(LocalDateTime.now());
-        if ("failed".equals(request.getStatus())) {
+        if ("failed".equals(toStatus)) {
             task.setErrorMessage(request.getError_message());
         }
 
@@ -99,8 +116,8 @@ public class NotifyServiceImpl implements NotifyService {
             return;
         }
 
-        log.info("notify 任务 {} 处理完成，状态={}，URLs 数量={}",
-                task.getId(), request.getStatus(), videoUrls.size());
+        log.info("notify 任务 {} 状态 {} → {}，URLs 数量={}",
+                task.getId(), fromStatus, toStatus, videoUrls.size());
     }
 
     @SuppressWarnings("unchecked")
