@@ -19,11 +19,11 @@ public class NotifyRequest {
     /** 单值兼容字段（已弃用，保留兼容旧回调） */
     private String video_url;
 
-    /** 全量视频 URL 数组（主载荷） */
-    private List<String> video_urls;
-
     /** 当前分镜索引（整会话回调为 null） */
     private Integer shot_index;
+
+    /** 当前分镜时长（秒），用于配额累加；空时默认 5 */
+    private Integer shot_seconds;
 
     /** LangGraph 会话 ID（Java 侧关联主键） */
     private String session_id;
@@ -33,4 +33,7 @@ public class NotifyRequest {
 
     /** 失败原因（status=failed 时填写） */
     private String error_message;
+
+    /** 全量视频 URL 数组（主载荷） */
+    private List<String> video_urls;
 }

@@ -3,6 +3,7 @@ package com.dreamweaver.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.dreamweaver.dto.NotifyRequest;
 import com.dreamweaver.entity.Task;
+import com.dreamweaver.mapper.ApiQuotaMapper;
 import com.dreamweaver.mapper.TaskMapper;
 import com.dreamweaver.service.NotifyService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -26,6 +27,7 @@ import java.util.HashMap;
  * 3. 状态机校验：转移表语义，只有合法边才允许跳转
  * 4. 乐观锁：通过 @Version + OptimisticLockerInnerInterceptor 自动处理，updateById 时 version+1
  * 5. result_json 聚合：整会话回调携带全量 URL 数组，直接写入（不再逐镜覆盖）
+ * 6. 配额累加：回调完成后，按 userId + model_name 累加 used_count 与 used_seconds
  *
  * <p>状态转移表（from → to）：
  * - queued → completed / failed（Phase 1 实际路径：FastAPI 内联轮询完成后整会话回调一次）
@@ -37,7 +39,11 @@ import java.util.HashMap;
 public class NotifyServiceImpl implements NotifyService {
 
     private final TaskMapper taskMapper;
+    private final ApiQuotaMapper apiQuotaMapper;
     private final ObjectMapper objectMapper;
+
+    /** 默认单镜时长（秒），当回调未携带 shot_seconds 时使用 */
+    private static final int DEFAULT_SHOT_SECONDS = 5;
 
     /**
      * 合法状态转移表：key=from, value=Set<to>
@@ -117,6 +123,16 @@ public class NotifyServiceImpl implements NotifyService {
 
         log.info("notify 任务 {} 状态 {} → {}，URLs 数量={}",
                 task.getId(), fromStatus, toStatus, videoUrls.size());
+
+        // 6. 配额累加
+        if (task.getUserId() != null) {
+            int shotSeconds = request.getShot_seconds() != null ? request.getShot_seconds() : DEFAULT_SHOT_SECONDS;
+            // model_name 暂取默认值，后续可从任务或配置中获取
+            String modelName = "default";
+            apiQuotaMapper.increment(task.getUserId(), modelName, 1, shotSeconds);
+            log.info("notify 任务 {} 配额累加: userId={}, model={}, +count=1, +seconds={}",
+                    task.getId(), task.getUserId(), modelName, shotSeconds);
+        }
     }
 
     private String toJsonString(List<String> list) {
