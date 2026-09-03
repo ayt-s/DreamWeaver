@@ -1,0 +1,25 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: dreamweaver-web-backend
+  datasource:
+    url: jdbc:mysql://localhost:3306/dreamweaver?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+mybatis-plus:
+  mapper-locations: classpath*:mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+dreamweaver:
+  agent-service:
+    # FastAPI 地址（模型侧）
+    base-url: ${AGENT_SERVICE_URL:http://127.0.0.1:8000}
+  agnes:
+    # 仅服务端转发的场景才需要；Phase 1 视频提交直接走 FastAPI，此 Key 仅预留
+    api-key: ${AGNES_API_KEY:}

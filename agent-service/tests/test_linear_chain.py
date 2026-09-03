@@ -1,0 +1,85 @@
+"""Phase 1 冒烟测试：mock 网关跑通完整 LangGraph 线性链路。
+
+不触真实 Agnes API（无 Key 也可运行），验证：
+1. 图能构建并执行全链路
+2. §3.4 契约：节点收 video_url 进 state、审计 trace 齐全
+3. requirement_parser → script_writer → storyboarder → video_generator 顺序正确
+"""
+import pytest
+
+from app.state import CreativeSessionState, TaskStatus
+from app import graph
+
+
+class MockGateway:
+    """替换真实网关：文本返回固定 JSON，视频提交后立刻完成。"""
+
+    async def chat(self, prompt, model=None, temperature=0.0, max_tokens=4096) -> str:
+        if "解析为结构化 Brief" in prompt:
+            return '{"theme": "产品宣传", "style": "科技感", "duration_seconds": "5", "audience": "年轻用户", "mood": "酷炫"}'
+        if "Translate the following" in prompt:
+            return "A futuristic product showcase, slow camera push-in, neon lighting"
+        return '[{"shot_id": 1, "visual": "产品特写旋转", "camera": "推", "duration": 3, "style_note": "霓虹灯光"}, {"shot_id": 2, "visual": "产品场景切换", "camera": "移", "duration": 2, "style_note": "冷色调"}]'
+
+    async def submit_video(self, prompt, model=None, seconds=None,
+                           aspect_ratio=None, mode="text", reference_images=None) -> dict:
+        return {"video_id": "video_mock_001", "model_name": "agnes-video-2.5-flash"}
+
+    async def query_video(self, video_id, model_name, mode="text") -> dict:
+        return {"status": "completed", "video_url": "http://mock/minio/shot.mp4"}
+
+    async def close(self) -> None:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def patch_gateway(monkeypatch):
+    from app import gateway as gateway_mod
+    from app.tools import video as video_mod
+    from app.nodes import parser as parser_mod
+    from app.nodes import script as script_mod
+    from app.nodes import storyboard as storyboard_mod
+    monkeypatch.setattr(gateway_mod, "agnes", MockGateway())
+    monkeypatch.setattr(parser_mod, "gateway", MockGateway())
+    monkeypatch.setattr(script_mod, "gateway", MockGateway())
+    monkeypatch.setattr(storyboard_mod, "gateway", MockGateway())
+    monkeypatch.setattr(video_mod, "gateway", MockGateway())
+
+
+@pytest.mark.asyncio
+async def test_linear_chain_end_to_end():
+    state: CreativeSessionState = {
+        "session_id": "test-001",
+        "user_id": "tester",
+        "raw_prompt": "做一个奶粉广告视频",
+        "status": TaskStatus.PENDING,
+        "fix_round": 0,
+        "max_fix_rounds": 3,
+        "fix_history": [],
+        "trace": [],
+        "created_at": 0,
+        "updated_at": 0,
+    }
+
+    config = {"configurable": {"thread_id": "test-001"}}
+    result = await graph.compiled_graph.ainvoke(state, config=config)
+
+    # 1. 全链路走完 → status 到 VIDEO_GENERATING（Phase 1 无 QC/合成节点）
+    assert result["status"] == TaskStatus.VIDEO_GENERATING
+
+    # 2. brief / script / storyboard 逐层产出
+    assert result["brief"]["theme"] == "产品宣传"
+    assert len(result["script"]) == 2
+    assert len(result["storyboard"]) == 2
+    assert result["storyboard"][0]["prompt_en"].startswith("A futuristic")
+
+    # 3. §3.4 契约：video_urls 与 storyboard 一一对应（工具只返回单个 URL，节点负责聚合）
+    assert len(result["video_urls"]) == 2
+    assert all(u.startswith("http://mock/") for u in result["video_urls"])
+
+    # 4. 审计 trace：每镜一条 generate_video 记录
+    tool_audits = [t for t in result["trace"] if t["tool_name"] == "generate_video"]
+    assert len(tool_audits) == 2
+    assert tool_audits[0]["result"]["video_url"] == result["video_urls"][0]
+    assert tool_audits[0]["params"]["shot_index"] == 0
+    assert tool_audits[1]["params"]["shot_index"] == 1
