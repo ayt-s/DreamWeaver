@@ -8,9 +8,12 @@
 Phase 1 单机运行可接受；排队/限流/鉴权在 Phase 2 接入。
 """
 import asyncio
+import logging
 import time
 import uuid
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -19,6 +22,7 @@ from pydantic import BaseModel
 from app import events
 from app.graph import compiled_graph
 from app.state import CreativeSessionState, TaskStatus
+from app.poller import poller
 
 app = FastAPI(title="DreamWeaver Agent Service", version="0.1.0")
 
@@ -68,6 +72,11 @@ async def _run_session(state: CreativeSessionState) -> None:
             )
         )
         # 不 re-raise：避免 "Task exception was never retrieved" 日志污染
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    await poller.start()
 
 
 @app.post("/v1/tasks/video", status_code=202, response_model=ApiResponse)
@@ -142,3 +151,4 @@ async def get_task(session_id: str) -> ApiResponse:
 async def _shutdown() -> None:
     from app.gateway.agnes import gateway as ag
     await ag.close()
+    await poller.stop()

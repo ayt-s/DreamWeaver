@@ -128,4 +128,26 @@ class AgnesGateway:
         await self._client.aclose()
 
 
-gateway = AgnesGateway()
+# ---------- 懒加载单例 ----------
+# 模块顶层不实例化：httpx.AsyncClient 创建在部分网络环境下耗时数秒（实测 import 3.7s），
+# 且测试需要替换 gateway。用一个零开销的代理对象占位 `gateway` 符号，
+# 真正首次调用方法时才创建真实 client —— 保持所有 `from ... import gateway` 写法不变。
+_gateway: "AgnesGateway | None" = None
+
+
+def get_gateway() -> "AgnesGateway":
+    """获取网关单例（懒加载，首次访问才建 AsyncClient）。"""
+    global _gateway
+    if _gateway is None:
+        _gateway = AgnesGateway()
+    return _gateway
+
+
+class _LazyGatewayProxy:
+    """占位代理：任何属性访问（方法调用）首次触发时创建真实 gateway。"""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_gateway(), name)
+
+
+gateway = _LazyGatewayProxy()  # 顶层零开销；import 不会触发 AsyncClient

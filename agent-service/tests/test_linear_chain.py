@@ -1,14 +1,48 @@
-"""Phase 1 冒烟测试：mock 网关跑通完整 LangGraph 线性链路。
+"""Phase 1 冒烟测试：mock 网关跑通完整 LangGraph 线性链路。（Phase 2 独立轮询版）
 
 不触真实 Agnes API（无 Key 也可运行），验证：
 1. 图能构建并执行全链路
 2. §3.4 契约：节点收 video_url 进 state、审计 trace 齐全
 3. requirement_parser → script_writer → storyboarder → video_generator 顺序正确
 """
+import asyncio
+
 import pytest
 
 from app.state import CreativeSessionState, TaskStatus
 from app import graph
+
+
+class _FakePoller:
+    """测试用 poller 替身：submit 直接返回完成 future，不轮询。"""
+
+    def __init__(self):
+        self.pending_tasks: dict = {}
+
+    async def start(self):
+        pass
+
+    async def stop(self):
+        pass
+
+    async def submit(self, video_id, model_name, session_id, shot_index):
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        fut.set_result({
+            "video_url": f"http://mock/minio/shot_{shot_index}.mp4",
+            "video_id": video_id,
+        })
+        return fut
+
+    def get_future(self, video_id):
+        # 测试中 poller 不预注册，直接创建并设置结果的 future
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        fut.set_result({
+            "video_url": f"http://mock/minio/shot_{video_id}.mp4",
+            "video_id": video_id,
+        })
+        return fut
 
 
 class MockGateway:
@@ -39,11 +73,17 @@ def patch_gateway(monkeypatch):
     from app.nodes import parser as parser_mod
     from app.nodes import script as script_mod
     from app.nodes import storyboard as storyboard_mod
+    from app.nodes import video as nodes_video_mod
+    from app import poller as poller_mod
+
     monkeypatch.setattr(gateway_mod, "agnes", MockGateway())
     monkeypatch.setattr(parser_mod, "gateway", MockGateway())
     monkeypatch.setattr(script_mod, "gateway", MockGateway())
     monkeypatch.setattr(storyboard_mod, "gateway", MockGateway())
     monkeypatch.setattr(video_mod, "gateway", MockGateway())
+    monkeypatch.setattr(nodes_video_mod, "gateway", MockGateway())
+    # 替换 poller 为假替身，避免真实轮询挂死
+    monkeypatch.setattr(poller_mod, "poller", _FakePoller())
 
 
 @pytest.mark.asyncio
@@ -64,8 +104,8 @@ async def test_linear_chain_end_to_end():
     config = {"configurable": {"thread_id": "test-001"}}
     result = await graph.compiled_graph.ainvoke(state, config=config)
 
-    # 1. 全链路走完 → status 到 VIDEO_GENERATING（Phase 1 无 QC/合成节点）
-    assert result["status"] == TaskStatus.VIDEO_GENERATING
+    # 1. 全链路走完 → status 到 QC_CHECKING（Phase 2 新增 QC 节点）
+    assert result["status"] == TaskStatus.QC_CHECKING
 
     # 2. brief / script / storyboard 逐层产出
     assert result["brief"]["theme"] == "产品宣传"

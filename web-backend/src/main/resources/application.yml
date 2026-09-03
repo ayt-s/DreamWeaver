@@ -23,3 +23,8 @@ dreamweaver:
   agnes:
     # 仅服务端转发的场景才需要；Phase 1 视频提交直接走 FastAPI，此 Key 仅预留
     api-key: ${AGNES_API_KEY:}
+  quota:
+    # 默认单镜时长（秒），回调未携带 shot_seconds 时使用
+    default-shot-seconds: 5
+    # 管理员列表（逗号分隔的 userId）
+    admins: ${QUOTA_ADMINS:}
