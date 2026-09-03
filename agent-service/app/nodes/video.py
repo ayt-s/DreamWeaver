@@ -15,6 +15,9 @@ from app.tools.video import generate_video_tool
 
 
 async def video_generator_node(state: CreativeSessionState) -> dict:
+    from app import events
+    await events.emit(state["session_id"], "node_entered",
+                      {"node_id": "video_generator", "node_name": "视频生成"})
     video_urls = list(state.get("video_urls", []))
     video_ids: list[str] = list(state.get("video_ids", []))
     trace = list(state.get("trace", []))
@@ -23,6 +26,8 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
     done = len(video_urls)
 
     for idx, shot in enumerate(state["storyboard"][done:], start=done):
+        await events.emit(state["session_id"], "tool_called",
+                          {"tool_name": "generate_video", "shot_index": idx})
         result = await generate_video_tool(
             prompt=shot["prompt_en"],
             seconds=shot["seconds"],

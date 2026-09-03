@@ -13,8 +13,10 @@ import uuid
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app import events
 from app.graph import compiled_graph
 from app.state import CreativeSessionState, TaskStatus
 
@@ -48,11 +50,14 @@ async def _run_session(state: CreativeSessionState) -> None:
     try:
         result = await compiled_graph.ainvoke(state, config=config)
         _sessions[state["session_id"]] = result
+        # 轨迹完成事件 + 清理总线
+        await events.emit(state["session_id"], "completed", {})
     except Exception as exc:  # 节点异常 → 记 FAILED，不裸崩后台任务
         logger.error(f"Session {state['session_id']} failed: {exc}")
         state["status"] = TaskStatus.FAILED
         state["error_message"] = str(exc)
         _sessions[state["session_id"]] = state
+        await events.emit(state["session_id"], "failed", {"error": str(exc)})
         # Phase 2 回调通知失败状态
         from app.callback.java_notify import notify_java_completion
         asyncio.create_task(
@@ -90,6 +95,27 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
         message="ok",
         data={"session_id": session_id, "status": TaskStatus.PENDING}
     )
+
+
+@app.get("/v1/tasks/{session_id}/events")
+async def task_events(session_id: str):
+    """SSE 轨迹事件流：节点实时发射 node/tool/progress 事件。"""
+    queue = await events.subscribe(session_id)
+
+    async def generator():
+        try:
+            # 每 15s 发一次心跳注释行，防止代理超时断连
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield events.sse_format(event)
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+        finally:
+            # 消费者断开 → 清理总线
+            await events.unsubscribe(session_id)
+
+    return StreamingResponse(generator(), media_type="text/event-stream")
 
 
 @app.get("/v1/tasks/{session_id}", response_model=ApiResponse)

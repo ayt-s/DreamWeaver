@@ -18,7 +18,6 @@ const NODE_NAMES: Record<string, string> = {
 export default function TrajectoryPanel() {
   const activeTaskId = useTaskStore((s) => s.activeTaskId);
   const addCompletedTask = useTaskStore((s) => s.addCompletedTask);
-  const { events, connected } = useTaskEvents(activeTaskId);
 
   const { data: task, isLoading } = useQuery({
     queryKey: ['task', activeTaskId],
@@ -26,6 +25,10 @@ export default function TrajectoryPanel() {
     refetchInterval: activeTaskId != null ? 3000 : false,
     enabled: activeTaskId != null,
   });
+
+  // SSE 订阅用 FastAPI 侧 sessionId（task 返回后才有；未返回前不订阅）
+  const sseSessionId = task?.sessionId ?? null;
+  const { events, connected } = useTaskEvents(sseSessionId);
 
   const videoUrls = parseResultUrls(task?.resultJson);
   const recordedIds = useRef(new Set<number>());

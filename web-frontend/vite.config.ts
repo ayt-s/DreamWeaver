@@ -12,6 +12,11 @@ export default defineConfig({
         target: 'http://127.0.0.1:8080',
         changeOrigin: true,
       },
+      // 模型侧直连（SSE 实时轨迹）：/v1 → FastAPI 8000
+      '/v1': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
     },
   },
 });

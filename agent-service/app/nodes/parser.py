@@ -33,7 +33,12 @@ def validate_brief(raw: str) -> dict:
 
 
 async def requirement_parser_node(state: CreativeSessionState) -> dict:
+    from app import events
+    await events.emit(state["session_id"], "node_entered",
+                      {"node_id": "requirement_parser", "node_name": "需求解析"})
     prompt = BRIEF_TEMPLATE.format(prompt=state["raw_prompt"])
     raw = await gateway.chat(prompt, model=settings.text_model, temperature=0.1)
     brief = validate_brief(raw)
+    await events.emit(state["session_id"], "node_completed",
+                      {"node_id": "requirement_parser", "summary": f"主题: {brief.get('theme', '')}"})
     return {"brief": brief, "status": TaskStatus.QUEUED}

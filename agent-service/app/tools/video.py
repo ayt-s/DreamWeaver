@@ -52,10 +52,18 @@ async def generate_video_tool(prompt: str, seconds: str, mode: str,
     # 内联轮询：每 poll_interval_s 查一次，超时抛错
     # ⚠️ 必须用 video_id 查询（带 model_name），绝不用 task_id
     waited = 0
+    last_progress = -1
     while waited < settings.video_timeout_s:
         await asyncio.sleep(settings.poll_interval_s)
         waited += settings.poll_interval_s
         result = await gateway.query_video(video_id, model_name, mode=mode)
+
+        # 进度事件（SSE 实时轨迹用；progress 为 0-100 百分比，实测字段）
+        progress = result.get("progress")
+        if isinstance(progress, (int, float)) and int(progress) != last_progress:
+            last_progress = int(progress)
+            from app import events
+            await events.emit(session_id, "progress", {"progress": last_progress})
 
         # 完成判定：顶层 status=completed + url 有值（实测 2026-09 字段）
         # ⚠️ 实测关键：internal_status 全程停留在 'pending' 不是完成标志，
