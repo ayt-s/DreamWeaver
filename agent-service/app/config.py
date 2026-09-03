@@ -18,7 +18,7 @@ class Settings:
 
     # 模型
     text_model: str = _env("AGNES_TEXT_MODEL", "agnes-2.5-flash")
-    image_model: str = _env("AGNES_IMAGE_MODEL", "agnes-image-2.5-flash")
+    image_model: str = _env("AGNES_IMAGE_MODEL", "agnes-image-2.1-flash")
     video_model_fast: str = _env("AGNES_VIDEO_FAST", "agnes-video-2.5-flash")
     video_model_hd: str = _env("AGNES_VIDEO_HD", "agnes-video-2.5")
 

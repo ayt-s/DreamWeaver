@@ -66,6 +66,9 @@ class MockGateway:
     async def query_video(self, video_id, model_name, mode="text") -> dict:
         return {"status": "completed", "video_url": "http://mock/minio/shot.mp4"}
 
+    async def generate_image(self, prompt, model=None) -> list[str]:
+        return ["http://mock/image/generated.png"]
+
     async def close(self) -> None:
         pass
 
@@ -78,6 +81,7 @@ def patch_gateway(monkeypatch):
     from app.nodes import script as script_mod
     from app.nodes import storyboard as storyboard_mod
     from app.nodes import video as nodes_video_mod
+    from app.nodes import image as image_mod
     from app import poller as poller_mod
 
     monkeypatch.setattr(gateway_mod, "agnes", MockGateway())
@@ -85,6 +89,7 @@ def patch_gateway(monkeypatch):
     monkeypatch.setattr(script_mod, "gateway", MockGateway())
     monkeypatch.setattr(storyboard_mod, "gateway", MockGateway())
     monkeypatch.setattr(video_mod, "gateway", MockGateway())
+    monkeypatch.setattr(image_mod, "gateway", MockGateway())
     monkeypatch.setattr(nodes_video_mod, "gateway", MockGateway())
     # nodes/video.py 与 tools/video.py 在 import 时已通过
     # `from app.poller import poller` 早绑定单例引用，必须逐个模块替换，
@@ -121,13 +126,20 @@ async def test_linear_chain_end_to_end():
     assert len(result["storyboard"]) == 2
     assert result["storyboard"][0]["prompt_en"].startswith("A futuristic")
 
-    # 3. §3.4 契约：video_urls 与 storyboard 一一对应（工具只返回单个 URL，节点负责聚合）
+    # 3. 图像生成节点产出 image_urls（mock 返回单张图）
+    assert result["image_urls"] == ["http://mock/image/generated.png"]
+
+    # 4. §3.4 契约：video_urls 与 storyboard 一一对应（工具只返回单个 URL，节点负责聚合）
     assert len(result["video_urls"]) == 2
     assert all(u.startswith("http://mock/") for u in result["video_urls"])
 
-    # 4. 审计 trace：每镜一条 generate_video 记录
+    # 5. 审计 trace：generate_image + 每镜一条 generate_video 记录
     tool_audits = [t for t in result["trace"] if t["tool_name"] == "generate_video"]
     assert len(tool_audits) == 2
     assert tool_audits[0]["result"]["video_url"] == result["video_urls"][0]
     assert tool_audits[0]["params"]["shot_index"] == 0
     assert tool_audits[1]["params"]["shot_index"] == 1
+
+    image_audits = [t for t in result["trace"] if t["tool_name"] == "generate_image"]
+    assert len(image_audits) == 1
+    assert image_audits[0]["result"]["image_urls"] == result["image_urls"]

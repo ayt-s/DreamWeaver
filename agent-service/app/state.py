@@ -41,6 +41,7 @@ class CreativeSessionState(TypedDict):
     assets: NotRequired[list]
     video_urls: NotRequired[list]
     video_ids: NotRequired[list]
+    image_urls: NotRequired[list]
     qc_report: NotRequired[dict]
 
     # === 控制流 ===

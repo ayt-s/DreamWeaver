@@ -1,7 +1,7 @@
-"""LangGraph 图定义（Phase 1 MVP：线性主链路 + Phase 2 QC 节点）。
+"""LangGraph 图定义（Phase 4 P0：线性主链路 + 图像生成节点）。
 
-requirement_parser → script_writer → storyboarder → video_generator → qc_checker → END
-                                                    ↘ fix_looping (stub)
+requirement_parser → script_writer → storyboarder → image_generator → video_generator → qc_checker → END
+                                                     ↘ fix_looping (stub)
 """
 from langgraph.graph import END, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
@@ -12,6 +12,7 @@ from app.nodes.script import script_writer_node
 from app.nodes.storyboard import storyboarder_node
 from app.nodes.video import video_generator_node
 from app.nodes.qc import qc_checker_node
+from app.nodes.image import image_generator_node
 
 
 def _fix_looping_node(state: CreativeSessionState) -> dict:
@@ -32,6 +33,7 @@ graph = StateGraph(CreativeSessionState)
 graph.add_node("requirement_parser", requirement_parser_node)
 graph.add_node("script_writer", script_writer_node)
 graph.add_node("storyboarder", storyboarder_node)
+graph.add_node("image_generator", image_generator_node)
 graph.add_node("video_generator", video_generator_node)
 graph.add_node("qc_checker", qc_checker_node)
 graph.add_node("fix_looping", _fix_looping_node)  # Phase 2 stub
@@ -39,7 +41,8 @@ graph.add_node("fix_looping", _fix_looping_node)  # Phase 2 stub
 graph.set_entry_point("requirement_parser")
 graph.add_edge("requirement_parser", "script_writer")
 graph.add_edge("script_writer", "storyboarder")
-graph.add_edge("storyboarder", "video_generator")
+graph.add_edge("storyboarder", "image_generator")
+graph.add_edge("image_generator", "video_generator")
 graph.add_edge("video_generator", "qc_checker")
 
 # QC 结果分支

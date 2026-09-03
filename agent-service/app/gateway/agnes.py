@@ -76,6 +76,19 @@ class AgnesGateway:
         data = resp.json()
         return data["choices"][0]["message"]["content"]
 
+    # ---------- 图像 ----------
+    async def generate_image(self, prompt: str,
+                             model: str | None = None) -> list[str]:
+        """同步调用图像 API，返回图片 URL 列表。"""
+        resp = await self._client.post("/images/generations", json={
+            "model": model or settings.image_model,
+            "prompt": prompt,
+        })
+        resp.raise_for_status()
+        data = resp.json()
+        urls: list[str] = [item["url"] for item in data["data"]]
+        return urls
+
     # ---------- 视频 ----------
     async def submit_video(self, prompt: str, model: str | None = None,
                            seconds: str | None = None,
