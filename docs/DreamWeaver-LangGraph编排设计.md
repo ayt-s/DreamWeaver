@@ -1374,13 +1374,77 @@ public class NotifyRequest {
 }
 ```
 
-### 11.4 NotifyService 实现（幂等 + 事务）
+### 11.4 NotifyService 实现（幂等 + 乐观锁防乱序覆盖）
+
+**核心风险**：FastAPI 侧 poller 和回调双路径可能在极短时间窗内都触发 resume，导致 Java 收到两条回调——先到的可能写 completed，后到的（其实是同一个 video 的旧版本）再写回 failed，状态被覆盖。
+
+**解法**：
+1. 幂等键用 `video_id + shot_index` 组合，不是单独 video_id
+2. 加 `expected_version` 乐观锁——每次更新时检查版本号是否匹配，不匹配则丢弃（说明有更新的回调已经处理过）
+3. 状态机跳转检查：只有 `pending → queued → video_generating` 才允许处理，`completed` 或 `failed` 直接丢弃
+
+```java
+// web-backend/src/main/java/com/dreamweaver/entity/Task.java（需补充字段）
+package com.dreamweaver.entity;
+
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.Version;
+import lombok.Data;
+
+import java.time.LocalDateTime;
+
+@Data
+@TableName("creative_task")
+public class Task {
+
+    @TableId(type = IdType.AUTO)
+    private Long id;
+
+    /** FastAPI 侧 session_id（LangGraph thread_id） */
+    private String sessionId;
+
+    private Long userId;
+
+    /** pending/queued/script_writing/storyboard_writing/video_generating/... /completed/failed */
+    private String status;
+
+    /** 用户原始需求 */
+    private String prompt;
+
+    /** 模型侧产物（视频 URL 数组 JSON / 分镜 JSON） */
+    private String resultJson;
+
+    /** Agnes 返回的异步任务 ID（用于幂等判断） */
+    private String videoId;
+
+    /** 当前分镜索引 */
+    private Integer shotIndex;
+
+    private String errorMessage;
+
+    private LocalDateTime createdAt;
+
+    private LocalDateTime updatedAt;
+
+    /**
+     * 乐观锁版本号：回调更新时用 expected_version 防止乱序覆盖。
+     * MyBatis-Plus @Version 注解自动处理：
+     * - 更新时自动加 1
+     * - WHERE 条件带 version 匹配，不匹配则影响行数为 0
+     */
+    @Version
+    private Integer version;
+}
+```
 
 ```java
 // web-backend/src/main/java/com/dreamweaver/service/impl/NotifyServiceImpl.java
 package com.dreamweaver.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.dreamweaver.dto.NotifyRequest;
 import com.dreamweaver.entity.Task;
 import com.dreamweaver.mapper.TaskMapper;
@@ -1402,40 +1466,52 @@ public class NotifyServiceImpl implements NotifyService {
     @Override
     @Transactional
     public void handleCompletion(NotifyRequest request) {
-        // 1. 幂等检查：按 video_id 查找
+        // 1. 幂等检查：按 video_id + shot_index 组合查找
         Task task = taskMapper.selectOne(
             new LambdaQueryWrapper<Task>()
                 .eq(Task::getVideoId, request.getVideo_id())
+                .eq(request.getShot_index() != null, Task::getShotIndex, request.getShot_index())
         );
 
         if (task == null) {
-            log.warn("notify 收到未知 video_id: {}", request.getVideo_id());
+            log.warn("notify 收到未知任务: video_id={}, shot_index={}",
+                    request.getVideo_id(), request.getShot_index());
             return;
         }
 
-        // 2. 幂等检查：已 completed 则忽略
-        if ("completed".equals(task.getStatus())) {
-            log.info("video {} 已处理，忽略重复回调", request.getVideo_id());
+        // 2. 状态机检查：只处理「生成中」的任务
+        // completed / failed 直接丢弃，防止晚到的旧回调覆盖新状态
+        if ("completed".equals(task.getStatus()) || "failed".equals(task.getStatus())) {
+            log.info("notify 任务 {} 已终态 (status={})，丢弃回调", task.getId(), task.getStatus());
             return;
         }
 
-        // 3. 更新状态
-        task.setUpdatedAt(LocalDateTime.now());
-        if ("completed".equals(request.getStatus())) {
-            task.setStatus("completed");
-            task.setCompletedAt(LocalDateTime.now());
-            // result_json 存视频 URL（Phase 1 简化，Phase 2 存完整产物）
-            task.setResultJson(request.getVideo_url());
-        } else {
-            task.setStatus("failed");
-            task.setErrorMessage(request.getError_message());
+        // 3. 乐观锁更新：version 不匹配说明有更新的回调已处理，丢弃
+        int updated = taskMapper.update(null,
+            new LambdaUpdateWrapper<Task>()
+                .eq(Task::getId, task.getId())
+                .eq(Task::getVersion, task.getVersion())  // 乐观锁
+                .set(Task::getStatus, request.getStatus())
+                .set(Task::getResultJson, request.getVideo_url())
+                .set(Task::getUpdatedAt, LocalDateTime.now())
+                .set(request.getStatus().equals("failed"),
+                        Task::getErrorMessage, request.getError_message())
+        );
+
+        if (updated == 0) {
+            log.warn("notify 任务 {} 乐观锁冲突，丢弃（已有更新的回调处理过）", task.getId());
+            return;
         }
 
-        taskMapper.updateById(task);
-        log.info("任务 {} 回调处理完成，状态={}", task.getId(), task.getStatus());
+        log.info("notify 任务 {} 处理完成，状态={}", task.getId(), request.getStatus());
     }
 }
 ```
+
+**关键设计点：**
+- `version` 字段由 MyBatis-Plus `@Version` 注解自动管理，更新时自动 +1
+- `WHERE version = ?` 条件不匹配 → update 影响行数 = 0 → 静默丢弃
+- 这样「晚到的旧回调」即使到达，也会因为 version 不匹配而被丢弃，不会覆盖新状态
 
 ### 11.5 createTask 改造（Phase 2 异步版）
 
