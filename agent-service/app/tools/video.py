@@ -5,10 +5,13 @@
 - state 的读写全部由调用方（video_generator_node）负责
 """
 import asyncio
+import logging
 import time
 
 from app.config import settings
 from app.gateway.agnes import gateway
+
+logger = logging.getLogger(__name__)
 
 
 async def save_polling_task(video_id: str, model_name: str,

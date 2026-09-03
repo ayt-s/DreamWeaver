@@ -49,10 +49,11 @@ async def _run_session(state: CreativeSessionState) -> None:
         result = await compiled_graph.ainvoke(state, config=config)
         _sessions[state["session_id"]] = result
     except Exception as exc:  # 节点异常 → 记 FAILED，不裸崩后台任务
+        logger.error(f"Session {state['session_id']} failed: {exc}")
         state["status"] = TaskStatus.FAILED
         state["error_message"] = str(exc)
         _sessions[state["session_id"]] = state
-        raise
+        # 不 re-raise：避免 "Task exception was never retrieved" 日志污染
 
 
 @app.post("/v1/tasks/video", status_code=202, response_model=ApiResponse)

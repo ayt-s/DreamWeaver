@@ -6,12 +6,52 @@
 - 查询：GET /agnesapi?video_id=<ID>&model_name=<模型>
 - seconds 为字符串 "4"~"12"；size 仅 "720P"；n 固定 1
 """
+import asyncio
+import logging
 import time
-from typing import Any
+from typing import Any, Awaitable, Callable, TypeVar
 
 import httpx
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+async def _with_retry(operation: Callable[[], Awaitable[httpx.Response]],
+                      what: str) -> httpx.Response:
+    """带指数退避的重试包装（429/5xx/网络错误共用）。
+
+    - 429 限流：5s→10s→20s→30s 封顶，最多 3 次
+    - 5xx：2s→4s→8s→10s 封顶，最多 3 次
+    - httpx.HTTPError（网络抖动）：固定 5s，最多 3 次
+    """
+    max_retries = 3
+    resp: httpx.Response | None = None
+    for attempt in range(max_retries):
+        try:
+            resp = await operation()
+            if resp.status_code == 429:
+                wait = min(5 * (2 ** attempt), 30)
+                logger.warning(f"{what} 429 限流，{wait}s 后退避重试 ({attempt + 1}/{max_retries})")
+                await asyncio.sleep(wait)
+                continue
+            if resp.status_code >= 500:
+                wait = min(2 * (2 ** attempt), 10)
+                logger.warning(f"{what} {resp.status_code} 服务端错误，{wait}s 后退避重试 ({attempt + 1}/{max_retries})")
+                await asyncio.sleep(wait)
+                continue
+            return resp
+        except httpx.HTTPError as e:
+            if attempt == max_retries - 1:
+                raise
+            logger.error(f"{what} 请求异常: {e}，5s 后重试 ({attempt + 1}/{max_retries})")
+            await asyncio.sleep(5)
+    # 理论不可达（HTTPError 已 raise）
+    assert resp is not None
+    return resp
 
 
 class AgnesGateway:
@@ -55,7 +95,10 @@ class AgnesGateway:
         if reference_images:
             # 图生视频/参考模式：图片需公网可访问 URL
             payload["images"] = reference_images
-        resp = await self._client.post("/videos", json=payload)
+        resp = await _with_retry(
+            lambda: self._client.post("/videos", json=payload),
+            "视频提交",
+        )
         resp.raise_for_status()
         data = resp.json()
         return {
@@ -69,12 +112,16 @@ class AgnesGateway:
 
         ⚠️ 实测确认：本版本 API 的 id/video_id/task_id 为同值（task_xxx 格式），
         统一用 video_id 参数查询 + 显式带 model_name，不要走 task_id 查询路径。
+
+        重试策略：429 限流时指数退避（最多 3 次），5xx 服务端错误同样重试。
         """
-        resp = await self._client.get(
-            "/agnesapi",
-            params={"video_id": video_id, "model_name": model_name},
+        resp = await _with_retry(
+            lambda: self._client.get(
+                "/agnesapi",
+                params={"video_id": video_id, "model_name": model_name},
+            ),
+            f"视频查询 {video_id}",
         )
-        resp.raise_for_status()
         return resp.json()
 
     async def close(self) -> None:
