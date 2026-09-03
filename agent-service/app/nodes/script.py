@@ -2,11 +2,10 @@
 
 brief → script（分镜列表）。模板版本号留痕（技能点：Prompt 模板版本化）。
 """
-import json
-
 from app.config import settings
 from app.gateway.agnes import gateway
 from app.state import CreativeSessionState, TaskStatus
+from app.utils.json_utils import parse_llm_json
 
 SCRIPT_TEMPLATE_VERSION = "script_v1.0"
 
@@ -40,7 +39,7 @@ async def script_writer_node(state: CreativeSessionState) -> dict:
         mood=brief.get("mood", ""),
     )
     raw = await gateway.chat(prompt, model=settings.text_model, temperature=0.3)
-    script = json.loads(raw)
+    script = parse_llm_json(raw)
     if not isinstance(script, list):
-        raise ValueError(f"剧本输出格式错误: {raw[:200]}")
+        raise ValueError(f"剧本输出格式错误: {str(script)[:200]}")
     return {"script": script, "status": TaskStatus.SCRIPT_WRITING}

@@ -3,11 +3,10 @@
 输入 raw_prompt → 输出结构化 brief（JSON）。
 Phase 1 先做「尽力解析」，interrupt 多轮澄清留 Phase 2。
 """
-import json
-
 from app.config import settings
 from app.gateway.agnes import gateway
 from app.state import CreativeSessionState, TaskStatus
+from app.utils.json_utils import parse_llm_json
 
 BRIEF_TEMPLATE = """
 用户需求：{prompt}
@@ -24,7 +23,9 @@ BRIEF_TEMPLATE = """
 
 
 def validate_brief(raw: str) -> dict:
-    data = json.loads(raw)
+    data = parse_llm_json(raw)
+    if not isinstance(data, dict):
+        raise ValueError(f"Brief 解析结果不是对象: {str(data)[:200]}")
     for key in ("theme", "style", "duration_seconds", "audience", "mood"):
         if key not in data:
             data[key] = ""
