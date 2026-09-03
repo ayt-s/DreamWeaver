@@ -15,7 +15,7 @@
 | 设计文档 | ✅ 完成 | @hermes-link | 5+ |
 | 代码审查 | ✅ 通过 | @hermes-review | 全程 |
 
-**总代码量：** ~500 行核心源码（不含 node_modules/依赖）  
+**总代码量：** ~800 行核心源码（不含 node_modules/依赖）  
 **Git 提交：** 15+ commits，全部推送到 main 分支
 
 ---
