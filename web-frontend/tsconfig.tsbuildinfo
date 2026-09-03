@@ -1,1 +1,0 @@
-{"root":["./src/main.tsx","./src/api/client.ts","./src/api/tasks.ts","./src/components/createpanel.tsx","./src/components/trajectorypanel.tsx","./src/hooks/usetaskevents.ts","./src/pages/createpage.tsx","./src/store/taskstore.ts","./src/types/task.ts"],"version":"5.9.3"}
