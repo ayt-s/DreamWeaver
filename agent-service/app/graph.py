@@ -1,7 +1,10 @@
-"""LangGraph 图定义（Phase 4 P0：线性主链路 + 图像生成节点）。
+"""LangGraph 图定义（Phase 4 P0：文生图 + 图生视频贯通）。
 
+新流水线：
 requirement_parser → script_writer → storyboarder → image_generator → video_generator → qc_checker → END
-                                                     ↘ fix_looping (stub)
+
+image_generator 在 storyboarder 之后，每个镜次用 prompt_en 逐镜生图，
+图 URL 回填到对应 shot.reference_images，视频生成时自动走 mode="image"。
 """
 from langgraph.graph import END, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
@@ -10,9 +13,9 @@ from app.state import CreativeSessionState, TaskStatus
 from app.nodes.parser import requirement_parser_node
 from app.nodes.script import script_writer_node
 from app.nodes.storyboard import storyboarder_node
+from app.nodes.image import image_generator_node
 from app.nodes.video import video_generator_node
 from app.nodes.qc import qc_checker_node
-from app.nodes.image import image_generator_node
 
 
 def _fix_looping_node(state: CreativeSessionState) -> dict:
