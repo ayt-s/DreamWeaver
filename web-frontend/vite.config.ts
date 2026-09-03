@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 // 开发期代理：前端 5173 → Java 8080
-// Java 业务侧再转发 FastAPI（模型侧）
+// 测试环境（vitest）由 vitest.config 覆盖
 export default defineConfig({
   plugins: [react()],
   server: {

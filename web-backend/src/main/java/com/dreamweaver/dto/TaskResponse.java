@@ -14,5 +14,8 @@ public class TaskResponse {
 
     private String status;
 
+    /** 生成产物 JSON（视频 URL 数组），前端轮询完成后展示视频用 */
+    private String resultJson;
+
     private String errorMessage;
 }

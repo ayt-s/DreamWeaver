@@ -81,6 +81,7 @@ public class TaskServiceImpl implements TaskService {
         resp.setId(task.getId());
         resp.setSessionId(task.getSessionId());
         resp.setStatus(task.getStatus());
+        resp.setResultJson(task.getResultJson());
         resp.setErrorMessage(task.getErrorMessage());
         return resp;
     }
