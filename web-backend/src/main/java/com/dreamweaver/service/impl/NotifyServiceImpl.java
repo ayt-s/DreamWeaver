@@ -5,7 +5,6 @@ import com.dreamweaver.dto.NotifyRequest;
 import com.dreamweaver.entity.Task;
 import com.dreamweaver.mapper.TaskMapper;
 import com.dreamweaver.service.NotifyService;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -13,7 +12,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.Map;
@@ -23,16 +21,15 @@ import java.util.HashMap;
  * 回调处理服务实现。
  *
  * <p>幂等策略：
- * 1. 按 video_id + shot_index 组合查找任务（shot_index 可空时降级为 video_id）
+ * 1. 按 session_id 关联任务（Java 侧无 video_id 列，2026-09 契约修复）
  * 2. 终态检查：completed/failed 直接丢弃，防止晚到的旧回调覆盖新状态
  * 3. 状态机校验：转移表语义，只有合法边才允许跳转
  * 4. 乐观锁：通过 @Version + OptimisticLockerInnerInterceptor 自动处理，updateById 时 version+1
- * 5. result_json 聚合：按 shot_index 写入 URL 数组对应位置，不覆盖其他镜次
+ * 5. result_json 聚合：整会话回调携带全量 URL 数组，直接写入（不再逐镜覆盖）
  *
  * <p>状态转移表（from → to）：
- * - queued → video_generating（FastAPI 开始生成，由 TaskServiceImpl 推进）
- * - video_generating → completed / failed（视频生成完成回调）
- * - queued → failed（提交失败直接回滚）
+ * - queued → completed / failed（Phase 1 实际路径：FastAPI 内联轮询完成后整会话回调一次）
+ * - video_generating → completed / failed（Phase 2 异步回调预留：补发生成中通知后支持三态）
  */
 @Slf4j
 @Service
@@ -59,34 +56,32 @@ public class NotifyServiceImpl implements NotifyService {
     @Override
     @Transactional
     public void handleCompletion(NotifyRequest request) {
-        // 1. 幂等检查：按 video_id + shot_index 组合查找
+        // 1. 按 session_id 查找任务（Java 侧无 video_id 列，这是唯一回写过的关联键）
+        if (request.getSession_id() == null || request.getSession_id().isBlank()) {
+            log.warn("notify 缺少 session_id，丢弃回调");
+            return;
+        }
         List<Task> tasks = taskMapper.selectList(
             new LambdaQueryWrapper<Task>()
-                .eq(Task::getVideoId, request.getVideo_id())
-                .eq(request.getShot_index() != null, Task::getShotIndex, request.getShot_index())
+                .eq(Task::getSessionId, request.getSession_id())
         );
 
         if (tasks.isEmpty()) {
-            log.warn("notify 收到未知任务: video_id={}, shot_index={}",
-                    request.getVideo_id(), request.getShot_index());
+            log.warn("notify 收到未知任务: session_id={}", request.getSession_id());
             return;
         }
 
-        // 2. 优先按 shot_index 精确匹配，否则取第一条
-        Task task = tasks.stream()
-                .filter(t -> request.getShot_index() != null &&
-                        request.getShot_index().equals(t.getShotIndex()))
-                .findFirst()
-                .orElse(tasks.get(0));
+        // session_id 理论上唯一，取第一条
+        Task task = tasks.get(0);
 
-        // 3. 终态检查：completed / failed 直接丢弃
+        // 2. 终态检查：completed / failed 直接丢弃
         if ("completed".equals(task.getStatus()) || "failed".equals(task.getStatus())) {
             log.info("notify 任务 {} 已终态 (status={})，丢弃回调",
                     task.getId(), task.getStatus());
             return;
         }
 
-        // 4. 状态机校验：from → to 是否在转移表内
+        // 3. 状态机校验：from → to 是否在转移表内
         String fromStatus = task.getStatus();
         String toStatus = request.getStatus();
         Set<String> allowedTos = TRANSITION_TABLE.get(fromStatus);
@@ -96,16 +91,18 @@ public class NotifyServiceImpl implements NotifyService {
             return;
         }
 
-        // 5. 聚合 result_json：读出旧值，按 shot_index 写入，避免多镜覆盖
-        List<String> videoUrls = parseOrEmptyUrls(task.getResultJson());
-        int idx = request.getShot_index() != null ? request.getShot_index() : videoUrls.size();
-        while (videoUrls.size() <= idx) {
-            videoUrls.add(null);
+        // 4. 聚合 result_json：整会话回调携带全量 URL 数组（主载荷）
+        //    兼容旧单值 video_url 回调（Phase 1 早前版本）
+        List<String> videoUrls = request.getVideo_urls();
+        if ((videoUrls == null || videoUrls.isEmpty()) && request.getVideo_url() != null) {
+            videoUrls = List.of(request.getVideo_url());
         }
-        videoUrls.set(idx, request.getVideo_url());
+        if (videoUrls == null) {
+            videoUrls = List.of();
+        }
         task.setResultJson(toJsonString(videoUrls));
 
-        // 6. 更新状态（通过 updateById 触发乐观锁 version+1）
+        // 5. 更新状态（通过 updateById 触发乐观锁 version+1）
         task.setStatus(toStatus);
         task.setUpdatedAt(LocalDateTime.now());
         if ("failed".equals(toStatus)) {
@@ -120,20 +117,6 @@ public class NotifyServiceImpl implements NotifyService {
 
         log.info("notify 任务 {} 状态 {} → {}，URLs 数量={}",
                 task.getId(), fromStatus, toStatus, videoUrls.size());
-    }
-
-    @SuppressWarnings("unchecked")
-    private List<String> parseOrEmptyUrls(String json) {
-        if (json == null || json.isBlank()) {
-            return new ArrayList<>();
-        }
-        try {
-            List<String> list = objectMapper.readValue(json, new TypeReference<List<String>>() {});
-            return list != null ? list : new ArrayList<>();
-        } catch (Exception e) {
-            log.warn("解析 resultJson 失败: {}", json, e);
-            return new ArrayList<>();
-        }
     }
 
     private String toJsonString(List<String> list) {

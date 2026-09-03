@@ -23,8 +23,12 @@ async def save_polling_task(video_id: str, model_name: str,
 
 async def generate_video_tool(prompt: str, seconds: str, mode: str,
                               aspect_ratio: str, reference_images: list,
-                              session_id: str, shot_index: int) -> str:
-    """提交视频任务并等待完成，返回该镜 video_url。
+                              session_id: str, shot_index: int) -> dict:
+    """提交视频任务并等待完成，返回该镜生成结果。
+
+    返回契约（2026-09 修复）：{"video_url": str, "video_id": str}
+    - video_id 为 Agnes 真实任务 ID（此前伪造 shot_ 前缀，Java 幂等键失真）
+    - video_url 为成品视频地址
 
     Phase 1：节点内联轮询（简化实现，先跑通链路）。
     Phase 2：改为 submit + interrupt 挂起，由独立 VideoPoller 接管轮询。
@@ -59,7 +63,7 @@ async def generate_video_tool(prompt: str, seconds: str, mode: str,
         video_url = result.get("url") or result.get("video_url")
         status = result.get("status")
         if video_url and status in ("completed", "done"):
-            return video_url
+            return {"video_url": video_url, "video_id": video_id}
 
         # 失败判定
         if result.get("error") or status in ("failed", "error"):

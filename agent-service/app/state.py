@@ -40,6 +40,7 @@ class CreativeSessionState(TypedDict):
     storyboard: NotRequired[list]
     assets: NotRequired[list]
     video_urls: NotRequired[list]
+    video_ids: NotRequired[list]
     qc_report: NotRequired[dict]
 
     # === 控制流 ===

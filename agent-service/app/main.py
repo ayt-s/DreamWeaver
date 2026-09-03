@@ -57,9 +57,7 @@ async def _run_session(state: CreativeSessionState) -> None:
         from app.callback.java_notify import notify_java_completion
         asyncio.create_task(
             notify_java_completion(
-                video_id="",
                 session_id=state["session_id"],
-                shot_index=None,
                 status=TaskStatus.FAILED,
                 error_message=str(exc),
             )
