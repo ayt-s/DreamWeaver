@@ -26,6 +26,8 @@ async def translate_to_en(text: str) -> str:
 
 
 async def storyboarder_node(state: CreativeSessionState) -> dict:
+    # 用户上传的参考图（图生视频模式）：有则作为每镜参考图，空则后续 image_generator 自动生图回填
+    user_ref_images = list(state.get("reference_images", []))
     storyboard = []
     for shot in state["script"]:
         cn_description = (
@@ -35,14 +37,16 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
         # 时长钳制到 [4, 12]：分镜可能给 2-3s 短镜，但 Agnes 下限是 4s
         raw_seconds = int(shot.get("duration", 5))
         seconds = max(MIN_SECONDS, min(raw_seconds, MAX_SECONDS))
-        # mode 和 reference_images 由后续 image_generator 节点回填
+        # mode 和 reference_images 的填充规则：
+        # - 用户传了参考图 → 用用户图，走 mode="image"
+        # - 否则留空，由 image_generator 节点自动生图回填
         storyboard.append({
             "shot_id": shot.get("shot_id", len(storyboard)),
             "prompt_en": en_prompt,
-            "mode": "text",
+            "mode": "image" if user_ref_images else "text",
             "seconds": str(seconds),
             "aspect_ratio": "16:9",
-            "reference_images": [],
+            "reference_images": list(user_ref_images),
             "cn_description": cn_description,
         })
     return {"storyboard": storyboard, "status": TaskStatus.STORYBOARD_WRITING}

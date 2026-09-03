@@ -27,11 +27,17 @@ public class Task {
     /** pending/queued/script_writing/storyboard_writing/video_generating/... /completed/failed */
     private String status;
 
+    /** 生成类型：text_video(纯文本视频)/image_video(图生视频)/novel_image(小说转图) */
+    private String genType;
+
     /** 用户原始需求 */
     private String prompt;
 
     /** 模型侧产物（视频 URL 数组 JSON / 分镜 JSON） */
     private String resultJson;
+
+    /** 文生图产出的图片 URL 数组（JSON 格式） */
+    private String imageUrls;
 
     /** Agnes 返回的异步任务 ID（用于幂等判断） */
     private String videoId;

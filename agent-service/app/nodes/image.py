@@ -6,6 +6,7 @@ Phase 4 P0：对每个镜次 prompt_en 逐镜生成图像，回填到对应 shot
 图生视频贯通：image_generator 产出后，storyboarder 已在 reference_images
 字段填入对应图的 URL，video_generator 提交时自动走 mode="image"。
 """
+import asyncio
 import logging
 import time
 
@@ -34,6 +35,10 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
     image_urls: list[str] = []
 
     for idx, shot in enumerate(storyboard):
+        # 用户已提供参考图（storyboarder 回填的 mode="image"）→ 跳过自动生图，尊重用户输入
+        if shot.get("reference_images"):
+            logger.info("shot %d 已有参考图，跳过自动生图", idx)
+            continue
         prompt_en = shot.get("prompt_en", "")
         if not prompt_en:
             continue
@@ -64,6 +69,23 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
     await events.emit(state["session_id"], "node_completed",
                       {"node_id": "image_generator",
                        "summary": f"生成 {len(image_urls)} 张图片"})
+
+    # 小说转图模式：video 节点不会执行，这里直接发会话级完成回调，避免 Java 任务卡 pending
+    if state.get("gen_type") == "novel_image":
+        from app.callback.java_notify import notify_java_completion
+        asyncio.create_task(
+            notify_java_completion(
+                video_id="",
+                session_id=state["session_id"],
+                shot_index=None,
+                status="completed",
+                video_url="",
+                image_urls=image_urls,
+            )
+        )
+        logger.info("novel_image 会话完成回调已发: session=%s, images=%d",
+                    state["session_id"], len(image_urls))
+        await events.emit(state["session_id"], "completed", {})
 
     return {
         "image_urls": image_urls,

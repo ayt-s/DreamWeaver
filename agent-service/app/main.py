@@ -8,6 +8,7 @@
 Phase 1 单机运行可接受；排队/限流/鉴权在 Phase 2 接入。
 """
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -41,6 +42,10 @@ class ApiResponse(BaseModel):
 class CreateVideoTaskRequest(BaseModel):
     prompt: str
     user_id: Optional[str] = "demo-user"
+    # 生成类型：text_video(纯文本视频)/image_video(图生视频)/novel_image(小说转图)
+    gen_type: Optional[str] = "text_video"
+    # 用户上传的参考图片 URL 数组（JSON 字符串，Java 侧原样透传）；空则文生图自动喂
+    reference_images: Optional[str] = None
 
 
 class CreateVideoTaskResponse(BaseModel):
@@ -85,10 +90,24 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
         raise HTTPException(status_code=422, detail="prompt 不能为空")
 
     session_id = uuid.uuid4().hex[:12]
+    # Java 侧透传的 reference_images 是 JSON 数组字符串，解析失败则视为未传
+    ref_images: list = []
+    if req.reference_images:
+        try:
+            parsed = json.loads(req.reference_images)
+            if isinstance(parsed, list):
+                ref_images = parsed
+        except json.JSONDecodeError:
+            logger.warning(
+                "reference_images 不是合法 JSON 数组: %s",
+                req.reference_images[:100],
+            )
     state: CreativeSessionState = {
         "session_id": session_id,
         "user_id": req.user_id or "demo-user",
         "raw_prompt": req.prompt,
+        "gen_type": req.gen_type or "text_video",
+        "reference_images": ref_images,
         "status": TaskStatus.PENDING,
         "fix_round": 0,
         "max_fix_rounds": 3,
@@ -142,6 +161,7 @@ async def get_task(session_id: str) -> ApiResponse:
             "script": state.get("script"),
             "storyboard": state.get("storyboard"),
             "video_urls": state.get("video_urls"),
+            "image_urls": state.get("image_urls"),
             "error_message": state.get("error_message"),
         }
     )

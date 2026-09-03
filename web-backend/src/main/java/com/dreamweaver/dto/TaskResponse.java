@@ -14,8 +14,14 @@ public class TaskResponse {
 
     private String status;
 
+    /** 生成类型：text_video/image_video/novel_image */
+    private String genType;
+
     /** 生成产物 JSON（视频 URL 数组），前端轮询完成后展示视频用 */
     private String resultJson;
+
+    /** 文生图产出的图片 URL 数组（JSON 格式） */
+    private String imageUrls;
 
     private String errorMessage;
 }

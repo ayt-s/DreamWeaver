@@ -108,6 +108,12 @@ public class NotifyServiceImpl implements NotifyService {
         }
         task.setResultJson(toJsonString(videoUrls));
 
+        // 4.1 图片资产落库（文生图 / 小说转图产物）
+        List<String> imageUrls = request.getImage_urls();
+        if (imageUrls != null && !imageUrls.isEmpty()) {
+            task.setImageUrls(toJsonString(imageUrls));
+        }
+
         // 5. 更新状态（通过 updateById 触发乐观锁 version+1）
         task.setStatus(toStatus);
         task.setUpdatedAt(LocalDateTime.now());

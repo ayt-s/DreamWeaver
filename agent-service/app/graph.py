@@ -31,6 +31,13 @@ def _qc_route(state: CreativeSessionState) -> str:
     return "qc_failed"
 
 
+def _image_route(state: CreativeSessionState) -> str:
+    """image_generator 之后的路线：小说转图只出图不出视频，其余继续视频链路。"""
+    if state.get("gen_type") == "novel_image":
+        return "novel_done"
+    return "to_video"
+
+
 graph = StateGraph(CreativeSessionState)
 
 graph.add_node("requirement_parser", requirement_parser_node)
@@ -45,7 +52,14 @@ graph.set_entry_point("requirement_parser")
 graph.add_edge("requirement_parser", "script_writer")
 graph.add_edge("script_writer", "storyboarder")
 graph.add_edge("storyboarder", "image_generator")
-graph.add_edge("image_generator", "video_generator")
+
+# 小说转图模式：image_generator 后直达 END（只出图不出视频）；
+# 其余模式继续 video_generator → qc_checker
+graph.add_conditional_edges(
+    "image_generator",
+    _image_route,
+    {"novel_done": END, "to_video": "video_generator"},
+)
 graph.add_edge("video_generator", "qc_checker")
 
 # QC 结果分支

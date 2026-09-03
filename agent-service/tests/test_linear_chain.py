@@ -4,6 +4,7 @@
 1. 图能构建并执行全链路
 2. 文生图 + 图生视频贯通
 3. requirement_parser → script_writer → storyboarder → image_generator → video_generator 顺序正确
+4. novel_image 模式：只出图不出视频
 """
 import asyncio
 
@@ -143,3 +144,38 @@ async def test_linear_chain_with_image_gen():
     for va in video_audits:
         assert va["params"]["shot_index"] in [0, 1]
         assert va["params"]["seconds"] in ["5", "4"]
+
+
+@pytest.mark.asyncio
+async def test_novel_image_only_no_video():
+    """小说转图模式：只出图不出视频，image_generator 后直达 END。"""
+    state: CreativeSessionState = {
+        "session_id": "test-novel",
+        "user_id": "tester",
+        "raw_prompt": "第一章：少年在雨夜救下一只白狐",
+        "gen_type": "novel_image",
+        "status": TaskStatus.PENDING,
+        "fix_round": 0,
+        "max_fix_rounds": 3,
+        "fix_history": [],
+        "trace": [],
+        "created_at": 0,
+        "updated_at": 0,
+    }
+
+    config = {"configurable": {"thread_id": "test-novel"}}
+    result = await graph.compiled_graph.ainvoke(state, config=config)
+
+    # 1. 终点是 image_generator（asset_generating），不是 QC_CHECKING
+    assert result["status"] == TaskStatus.ASSET_GENERATING
+
+    # 2. 有图无视频
+    assert len(result["image_urls"]) == 2
+    assert all(u.startswith("http://mock/image/") for u in result["image_urls"])
+    assert not result.get("video_urls")
+
+    # 3. trace 里有 generate_image、绝无 generate_video
+    image_audits = [t for t in result["trace"] if t["tool_name"] == "generate_image"]
+    video_audits = [t for t in result["trace"] if t["tool_name"] == "generate_video"]
+    assert len(image_audits) == 2
+    assert len(video_audits) == 0

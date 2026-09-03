@@ -23,6 +23,7 @@ async def notify_java_completion(
     video_url: str | None = None,
     video_urls: list[str] | None = None,
     error_message: str | None = None,
+    image_urls: list[str] | None = None,
 ) -> None:
     """通知 Java 视频生成结果。
 
@@ -50,6 +51,8 @@ async def notify_java_completion(
         payload["video_url"] = video_url
     if error_message:
         payload["error_message"] = error_message
+    if image_urls is not None:
+        payload["image_urls"] = image_urls
 
     try:
         async with httpx.AsyncClient() as client:

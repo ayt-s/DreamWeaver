@@ -40,16 +40,22 @@ public class TaskServiceImpl implements TaskService {
         task.setPrompt(request.getPrompt());
         task.setUserId(request.getUserId() == null ? null : Long.valueOf(request.getUserId()));
         task.setStatus("pending");
+        task.setGenType(request.getGenType() != null ? request.getGenType() : "text_video");
         task.setCreatedAt(LocalDateTime.now());
         task.setUpdatedAt(LocalDateTime.now());
         taskMapper.insert(task);
 
         // 2. 调 FastAPI 提交（Phase 1 同步等 session_id；后续改异步 + 回调）
         String agentBase = agentServiceProperties.getBaseUrl();
-        Map<String, Object> body = Map.of(
-                "prompt", request.getPrompt(),
-                "user_id", request.getUserId() == null ? "demo-user" : request.getUserId()
-        );
+        Map<String, Object> body = new java.util.HashMap<>();
+        body.put("prompt", request.getPrompt());
+        body.put("user_id", request.getUserId() == null ? "demo-user" : request.getUserId());
+        if (request.getGenType() != null) {
+            body.put("gen_type", request.getGenType());
+        }
+        if (request.getReferenceImages() != null && !request.getReferenceImages().isBlank()) {
+            body.put("reference_images", request.getReferenceImages());
+        }
 
         CommonResult<Map<String, Object>> agentResp = webClientBuilder.build()
                 .post()
@@ -92,7 +98,9 @@ public class TaskServiceImpl implements TaskService {
         resp.setId(task.getId());
         resp.setSessionId(task.getSessionId());
         resp.setStatus(task.getStatus());
+        resp.setGenType(task.getGenType());
         resp.setResultJson(task.getResultJson());
+        resp.setImageUrls(task.getImageUrls());
         resp.setErrorMessage(task.getErrorMessage());
         return resp;
     }
