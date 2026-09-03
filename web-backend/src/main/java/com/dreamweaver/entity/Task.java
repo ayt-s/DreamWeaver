@@ -3,6 +3,7 @@ package com.dreamweaver.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.Version;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -29,12 +30,27 @@ public class Task {
     /** 用户原始需求 */
     private String prompt;
 
-    /** 模型侧产物（视频 URL 数组 JSON / 分镜 JSON），Phase 1 简化存文本 */
+    /** 模型侧产物（视频 URL 数组 JSON / 分镜 JSON） */
     private String resultJson;
+
+    /** Agnes 返回的异步任务 ID（用于幂等判断） */
+    private String videoId;
+
+    /** 当前分镜索引 */
+    private Integer shotIndex;
 
     private String errorMessage;
 
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;
+
+    /**
+     * 乐观锁版本号：回调更新时用 expected_version 防止乱序覆盖。
+     * MyBatis-Plus @Version 注解自动处理：
+     * - 更新时自动加 1
+     * - WHERE 条件带 version 匹配，不匹配则影响行数为 0
+     */
+    @Version
+    private Integer version;
 }
