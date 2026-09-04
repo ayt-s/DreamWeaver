@@ -32,3 +32,23 @@ CREATE TABLE IF NOT EXISTS canvas_project (
     PRIMARY KEY (id),
     KEY idx_cp_user (user_id)
 ) ENGINE = InnoDB COMMENT '无限画布项目';
+
+-- 小说转漫剧项目（小说预处理 & 分镜落库）
+CREATE TABLE IF NOT EXISTS novel_project (
+    id                    BIGINT       NOT NULL AUTO_INCREMENT,
+    project_name          VARCHAR(64)  NOT NULL COMMENT '项目名称',
+    user_id               BIGINT       DEFAULT 1,
+    novel_text            LONGTEXT     NOT NULL COMMENT '原始小说文本',
+    chapters_json         LONGTEXT     COMMENT '章节切分 JSON',
+    analysis_json         LONGTEXT     COMMENT '角色/场景/风格等分析 JSON',
+    segments_json         LONGTEXT     COMMENT '分镜片段 JSON 数组',
+    visual_style          VARCHAR(128) DEFAULT NULL COMMENT '视觉风格（电影写实/国漫等）',
+    canvas_project_id     BIGINT       DEFAULT NULL COMMENT '关联的 canvas_project.id',
+    status                VARCHAR(16)  NOT NULL DEFAULT 'draft' COMMENT 'draft/ready/failed',
+    error_message         VARCHAR(500) DEFAULT NULL,
+    created_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_np_user (user_id),
+    KEY idx_np_status (status)
+) ENGINE = InnoDB COMMENT '小说转漫剧项目';
