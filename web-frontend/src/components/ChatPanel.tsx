@@ -25,6 +25,39 @@ function toolCallLabel(tc: ChatToolCall): string {
   return `${tc.tool_name} ✓`;
 }
 
+/** 剥离 markdown 特殊符号（agent 回复不需要 markdown 渲染，纯文本展示更清爽） */
+function stripMarkdown(text: string): string {
+  if (!text) return text;
+  return text
+    // 代码块：保留内容，去掉围栏
+    .replace(/```[\s\S]*?```/g, (m) => m.replace(/```[\s\n]*[\w]*[\s\n]*[\s\S]*?```/g, ''))
+    // 行内代码
+    .replace(/`([^`]+)`/g, '$1')
+    // 图片 ![alt](url)
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '$1')
+    // 链接 [text](url)
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+    // 标题 # ## ###
+    .replace(/^#{1,6}\s+/gm, '')
+    // 粗体/斜体
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    // 引用
+    .replace(/^>\s?/gm, '')
+    // 列表符号
+    .replace(/^\s*[-*+]\s+/gm, '• ')
+    .replace(/^\s*\d+\.\s+/gm, (m) => m)
+    // 分隔线
+    .replace(/^[-*_]{3,}\s*$/gm, '')
+    // 表格管道
+    .replace(/\|/g, ' | ')
+    // 多余空行
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 const QUICK_PROMPTS = [
   '描述当前画布的结构',
   '把第 3 个视频节点的提示词改得更动态',
@@ -141,7 +174,7 @@ export default function ChatPanel({ open, onClose, canvasId, hasProject, dark }:
                   : 'border border-slate-200 bg-slate-50'
               }`}
             >
-              {m.content}
+              {m.role === 'assistant' ? stripMarkdown(m.content) : m.content}
               {m.toolCalls && m.toolCalls.length > 0 && (
                 <div
                   className={`mt-2 border-t pt-1.5 text-[10px] ${
