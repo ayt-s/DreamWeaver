@@ -38,6 +38,7 @@ from app.state import CreativeSessionState, TaskStatus
 from app.poller import poller
 from app.scheduler import scheduler
 from app.agent.chat_api import router as agent_chat_router
+from app.controller.novel_api import router as novel_api_router
 
 app = FastAPI(title="DreamWeaver Agent Service", version="0.2.0")
 register_exception_handlers(app)
@@ -50,6 +51,9 @@ app.mount("/v1/files", StaticFiles(directory=str(OUTPUT_DIR)), name="files")
 
 # 聊天 Agent 路由（Phase 1）：POST /v1/agent/chat
 app.include_router(agent_chat_router)
+
+# 小说转漫剧预处理路由：POST /v1/novel/preprocess
+app.include_router(novel_api_router)
 
 # 内存态会话仓（Phase 1）。生产换 PostgreSQL 落库（设计文档 §4.1）
 _sessions: dict[str, CreativeSessionState] = {}
