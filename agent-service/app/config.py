@@ -35,6 +35,12 @@ class Settings:
     max_concurrent_sessions: int = int(_env("AGENT_MAX_CONCURRENT_SESSIONS", "2"))
     session_queue_maxsize: int = int(_env("AGENT_SESSION_QUEUE_SIZE", "200"))
 
+    # 视频接口限流适配（实测：平台视频 RPM≈2/分钟，队列满 503 常见）
+    # 提交节流：两次 /videos 提交最小间隔（秒）→ 默认 35s ≈ 1.7 次/分钟，给余量
+    video_submit_interval_s: float = float(_env("AGNES_VIDEO_SUBMIT_INTERVAL_S", "35"))
+    # 提交总尝试次数（含 429/503 退避重试），视频队列繁忙时最长约 5 分钟内仍失败才放弃
+    video_submit_max_attempts: int = int(_env("AGNES_VIDEO_MAX_ATTEMPTS", "6"))
+
     # Phase 2 回调目标（Java Spring Boot 地址）
     java_notify_url: str = _env("JAVA_NOTIFY_URL", "")
 

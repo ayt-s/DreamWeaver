@@ -38,7 +38,7 @@ const STATE_BADGE: Record<TaskState, string> = {
 
 function stateIcon(state: TaskState, genType?: GenType): ReactNode {
   if (state === 'completed') {
-    return genType === 'novel_image' ? (
+    return genType === 'text_image' ? (
       <ImageIcon className="h-4 w-4 text-emerald-600" />
     ) : (
       <Video className="h-4 w-4 text-emerald-600" />
@@ -48,9 +48,9 @@ function stateIcon(state: TaskState, genType?: GenType): ReactNode {
   return <Hourglass className="h-4 w-4 text-amber-600" />;
 }
 
-/** 主产物类型：novel_image 出图，其余出视频（image_video 图+视频都展示） */
+/** 主产物类型：文生图出图，其余出视频（image_video 图+视频都展示） */
 function headlineIcon(genType?: GenType): ReactNode {
-  return genType === 'novel_image' ? (
+  return genType === 'text_image' ? (
     <ImageIcon className="h-5 w-5 text-white" />
   ) : (
     <Video className="h-5 w-5 text-white" />
@@ -130,7 +130,7 @@ export default function TaskCard({ task }: TaskCardProps) {
         </div>
       </div>
 
-      {/* 图片产物（novel_image / image_video 首帧） */}
+      {/* 图片产物（text_image / image_video 首帧） */}
       {imageUrls.length > 0 && (
         <div className="grid grid-cols-2 gap-3 border-t border-slate-100 p-5 sm:grid-cols-3">
           {imageUrls.map((url, i) => (

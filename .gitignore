@@ -27,3 +27,11 @@ dist/
 *.log
 logs/
 tmp/
+# git worktree 元数据（不随仓库分发）
+.worktrees/
+
+# 生成产物：图片/视频输出目录（运行时产生，不入库）
+agent-service/data/
+
+# 本地上传图片（运行时产生，不入库）
+web-backend/uploads/

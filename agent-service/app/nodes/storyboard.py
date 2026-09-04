@@ -43,10 +43,46 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
         storyboard.append({
             "shot_id": shot.get("shot_id", len(storyboard)),
             "prompt_en": en_prompt,
-            "mode": "image" if user_ref_images else "text",
+            "mode": "reference" if user_ref_images else "text",
             "seconds": str(seconds),
             "aspect_ratio": "16:9",
             "reference_images": list(user_ref_images),
             "cn_description": cn_description,
         })
+    return {"storyboard": storyboard, "status": TaskStatus.STORYBOARD_WRITING}
+
+
+async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
+    """无限画布模式：用户自定片段列表 → storyboard（每段一镜，图生视频）。
+
+    每个片段 = 一张参考图 + 一段视频内容描述（+ 可选时长），
+    直接翻译为英文提示词，跳过剧本/分镜 LLM 生成环节——用户自己就是导演。
+    """
+    from app import events
+    await events.emit(state["session_id"], "node_entered",
+                      {"node_id": "canvas_storyboarder", "node_name": "画布分镜"})
+
+    segments = list(state.get("segments", []))
+    storyboard = []
+    for idx, seg in enumerate(segments):
+        image_url = str(seg.get("image_url", "")).strip()
+        cn = str(seg.get("prompt", "")).strip()
+        # 描述为空时给默认动作，避免空提示词
+        if not cn:
+            cn = "对图片内容做缓慢推进的动态运镜"
+        en_prompt = await translate_to_en(cn)
+        raw_seconds = int(seg.get("seconds", 5) or 5)
+        seconds = max(MIN_SECONDS, min(raw_seconds, MAX_SECONDS))
+        storyboard.append({
+            "shot_id": idx,
+            "prompt_en": en_prompt,
+            "mode": "reference",  # 用户提供参考图，参考模式(agnès Video 2.5 合法值)
+            "seconds": str(seconds),
+            "aspect_ratio": "16:9",
+            "reference_images": [image_url],
+            "cn_description": cn,
+        })
+
+    await events.emit(state["session_id"], "node_completed",
+                      {"node_id": "canvas_storyboarder", "summary": f"画布分镜 {len(storyboard)} 段"})
     return {"storyboard": storyboard, "status": TaskStatus.STORYBOARD_WRITING}

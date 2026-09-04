@@ -27,7 +27,7 @@ public class Task {
     /** pending/queued/script_writing/storyboard_writing/video_generating/... /completed/failed */
     private String status;
 
-    /** 生成类型：text_video(纯文本视频)/image_video(图生视频)/novel_image(小说转图) */
+    /** 生成类型：text_video(纯文本视频)/image_video(图生视频)/text_image(文生图) */
     private String genType;
 
     /** 用户原始需求 */

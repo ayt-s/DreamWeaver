@@ -55,7 +55,7 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
             image_urls.append(image_url)
             # 回填到对应 shot 的 reference_images
             shot["reference_images"] = [image_url]
-            shot["mode"] = "image"  # 图生视频模式
+            shot["mode"] = "reference"  # 参考图模式(agnès Video 2.5: text/keyframe/reference)
 
         trace.append({
             "tool_name": "generate_image",
@@ -70,8 +70,8 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
                       {"node_id": "image_generator",
                        "summary": f"生成 {len(image_urls)} 张图片"})
 
-    # 小说转图模式：video 节点不会执行，这里直接发会话级完成回调，避免 Java 任务卡 pending
-    if state.get("gen_type") == "novel_image":
+    # 文生图模式：video 节点不会执行，这里直接发会话级完成回调，避免 Java 任务卡 pending
+    if state.get("gen_type") == "text_image":
         from app.callback.java_notify import notify_java_completion
         asyncio.create_task(
             notify_java_completion(
@@ -83,7 +83,7 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
                 image_urls=image_urls,
             )
         )
-        logger.info("novel_image 会话完成回调已发: session=%s, images=%d",
+        logger.info("text_image 会话完成回调已发: session=%s, images=%d",
                     state["session_id"], len(image_urls))
         await events.emit(state["session_id"], "completed", {})
 

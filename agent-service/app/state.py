@@ -33,10 +33,13 @@ class CreativeSessionState(TypedDict):
     session_id: str
     user_id: str
     raw_prompt: str
-    # 生成类型：text_video(纯文本视频)/image_video(图生视频)/novel_image(小说转图)
+    # 生成类型：text_video(纯文本视频)/image_video(图生视频)/text_image(文生图)
     gen_type: NotRequired[str]
     # 用户上传的参考图片 URL（图生视频模式；空则走文生图自动喂）
     reference_images: NotRequired[list]
+    # 无限画布图生视频：用户自定片段列表 [{image_url, prompt, seconds}]，
+    # 每段一镜生成几秒小视频，最后由 synthesizer 拼接成一条长视频
+    segments: NotRequired[list]
 
     # === 各节点产出（全部落 State → Checkpoint 序列化，断点恢复用）===
     brief: NotRequired[dict]
@@ -46,6 +49,8 @@ class CreativeSessionState(TypedDict):
     video_urls: NotRequired[list]
     video_ids: NotRequired[list]
     image_urls: NotRequired[list]
+    # synthesizer 拼接后的长视频 URL（画布模式产物）
+    final_video_url: NotRequired[str]
     qc_report: NotRequired[dict]
 
     # === 控制流 ===

@@ -96,16 +96,32 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
                     "retry_count": 0,
                 })
 
-    # 完成回调：整会话发一次，携带全量 URL 数组；全镜失败则发失败态
-    if video_urls:
-        _notify_unified(
-            state["session_id"], TaskStatus.COMPLETED, video_urls=video_urls
-        )
-    else:
-        _notify_unified(
-            state["session_id"], TaskStatus.FAILED,
-            error_message="; ".join(error_msgs) or "所有镜次视频生成失败",
-        )
+    # 完成回调：标准模式整会话发一次，携带全量 URL 数组；全镜失败则发失败态。
+        # 画布模式（segments 非空）不回这里发完成通知——synthesizer 拼接出长视频后统一回调，
+        # 避免 Java 任务先被 completed 落定、后续拼接 URL 无法再更新。
+        canvas_mode = bool(state.get("segments"))
+        if not canvas_mode:
+            if video_urls:
+                _notify_unified(
+                    state["session_id"], TaskStatus.COMPLETED, video_urls=video_urls
+                )
+            else:
+                _notify_unified(
+                    state["session_id"], TaskStatus.FAILED,
+                    error_message="; ".join(error_msgs) or "所有镜次视频生成失败",
+                )
+        else:
+            # 画布模式全镜失败 → 也补发失败态（否则 Java 任务永远 pending）
+            if not video_urls:
+                _notify_unified(
+                    state["session_id"], TaskStatus.FAILED,
+                    error_message="; ".join(error_msgs) or "所有片段视频生成失败",
+                )
+            else:
+                logger.info(
+                    "画布模式 video_generator 完成（%d 段），完成回调推迟到 synthesizer",
+                    len(video_urls),
+                )
 
     return {
         "video_urls": video_urls,

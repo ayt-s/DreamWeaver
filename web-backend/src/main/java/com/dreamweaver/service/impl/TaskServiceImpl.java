@@ -135,6 +135,9 @@ public class TaskServiceImpl implements TaskService {
         if (request.getReferenceImages() != null && !request.getReferenceImages().isBlank()) {
             body.put("reference_images", request.getReferenceImages());
         }
+        if (request.getSegments() != null && !request.getSegments().isBlank()) {
+            body.put("segments", request.getSegments());
+        }
 
         CommonResult<Map<String, Object>> agentResp = null;
         try {

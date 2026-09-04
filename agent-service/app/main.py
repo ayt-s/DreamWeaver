@@ -6,6 +6,12 @@
 - GET  /v1/tasks/{id}   查询任务状态（含中间产物，前端轨迹展示用）
 - GET  /v1/tasks/{id}/events  SSE 轨迹事件（Phase 1 简化：轮询状态接口兜底）
 - GET  /v1/scheduler    调度队列快照（执行中 / 排队中，画廊排期展示用）
+- /v1/files/*  本地产物静态目录（synthesizer 拼接的长视频等）
+
+支持三种 gen_type：
+- text_video  纯文本 → 视频
+- image_video 图生视频（reference_images 单图参考 或 segments 无限画布多段拼接）
+- text_image  文生图（只出图不出视频）
 
 并发控制：SessionScheduler 有界并发（默认同时执行 2 个会话），
 超出的会话进入 FIFO 队列排队，避免多个长任务同时压向 Agnes API 触发限流。
@@ -15,12 +21,14 @@ import json
 import logging
 import time
 import uuid
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import events
@@ -30,6 +38,12 @@ from app.poller import poller
 from app.scheduler import scheduler
 
 app = FastAPI(title="DreamWeaver Agent Service", version="0.2.0")
+
+# 本地产物静态目录（与 nodes/synthesizer.py OUTPUT_ROOT 对应）：
+# /v1/files/<session>/final.mp4 → web-frontend vite 代理 /v1 → 8000，可直接 <video> 播放
+OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data" / "outputs"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/v1/files", StaticFiles(directory=str(OUTPUT_DIR)), name="files")
 
 # 内存态会话仓（Phase 1）。生产换 PostgreSQL 落库（设计文档 §4.1）
 _sessions: dict[str, CreativeSessionState] = {}
@@ -45,15 +59,61 @@ class ApiResponse(BaseModel):
 class CreateVideoTaskRequest(BaseModel):
     prompt: str
     user_id: Optional[str] = "demo-user"
-    # 生成类型：text_video(纯文本视频)/image_video(图生视频)/novel_image(小说转图)
+    # 生成类型：text_video(纯文本视频)/image_video(图生视频)/text_image(文生图)
     gen_type: Optional[str] = "text_video"
     # 用户上传的参考图片 URL 数组（JSON 字符串，Java 侧原样透传）；空则文生图自动喂
     reference_images: Optional[str] = None
+    # 无限画布图生视频：片段数组 JSON 字符串 [{image_url, prompt, seconds}]；
+    # 每段一张参考图 + 一段视频内容描述，生成几秒小视频后由 synthesizer 拼接成长视频
+    segments: Optional[str] = None
 
 
 class CreateVideoTaskResponse(BaseModel):
     session_id: str
     status: str
+
+
+def _parse_json_list(raw: str | None, name: str) -> list:
+    """解析 Java 侧透传的 JSON 数组字符串；非法则返回空列表。"""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return parsed
+    except json.JSONDecodeError:
+        logger.warning("%s 不是合法 JSON 数组: %s", name, raw[:100])
+    return []
+
+
+def _parse_segments(raw: str | None) -> list:
+    """解析无限画布片段 JSON：[] -> [{image_url, prompt, seconds}]。
+
+    只保留带 image_url 的条目，其余字段尽量宽容。
+    """
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            return []
+        segments = []
+        for s in parsed:
+            if not isinstance(s, dict) or not s.get("image_url"):
+                continue
+            try:
+                seconds = int(s.get("seconds", 5) or 5)
+            except (TypeError, ValueError):
+                seconds = 5
+            segments.append({
+                "image_url": str(s.get("image_url", "")).strip(),
+                "prompt": str(s.get("prompt", "")).strip(),
+                "seconds": seconds,
+            })
+        return segments
+    except json.JSONDecodeError:
+        logger.warning("segments 不是合法 JSON 数组: %s", raw[:100])
+        return []
 
 
 async def _run_session(state: CreativeSessionState) -> None:
@@ -62,7 +122,7 @@ async def _run_session(state: CreativeSessionState) -> None:
     try:
         result = await compiled_graph.ainvoke(state, config=config)
         _sessions[state["session_id"]] = result
-        # 轨迹完成事件 + 清理总线
+        # 轨迹完成事件 + 清理总线（节点可能已发过 completed，重复无害）
         await events.emit(state["session_id"], "completed", {})
     except Exception as exc:  # 节点异常 → 记 FAILED，不裸崩后台任务
         logger.error(f"Session {state['session_id']} failed: {exc}")
@@ -98,24 +158,15 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
     if scheduler.snapshot()["queued_count"] >= _queue_maxsize():
         raise HTTPException(status_code=429, detail="任务队列已满，请稍后再试")
 
-    # Java 侧透传的 reference_images 是 JSON 数组字符串，解析失败则视为未传
-    ref_images: list = []
-    if req.reference_images:
-        try:
-            parsed = json.loads(req.reference_images)
-            if isinstance(parsed, list):
-                ref_images = parsed
-        except json.JSONDecodeError:
-            logger.warning(
-                "reference_images 不是合法 JSON 数组: %s",
-                req.reference_images[:100],
-            )
+    ref_images = _parse_json_list(req.reference_images, "reference_images")
+    segments = _parse_segments(req.segments)
     state: CreativeSessionState = {
         "session_id": session_id,
         "user_id": req.user_id or "demo-user",
         "raw_prompt": req.prompt,
         "gen_type": req.gen_type or "text_video",
         "reference_images": ref_images,
+        "segments": segments,
         "status": TaskStatus.QUEUED,
         "fix_round": 0,
         "max_fix_rounds": 3,
@@ -195,6 +246,7 @@ async def get_task(session_id: str) -> ApiResponse:
             "script": state.get("script"),
             "storyboard": state.get("storyboard"),
             "video_urls": state.get("video_urls"),
+            "final_video_url": state.get("final_video_url"),
             "image_urls": state.get("image_urls"),
             "error_message": state.get("error_message"),
         }

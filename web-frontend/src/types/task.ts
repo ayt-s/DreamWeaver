@@ -21,12 +21,12 @@ export type TaskStatus =
   | 'expired';
 
 // 生成类型（与 Java/模型侧 gen_type 对齐）
-export type GenType = 'text_video' | 'image_video' | 'novel_image';
+export type GenType = 'text_video' | 'image_video' | 'text_image';
 
 export const GEN_TYPE_LABEL: Record<GenType, string> = {
   text_video: '文生视频',
   image_video: '图生视频',
-  novel_image: '小说转图',
+  text_image: '文生图',
 };
 
 /** 任务状态中文文案（展示用，避免把英文状态码直接抛给用户） */
@@ -60,7 +60,7 @@ export interface TaskResponse {
   id: number;
   sessionId: string;
   status: TaskStatus;
-  /** 生成类型：text_video/image_video/novel_image */
+  /** 生成类型：text_video/image_video/text_image */
   genType?: GenType;
   /** 生成产物 JSON（视频 URL 数组字符串），完成后解析展示 */
   resultJson?: string;
@@ -95,8 +95,23 @@ export function parseImageUrls(imageUrls?: string | null): string[] {
 export interface CreateTaskRequest {
   prompt: string;
   userId?: string;
-  /** 生成类型：text_video(默认)/image_video/novel_image */
+  /**
+   * 生成类型：text_video(默认)/image_video/text_image。
+   * image_video 可搭配 segments 走无限画布模式；text_image 只出图。
+   */
   genType?: GenType;
+  /**
+   * 无限画布图生视频片段（JSON 字符串：[{image_url, prompt, seconds}]）。
+   * 每段一张参考图 + 一段视频内容描述，生成几秒小视频后由模型侧拼接成长视频。
+   */
+  segments?: string;
+}
+
+/** 无限画布片段（前端编辑态，提交时序列化为 CreateTaskRequest.segments） */
+export interface CanvasSegment {
+  imageUrl: string;
+  prompt: string;
+  seconds: number;
 }
 
 // SSE 轨迹事件（对应设计文档 §5.1）

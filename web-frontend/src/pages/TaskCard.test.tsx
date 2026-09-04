@@ -26,18 +26,18 @@ const wrapTaskCard = (task: TaskResponse) => (
 );
 
 describe('TaskCard 生成类型展示', () => {
-  it('novel_image 任务渲染图片卡片而非视频', () => {
+  it('text_image 任务渲染图片卡片而非视频', () => {
     const { container } = render(
       wrapTaskCard({
         ...baseTask,
-        genType: 'novel_image',
+        genType: 'text_image',
         imageUrls: JSON.stringify([
           'http://mock/image/ch1.png',
           'http://mock/image/ch2.png',
         ]),
       }),
     );
-    expect(screen.getByText('小说转图')).toBeInTheDocument();
+    expect(screen.getByText('文生图')).toBeInTheDocument();
     const imgs = screen.getAllByRole('img');
     expect(imgs).toHaveLength(2);
     expect((imgs[0] as HTMLImageElement).src).toContain('ch1.png');
@@ -88,10 +88,10 @@ describe('CreatePanel 生成类型入口', () => {
     );
     expect(screen.getByText('文生视频')).toBeInTheDocument();
     expect(screen.getByText('图生视频')).toBeInTheDocument();
-    expect(screen.getByText('小说转图')).toBeInTheDocument();
+    expect(screen.getByText('文生图')).toBeInTheDocument();
   });
 
-  it('切换到小说转图后 placeholder 变化', () => {
+  it('切换到文生图后 placeholder 变化', () => {
     render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
@@ -100,7 +100,7 @@ describe('CreatePanel 生成类型入口', () => {
       </QueryClientProvider>,
     );
     expect(screen.getByPlaceholderText(/描述你想创作的视频内容/)).toBeInTheDocument();
-    fireEvent.click(screen.getByText('小说转图'));
-    expect(screen.getByPlaceholderText(/粘贴小说章节/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText('文生图'));
+    expect(screen.getByPlaceholderText(/描述你想生成的画面/)).toBeInTheDocument();
   });
 });

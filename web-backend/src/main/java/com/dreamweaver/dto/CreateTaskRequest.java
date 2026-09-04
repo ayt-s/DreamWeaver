@@ -17,9 +17,15 @@ public class CreateTaskRequest {
 
     private String userId;
 
-    /** 生成类型：text_video(纯文本视频)/image_video(图生视频)/novel_image(小说转图) */
+    /** 生成类型：text_video(纯文本视频)/image_video(图生视频)/text_image(文生图) */
     private String genType;
 
     /** 用户上传的参考图片 URL 数组（图生视频模式） */
     private String referenceImages;
+
+    /**
+     * 无限画布图生视频：片段数组 JSON 字符串 [{image_url, prompt, seconds}]。
+     * 每段一张参考图 + 一段视频内容描述，生成几秒小视频后由模型侧拼接成长视频。
+     */
+    private String segments;
 }

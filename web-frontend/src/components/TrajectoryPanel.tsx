@@ -12,9 +12,11 @@ const NODE_NAMES: Record<string, string> = {
   requirement_parser: '需求解析',
   script_writer: '剧本生成',
   storyboarder: '分镜拆解',
+  canvas_storyboarder: '画布分镜',
   image_generator: '图像生成',
   video_generator: '视频生成',
   qc_checker: '质量检查',
+  synthesizer: '多镜拼接',
   fix_looping: '修复重试',
 };
 

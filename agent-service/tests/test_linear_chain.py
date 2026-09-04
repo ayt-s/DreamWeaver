@@ -4,7 +4,8 @@
 1. 图能构建并执行全链路
 2. 文生图 + 图生视频贯通
 3. requirement_parser → script_writer → storyboarder → image_generator → video_generator 顺序正确
-4. novel_image 模式：只出图不出视频
+4. text_image 模式：只出图不出视频
+5. 无限画布模式（segments）：逐段生视频 → synthesizer 拼接长视频
 """
 import asyncio
 
@@ -147,13 +148,13 @@ async def test_linear_chain_with_image_gen():
 
 
 @pytest.mark.asyncio
-async def test_novel_image_only_no_video():
-    """小说转图模式：只出图不出视频，image_generator 后直达 END。"""
+async def test_text_image_only_no_video():
+    """文生图模式：只出图不出视频，image_generator 后直达 END。"""
     state: CreativeSessionState = {
         "session_id": "test-novel",
         "user_id": "tester",
-        "raw_prompt": "第一章：少年在雨夜救下一只白狐",
-        "gen_type": "novel_image",
+        "raw_prompt": "赛博朋克城市夜景，霓虹灯牌，雨中街道",
+        "gen_type": "text_image",
         "status": TaskStatus.PENDING,
         "fix_round": 0,
         "max_fix_rounds": 3,
@@ -179,3 +180,62 @@ async def test_novel_image_only_no_video():
     video_audits = [t for t in result["trace"] if t["tool_name"] == "generate_video"]
     assert len(image_audits) == 2
     assert len(video_audits) == 0
+
+
+@pytest.mark.asyncio
+async def test_canvas_segments_pipeline(monkeypatch):
+    """无限画布图生视频：segments → 逐段生视频 → synthesizer 拼接长视频。"""
+    from app.nodes import synthesizer as syn_mod
+
+    async def _fake_download(url: str, dest, timeout=300.0) -> None:
+        # 测试替身：写占位文件，避免真的下载网络文件
+        with open(dest, "wb") as f:
+            f.write(b"\x00" * 1024)  # 占位内容，concat 校验只查大小>0
+
+    async def _fake_concat(inputs, output) -> bool:
+            with open(output, "wb") as f:
+                f.write(b"FAKEMP4")
+            return True
+
+    monkeypatch.setattr(syn_mod, "_download", _fake_download)
+    monkeypatch.setattr(syn_mod, "_concat_videos", _fake_concat)
+
+    state: CreativeSessionState = {
+        "session_id": "test-canvas",
+        "user_id": "tester",
+        "raw_prompt": "画布模式：两段图生视频拼接",
+        "gen_type": "image_video",
+        "segments": [
+            {"image_url": "http://mock/img/a.png", "prompt": "镜头缓缓推近海边灯塔", "seconds": 5},
+            {"image_url": "http://mock/img/b.png", "prompt": "海浪拍打礁石，画面逐渐拉远", "seconds": 6},
+        ],
+        "status": TaskStatus.PENDING,
+        "fix_round": 0,
+        "max_fix_rounds": 3,
+        "fix_history": [],
+        "trace": [],
+        "created_at": 0,
+        "updated_at": 0,
+    }
+
+    config = {"configurable": {"thread_id": "test-canvas"}}
+    result = await graph.compiled_graph.ainvoke(state, config=config)
+
+    # 1. 跳过 LLM 剧本/分镜：无 brief/script 字段产出
+    assert not result.get("brief")
+    assert not result.get("script")
+
+    # 2. 画布分镜：每段一镜，图生视频模式
+    assert len(result["storyboard"]) == 2
+    assert result["storyboard"][0]["mode"] == "image"
+    assert result["storyboard"][0]["reference_images"] == ["http://mock/img/a.png"]
+    assert result["storyboard"][1]["reference_images"] == ["http://mock/img/b.png"]
+    assert result["storyboard"][0]["seconds"] == "5"
+    assert result["storyboard"][1]["seconds"] == "6"
+
+    # 3. 两段小视频都已生成
+    assert len(result["video_urls"]) == 2
+
+    # 4. 状态到 SYNTHESIZING（synthesizer 节点产物）；final_video_url 已产出
+    assert result["status"] == TaskStatus.SYNTHESIZING
+    assert result.get("final_video_url", "").startswith("/v1/files/test-canvas/")

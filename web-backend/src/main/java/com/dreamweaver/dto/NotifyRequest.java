@@ -37,6 +37,6 @@ public class NotifyRequest {
     /** 全量视频 URL 数组（主载荷） */
     private List<String> video_urls;
 
-    /** 文生图产出的图片 URL 数组（novel_image / 图生视频首帧） */
+    /** 文生图产出的图片 URL 数组（text_image / 图生视频首帧） */
     private List<String> image_urls;
 }

@@ -7,6 +7,7 @@
 - seconds 为字符串 "4"~"12"；size 仅 "720P"；n 固定 1
 """
 import asyncio
+import json
 import logging
 import time
 from typing import Any, Awaitable, Callable, TypeVar
@@ -52,6 +53,94 @@ async def _with_retry(operation: Callable[[], Awaitable[httpx.Response]],
     # 理论不可达（HTTPError 已 raise）
     assert resp is not None
     return resp
+
+
+_AGNES_ERROR_CN = {
+    "video_queue_full": "视频队列繁忙（平台队列已满），请稍后点击「重新生成」重试",
+    "image_queue_full": "图片队列繁忙，请稍后重试",
+    "rate_limit": "请求过于频繁，请稍后重试",
+    "unauthorized": "API 密钥无效或已过期",
+    "invalid_model": "模型参数不正确或当前不可用",
+    "invalid_parameter": "请求参数不被平台接受",
+    "insufficient_balance": "账户余额不足",
+}
+
+
+class VideoSubmitGate:
+    """全局视频提交节流门：两次 /videos 提交至少间隔 interval_s（对齐 agnes 视频 RPM≈2/分）。
+
+    所有会话（含重新生成任务）共用一个门，从根上避免多会话并发提交撞 429。
+    异步锁按调用循环惰性创建（模块级单例，uvicorn 单循环内安全）。
+    """
+
+    def __init__(self, interval_s: float) -> None:
+        self._interval = interval_s
+        self._lock = asyncio.Lock()
+        self._last = 0.0
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            wait = self._last + self._interval - now
+            if wait > 0:
+                await asyncio.sleep(wait)
+                now = loop.time()
+            self._last = now
+            logger.info("视频提交门放行（距上次 %.1fs）", now - (self._last - self._interval))
+
+
+_gate: VideoSubmitGate | None = None
+
+
+def get_video_gate() -> VideoSubmitGate:
+    global _gate
+    if _gate is None:
+        _gate = VideoSubmitGate(settings.video_submit_interval_s)
+    return _gate
+
+
+def _extract_code(resp: httpx.Response) -> str:
+    """从 agnes 错误体提取 code（如 video_queue_full），取不到返回空串。"""
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            return str(body.get("code", ""))
+    except Exception:
+        pass
+    return ""
+
+
+def _json_compact(obj) -> str:
+    """紧凑 JSON 序列化（日志用，确保中文可读）。"""
+    try:
+        return json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        return str(obj)
+
+
+def _describe_rejection(exception: httpx.HTTPStatusError, what: str) -> str:
+    """解析 agnes 非 2xx 响应体，给出可读原因（含中文映射）。
+
+    默认 raise_for_status 只保留状态码，真实原因（如 video_queue_full）会丢，
+    任务卡片上只剩 '400 Bad Request'。这里把平台错误体解析出来并中文化。
+    """
+    code, message = "", ""
+    try:
+        body = exception.response.json()
+        if isinstance(body, dict):
+            code = str(body.get("code", ""))
+            message = str(body.get("message", "") or "")
+    except Exception:
+        text = getattr(exception.response, "text", "") or ""
+        if text:
+            message = text[:120]
+    status = exception.response.status_code
+    if code in _AGNES_ERROR_CN:
+        return f"{what}接口拒绝 ({status}): {_AGNES_ERROR_CN[code]}"
+    if message:
+        return f"{what}接口拒绝 ({status}): {message}"
+    return f"{what}接口拒绝: HTTP {status}"
 
 
 class AgnesGateway:
@@ -108,16 +197,65 @@ class AgnesGateway:
         if reference_images:
             # 图生视频/参考模式：图片需公网可访问 URL
             payload["images"] = reference_images
-        resp = await _with_retry(
-            lambda: self._client.post("/videos", json=payload),
-            "视频提交",
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return {
-            "video_id": data["id"],
-            "model_name": payload["model"],
-        }
+        logger.warning("submit_video payload: %s", _json_compact(payload))
+
+        # 全局节流：与平台视频 RPM 对齐；所有会话共享同一门
+        await get_video_gate().acquire()
+
+        max_attempts = settings.video_submit_max_attempts
+        last_reason = "未知错误"
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = await self._client.post("/videos", json=payload)
+            except httpx.TransportError as e:
+                last_reason = f"网络异常 {e}"
+                if attempt == max_attempts:
+                    break
+                wait = 5 * attempt
+                logger.warning("视频提交网络异常，%ds 后重试 (%d/%d)", wait, attempt, max_attempts)
+                await asyncio.sleep(wait)
+                continue
+
+            if resp.status_code == 200:
+                data = resp.json()
+                return {
+                    "video_id": data["id"],
+                    "model_name": payload["model"],
+                }
+
+            if resp.status_code == 429:
+                # 限流：指数退避，RPM≈2 时稍等即可
+                wait = min(5 * (2 ** (attempt - 1)), 30)
+                last_reason = f"平台限流(429)"
+                if attempt == max_attempts:
+                    break
+                logger.warning("视频提交被限流，%ds 后重试 (%d/%d)", wait, attempt, max_attempts)
+                await asyncio.sleep(wait)
+                continue
+
+            if resp.status_code >= 500:
+                # 服务端繁忙：video_queue_full → 长等待（队列可能要几分钟才消化）
+                code = _extract_code(resp)
+                queue_full = code == "video_queue_full" or "queue" in code.lower()
+                wait = 30 * attempt if queue_full else 10 * attempt
+                last_reason = f"服务端 {resp.status_code} ({code or 'server error'})"
+                if attempt == max_attempts:
+                    break
+                logger.warning("视频提交%s，%ds 后重试 (%d/%d)", last_reason, wait, attempt, max_attempts)
+                await asyncio.sleep(wait)
+                continue
+
+            # 4xx：参数/模式/权限错误 → 立即失败，把平台真实原因带给用户
+            raise RuntimeError(_describe_rejection(
+                httpx.HTTPStatusError(
+                    f"视频提交 {resp.status_code}",
+                    request=self._client.build_request("POST", str(self._client.base_url) + "/videos"),
+                    response=resp,
+                ),
+                "视频",
+            ))
+
+        raise RuntimeError(f"视频提交多次失败（队列繁忙/限流，已重试 {max_attempts} 次）：{last_reason}")
 
     async def query_video(self, video_id: str, model_name: str,
                           mode: str = "text") -> dict[str, Any]:

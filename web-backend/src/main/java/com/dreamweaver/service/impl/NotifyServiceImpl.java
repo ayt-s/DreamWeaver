@@ -108,7 +108,7 @@ public class NotifyServiceImpl implements NotifyService {
         }
         task.setResultJson(toJsonString(videoUrls));
 
-        // 4.1 图片资产落库（文生图 / 小说转图产物）
+        // 4.1 图片资产落库（文生图产物）
         List<String> imageUrls = request.getImage_urls();
         if (imageUrls != null && !imageUrls.isEmpty()) {
             task.setImageUrls(toJsonString(imageUrls));
