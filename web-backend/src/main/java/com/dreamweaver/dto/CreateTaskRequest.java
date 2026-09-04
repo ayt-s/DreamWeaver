@@ -28,4 +28,7 @@ public class CreateTaskRequest {
      * 每段一张参考图 + 一段视频内容描述，生成几秒小视频后由模型侧拼接成长视频。
      */
     private String segments;
+
+    /** 可选视频模型（空 = agent 配置默认 agnes-video-2.5-flash），如 agnes-video-2.5 */
+    private String videoModel;
 }

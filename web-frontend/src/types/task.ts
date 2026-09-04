@@ -142,6 +142,8 @@ export interface CreateTaskRequest {
    * 每段一张参考图 + 一段视频内容描述，生成几秒小视频后由模型侧拼接成长视频。
    */
   segments?: string;
+  /** 可选视频模型：agnes-video-2.5-flash（默认） / agnes-video-2.5（HD） */
+  videoModel?: string;
 }
 
 /** 无限画布片段（前端编辑态，提交时序列化为 CreateTaskRequest.segments） */

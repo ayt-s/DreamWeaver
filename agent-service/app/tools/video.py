@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 
 async def generate_video_tool(prompt: str, seconds: str, mode: str,
                               aspect_ratio: str, reference_images: list,
-                              session_id: str, shot_index: int) -> dict:
+                              session_id: str, shot_index: int,
+                              model: str | None = None) -> dict:
     """提交视频任务，立即返回，由独立 VideoPoller 异步轮询。
 
     返回契约：{"video_id": str, "status": "submitted"}
@@ -27,6 +28,7 @@ async def generate_video_tool(prompt: str, seconds: str, mode: str,
         mode=mode,
         aspect_ratio=aspect_ratio,
         reference_images=reference_images or [],
+        model=model,
     )
     video_id = submitted["video_id"]
     model_name = submitted["model_name"]

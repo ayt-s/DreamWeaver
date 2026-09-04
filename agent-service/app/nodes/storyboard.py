@@ -73,12 +73,13 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
         en_prompt = await translate_to_en(cn)
         raw_seconds = int(seg.get("seconds", 5) or 5)
         seconds = max(MIN_SECONDS, min(raw_seconds, MAX_SECONDS))
+        ratio = str(seg.get("aspect_ratio") or "16:9").strip() or "16:9"
         storyboard.append({
             "shot_id": idx,
             "prompt_en": en_prompt,
             "mode": "reference",  # 用户提供参考图，参考模式(agnès Video 2.5 合法值)
             "seconds": str(seconds),
-            "aspect_ratio": "16:9",
+            "aspect_ratio": ratio,
             "reference_images": [image_url],
             "cn_description": cn,
         })

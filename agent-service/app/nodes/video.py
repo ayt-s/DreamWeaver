@@ -43,6 +43,7 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
             reference_images=shot.get("reference_images", []),
             session_id=state["session_id"],
             shot_index=idx,
+            model=state.get("video_model"),
         )
         video_id = result["video_id"]
         future = poller.get_future(video_id)

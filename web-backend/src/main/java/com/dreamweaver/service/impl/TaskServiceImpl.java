@@ -171,6 +171,9 @@ public class TaskServiceImpl implements TaskService {
         if (request.getSegments() != null && !request.getSegments().isBlank()) {
             body.put("segments", request.getSegments());
         }
+        if (request.getVideoModel() != null && !request.getVideoModel().isBlank()) {
+            body.put("video_model", request.getVideoModel());
+        }
 
         CommonResult<Map<String, Object>> agentResp = null;
         try {

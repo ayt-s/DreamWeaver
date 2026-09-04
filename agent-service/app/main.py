@@ -61,6 +61,8 @@ class CreateVideoTaskRequest(BaseModel):
     user_id: Optional[str] = "demo-user"
     # 生成类型：text_video(纯文本视频)/image_video(图生视频)/text_image(文生图)
     gen_type: Optional[str] = "text_video"
+    # 画布/标准模式可选视频模型（空 = 用配置默认 agnes-video-2.5-flash）
+    video_model: Optional[str] = None
     # 用户上传的参考图片 URL 数组（JSON 字符串，Java 侧原样透传）；空则文生图自动喂
     reference_images: Optional[str] = None
     # 无限画布图生视频：片段数组 JSON 字符串 [{image_url, prompt, seconds}]；
@@ -109,6 +111,7 @@ def _parse_segments(raw: str | None) -> list:
                 "image_url": str(s.get("image_url", "")).strip(),
                 "prompt": str(s.get("prompt", "")).strip(),
                 "seconds": seconds,
+                "aspect_ratio": str(s.get("aspect_ratio") or "16:9").strip(),
             })
         return segments
     except json.JSONDecodeError:
