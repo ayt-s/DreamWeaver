@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -27,6 +27,10 @@ import {
   Clapperboard,
   Wand2,
   Loader2,
+  Sun,
+  Moon,
+  Save,
+  FolderPlus,
 } from 'lucide-react';
 import {
   createVideoTask,
@@ -34,6 +38,13 @@ import {
   listTasks,
   uploadImage,
 } from '../api/tasks';
+import {
+  createProject,
+  listProjects,
+  getProject,
+  saveProject,
+  type CanvasProjectView,
+} from '../api/canvas';
 import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
 
 /* ------------------------------------------------------------------ */
@@ -319,8 +330,96 @@ export default function CanvasPage() {
   const [nodes, setNodes, onNodesChange] = useNodesState<GraphNode>(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [videoModel, setVideoModel] = useState(VIDEO_MODELS[0].value);
+  const [dark, setDark] = useState(true);
+  const [projects, setProjects] = useState<CanvasProjectView[]>([]);
+  const [currentProjectId, setCurrentProjectId] = useState<number | null>(null);
+  const [projectName, setProjectName] = useState('');
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+
+  // 载入项目列表
+  useEffect(() => {
+    listProjects()
+      .then((ps) => setProjects(ps))
+      .catch(() => setProjects([]));
+  }, []);
+
+  // 序列化：只保留画布持久化所需字段
+  const serializeCanvas = useCallback(() => {
+    const nodesJson = JSON.stringify(
+      nodes.map(({ id, type, position, data }) => ({ id, type, position, data })),
+    );
+    const edgesJson = JSON.stringify(
+      edges.map(({ id, source, target, markerEnd }) => {
+        const e: Record<string, unknown> = { id, source, target };
+        if (markerEnd) e.markerEnd = markerEnd;
+        return e;
+      }),
+    );
+    return { nodesJson, edgesJson };
+  }, [nodes, edges]);
+
+  // 新建项目：prompt 取名 → 服务端建空项目 → 切换到全新默认画布
+  const onCreateProject = async () => {
+    const name = window.prompt('新建画布项目名称：');
+    if (!name || !name.trim()) return;
+    try {
+      const p = await createProject(name.trim());
+      setProjects((ps) => [...ps, p]);
+      setCurrentProjectId(p.id);
+      setProjectName(p.name);
+      setNodes(initialNodes);
+      setEdges(initialEdges);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : '创建失败');
+    }
+  };
+
+  // 保存当前画布到当前项目（无项目先新建）
+  const onSaveCanvas = async () => {
+    const { nodesJson, edgesJson } = serializeCanvas();
+    try {
+      let id = currentProjectId;
+      if (id === null) {
+        const name = projectName.trim() || `画布 ${new Date().toLocaleTimeString()}`;
+        const p = await createProject(name);
+        id = p.id;
+        setCurrentProjectId(p.id);
+        setProjectName(p.name);
+        setProjects((ps) => [...ps, p]);
+      }
+      await saveProject(id, {
+        name: projectName.trim() || undefined,
+        nodesJson,
+        edgesJson,
+      });
+      setProjects((ps) =>
+        ps.map((p) => (p.id === id ? { ...p, name: projectName.trim() || p.name } : p)),
+      );
+      window.alert('已保存');
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : '保存失败');
+    }
+  };
+
+  // 切换到指定项目：加载其节点/连线
+  const onSelectProject = async (id: number) => {
+    if (id === currentProjectId) return;
+    try {
+      const p = await getProject(id);
+      if (p.nodesJson) {
+        setNodes(JSON.parse(p.nodesJson));
+        setEdges(JSON.parse(p.edgesJson ?? '[]'));
+      } else {
+        setNodes(initialNodes);
+        setEdges(initialEdges);
+      }
+      setCurrentProjectId(p.id);
+      setProjectName(p.name);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : '加载失败');
+    }
+  };
 
   const onConnect = useCallback(
     (conn: Connection) =>
@@ -462,50 +561,132 @@ export default function CanvasPage() {
   const canSubmit = plan.segments.length > 0 || plan.texts.length > 0;
   const totalSeconds = plan.segments.length * plan.videoSeconds;
 
+  // 深/浅色主题样式映射
+  const theme = dark
+    ? {
+        page: 'bg-slate-950',
+        header: 'border-slate-800 bg-slate-950',
+        headText: 'text-slate-100',
+        hint: 'text-slate-500',
+        border: 'border-slate-800',
+        btn: 'border-slate-700 text-slate-200 hover:bg-slate-800',
+        btnBg: 'bg-slate-800',
+        label: 'text-slate-500',
+        dots: '#1e293b',
+        bar: 'border-slate-700 bg-slate-900/90',
+        input: 'border-slate-700 bg-slate-800 text-slate-200',
+      }
+    : {
+        page: 'bg-slate-100',
+        header: 'border-slate-300 bg-white',
+        headText: 'text-slate-900',
+        hint: 'text-slate-500',
+        border: 'border-slate-300',
+        btn: 'border-slate-400 text-slate-700 hover:bg-slate-200',
+        btnBg: 'bg-white',
+        label: 'text-slate-500',
+        dots: '#cbd5e1',
+        bar: 'border-slate-300 bg-white/95',
+        input: 'border-slate-300 bg-white text-slate-700',
+      };
+
   return (
-    <div className="flex h-screen flex-col bg-slate-950">
+    <div className={`flex h-screen flex-col ${theme.page}`}>
       {/* 顶栏 */}
-      <header className="flex items-center gap-3 border-b border-slate-800 px-4 py-2.5">
+      <header className={`flex items-center gap-3 border-b ${theme.header} px-4 py-2.5`}>
         <Link
           to="/"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800"
+          className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium ${theme.btn}`}
         >
           <ArrowLeft className="h-4 w-4" /> 画廊
         </Link>
-        <h1 className="text-sm font-semibold text-slate-100">无限画布 · 图生视频</h1>
-        <span className="ml-2 hidden text-[11px] text-slate-500 xl:inline">
+        <h1 className={`text-sm font-semibold ${theme.headText}`}>无限画布 · 图生视频</h1>
+        <span className={`ml-2 hidden text-[11px] ${theme.hint} xl:inline`}>
           拖拽节点自由摆放 · 滚轮缩放 · 空白处平移 · 连线决定生成顺序
         </span>
-        <span className="ml-auto text-[11px] text-slate-500">
-          {plan.segments.length > 0
-            ? `${plan.segments.length} 段 · 每段 ${plan.videoSeconds}s · 约 ${totalSeconds}s`
-            : '未接入图片，将按文本生成视频'}
-        </span>
+
+        <div className="ml-auto flex items-center gap-2">
+          <span className={`text-[11px] ${theme.hint}`}>
+            {plan.segments.length > 0
+              ? `${plan.segments.length} 段 · 每段 ${plan.videoSeconds}s · 约 ${totalSeconds}s`
+              : '未接入图片，将按文本生成视频'}
+          </span>
+          <div className={`h-5 w-px ${dark ? 'bg-slate-700' : 'bg-slate-300'}`} />
+          {/* 项目选择 */}
+          <select
+            value={currentProjectId ?? ''}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v) onSelectProject(Number(v));
+            }}
+            title="切换画布项目"
+            className={`rounded-lg border px-2 py-1 text-xs outline-none ${theme.input}`}
+          >
+            <option value="" disabled>
+              {currentProjectId ? '切换项目…' : '新建后保存即成为项目'}
+            </option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          {/* 项目名称（重命名/新建保存用） */}
+          <input
+            value={projectName}
+            onChange={(e) => setProjectName(e.target.value)}
+            placeholder="项目名称"
+            className={`w-32 rounded-lg border px-2 py-1 text-xs outline-none ${theme.input}`}
+          />
+          <button
+            onClick={onSaveCanvas}
+            title="保存画布（尚无项目则会自动新建）"
+            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${theme.btn}`}
+          >
+            <Save className="h-3.5 w-3.5" /> 保存
+          </button>
+          <button
+            onClick={onCreateProject}
+            title="新建画布项目"
+            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${theme.btn}`}
+          >
+            <FolderPlus className="h-3.5 w-3.5" /> 新建
+          </button>
+          {/* 背景深/浅切换 */}
+          <button
+            onClick={() => setDark((d) => !d)}
+            title={dark ? '切到白色背景' : '切到黑色背景'}
+            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${theme.btn}`}
+          >
+            {dark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+            {dark ? '白底' : '黑底'}
+          </button>
+        </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
         {/* 左侧面板 */}
-        <aside className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r border-slate-800 p-3">
+        <aside className={`flex w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r ${theme.border} p-3`}>
           <section>
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            <div className={`mb-2 text-[11px] font-semibold uppercase tracking-wide ${theme.label}`}>
               添加节点
             </div>
             <div className="flex flex-col gap-1.5">
               <button
                 onClick={() => addNode('textNode')}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800"
+                className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${theme.btn}`}
               >
                 <Type className="h-4 w-4 text-indigo-400" /> 文本节点
               </button>
               <button
                 onClick={() => addNode('imageNode')}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800"
+                className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${theme.btn}`}
               >
                 <ImagePlus className="h-4 w-4 text-indigo-400" /> 图片节点
               </button>
               <button
                 onClick={() => addNode('videoNode')}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800"
+                className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${theme.btn}`}
               >
                 <Clapperboard className="h-4 w-4 text-indigo-400" /> 成片节点
               </button>
@@ -513,12 +694,12 @@ export default function CanvasPage() {
           </section>
 
           <section>
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            <div className={`mb-2 text-[11px] font-semibold uppercase tracking-wide ${theme.label}`}>
               添加资源
             </div>
             <button
               onClick={() => document.getElementById('canvas-upload')?.click()}
-              className="mb-2 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800"
+              className={`mb-2 inline-flex w-full items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs ${theme.btn}`}
             >
               <Upload className="h-4 w-4 text-indigo-400" /> 本地上传
             </button>
@@ -533,7 +714,7 @@ export default function CanvasPage() {
                 e.target.value = '';
               }}
             />
-            <div className="mb-2 text-[11px] text-slate-500">从历史作品选取（点击入画布）：</div>
+            <div className={`mb-2 text-[11px] ${theme.label}`}>从历史作品选取（点击入画布）：</div>
             <div className="grid grid-cols-3 gap-1.5">
               {(history ?? []).slice(0, 12).map((t) => {
                 const urls = parseImageUrls(t.imageUrls);
@@ -543,7 +724,7 @@ export default function CanvasPage() {
                     key={t.id}
                     title={'点击加入画布：' + (t.prompt || `#${t.id}`)}
                     onClick={() => addImageNode(urls[0])}
-                    className="group relative aspect-square overflow-hidden rounded-md border border-slate-700 hover:border-indigo-400"
+                    className="group relative aspect-square overflow-hidden rounded-md border border-slate-400 hover:border-indigo-400"
                   >
                     <img
                       src={cachedImageUrl(urls[0])}
@@ -577,19 +758,19 @@ export default function CanvasPage() {
             maxZoom={2.5}
             proOptions={{ hideAttribution: true }}
           >
-            <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color="#1e293b" />
+            <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color={theme.dots} />
             <Controls className="react-flow__controls" />
           </ReactFlow>
 
           {/* 底部悬浮控制栏 */}
           <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-4">
-            <div className="pointer-events-auto flex items-center gap-3 rounded-2xl border border-slate-700 bg-slate-900/90 px-4 py-2.5 shadow-lg backdrop-blur">
+            <div className={`pointer-events-auto flex items-center gap-3 rounded-2xl border ${theme.bar} px-4 py-2.5 shadow-lg backdrop-blur`}>
               <div>
-                <div className="mb-0.5 text-[10px] text-slate-500">视频模型</div>
+                <div className={`mb-0.5 text-[10px] ${theme.hint}`}>视频模型</div>
                 <select
                   value={videoModel}
                   onChange={(e) => setVideoModel(e.target.value)}
-                  className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 outline-none"
+                  className={`rounded-lg border px-2 py-1 text-xs outline-none ${theme.input}`}
                 >
                   {VIDEO_MODELS.map((m) => (
                     <option key={m.value} value={m.value}>

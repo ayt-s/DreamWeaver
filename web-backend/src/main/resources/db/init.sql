@@ -20,3 +20,15 @@ CREATE TABLE IF NOT EXISTS creative_task (
     KEY idx_session (session_id),
     KEY idx_video_id (video_id)
 ) ENGINE = InnoDB COMMENT '创作任务';
+-- 无限画布项目（按自定义名称持久化画布）
+CREATE TABLE IF NOT EXISTS canvas_project (
+    id           BIGINT       NOT NULL AUTO_INCREMENT,
+    project_name VARCHAR(64)  NOT NULL COMMENT '项目名称（自定义）',
+    user_id      BIGINT       NOT NULL DEFAULT 1,
+    nodes_json   LONGTEXT     COMMENT 'React Flow 节点 JSON',
+    edges_json   LONGTEXT     COMMENT '连线 JSON',
+    created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_cp_user (user_id)
+) ENGINE = InnoDB COMMENT '无限画布项目';
