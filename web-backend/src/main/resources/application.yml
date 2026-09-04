@@ -39,3 +39,12 @@ dreamweaver:
 
 app:
   upload-dir: ./uploads
+  retry:
+    enabled: true
+    interval-ms: 60000
+    min-age-seconds: 180
+    max-attempts: 3
+    video-spacing-seconds: 90
+    image-spacing-seconds: 30
+    max-video-per-sweep: 1
+    max-image-per-sweep: 2
