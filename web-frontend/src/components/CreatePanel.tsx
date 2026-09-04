@@ -1,8 +1,10 @@
 import { motion } from 'framer-motion';
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { createVideoTask } from '../api/tasks';
+import { enrichPrompt } from '../api/enrich';
 import { useTaskStore } from '../store/taskStore';
 import type { GenType } from '../types/task';
 import {
@@ -12,6 +14,7 @@ import {
   Image,
   Clapperboard,
   LayoutGrid,
+  Wand2,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -59,6 +62,29 @@ export default function CreatePanel() {
   });
 
   const genType = watch('genType');
+
+  const [enriching, setEnriching] = useState(false);
+  const [enrichError, setEnrichError] = useState('');
+
+  // AI 丰富提示词：仅文生图/文生视频可用（图生视频走画布页）
+  const isEnrichable = genType === 'text_image' || genType === 'text_video';
+  const onEnrich = async () => {
+    const current = watch('prompt').trim();
+    if (!current) {
+      setEnrichError('请先输入创作描述');
+      return;
+    }
+    setEnriching(true);
+    setEnrichError('');
+    try {
+      const enriched = await enrichPrompt(current, genType as 'text_image' | 'text_video');
+      setValue('prompt', enriched);
+    } catch (e) {
+      setEnrichError(e instanceof Error ? e.message : 'AI 丰富失败，请重试');
+    } finally {
+      setEnriching(false);
+    }
+  };
 
   const onSubmit = (values: CreateForm) => {
     const prompt = values.prompt.trim();
@@ -150,7 +176,9 @@ export default function CreatePanel() {
         {/* 文本描述（画布模式下作为补充/汇总） */}
         <div className="relative">
           <textarea
-            className="w-full rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm leading-relaxed focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-violet-500/10 transition-all"
+            className={`w-full rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm leading-relaxed focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-violet-500/10 transition-all ${
+              isEnrichable ? 'pr-32' : ''
+            }`}
             placeholder={PLACEHOLDER[genType]}
             rows={genType === 'image_video' ? 3 : 4}
             {...register('prompt', {
@@ -158,8 +186,27 @@ export default function CreatePanel() {
               maxLength: { value: 2000, message: '需求过长（≤2000字）' },
             })}
           />
+          {isEnrichable && (
+            <button
+              type="button"
+              onClick={onEnrich}
+              disabled={enriching}
+              className="absolute right-3 top-3 z-10 inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-purple-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-all hover:from-violet-700 hover:to-purple-700 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-300"
+              title="AI 根据你的描述生成更丰富的创作提示词"
+            >
+              {enriching ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Wand2 className="h-3.5 w-3.5" />
+              )}
+              {enriching ? '丰富中...' : 'AI 丰富'}
+            </button>
+          )}
           {errors.prompt && (
             <p className="mt-2 text-sm text-red-600">{errors.prompt.message}</p>
+          )}
+          {enrichError && !errors.prompt && (
+            <p className="mt-2 text-sm text-red-600">{enrichError}</p>
           )}
         </div>
 

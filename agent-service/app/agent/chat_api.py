@@ -121,3 +121,81 @@ async def chat(req: ChatRequest) -> ChatResponse:
             "model": chat_agent._model.model_name if hasattr(chat_agent, "_model") else "unknown",
         },
     )
+
+
+class EnrichRequest(BaseModel):
+    """提示词增强请求。gen_type: text_image / text_video。"""
+
+    prompt: str = Field(..., description="用户原始描述")
+    gen_type: str = Field(default="text_video", description="text_image 文生图 / text_video 文生视频")
+
+
+class EnrichResponse(BaseModel):
+    code: int = 0
+    message: str = "ok"
+    data: dict
+
+
+# 按生成类型定制的提示词增强系统提示词
+_ENRICH_SYSTEM: dict[str, str] = {
+    "text_image": (
+        "你是一位专业的 AI 绘画提示词工程师。请把用户简短的中文描述扩展成一段高质量的中文文生图提示词。"
+        "要求：保留用户原意，补充主体特征、场景环境、光影色调、镜头视角、风格流派、质感细节；"
+        "用自然流畅的中文描述，不要使用逗号堆砌的英文标签格式，不要输出解释或前后缀，只输出提示词正文。"
+        "控制在 100-200 字。"
+    ),
+    "text_video": (
+        "你是一位专业的 AI 视频提示词工程师。请把用户简短的中文描述扩展成一段高质量的中文文生视频提示词。"
+        "要求：保留用户原意，补充画面主体及其动作、场景环境、镜头运动（推拉摇移跟）、光影氛围、风格质感、"
+        "时间节奏（如开场/高潮/结尾的镜头感）；用自然流畅的中文描述，不要输出解释或前后缀，只输出提示词正文。"
+        "控制在 150-300 字。"
+    ),
+}
+
+
+@router.post("/enrich-prompt", response_model=EnrichResponse)
+async def enrich_prompt(req: EnrichRequest) -> EnrichResponse:
+    """AI 丰富提示词：把用户简短描述扩展成适合文生图/文生视频的高质量提示词。"""
+    if not req.prompt or not req.prompt.strip():
+        raise AppError("请先输入创作描述", status_code=422)
+    if req.gen_type not in _ENRICH_SYSTEM:
+        raise AppError(f"不支持的生成类型: {req.gen_type}", status_code=422)
+
+    from app.config import settings
+
+    # 直连 agnes OpenAI 兼容端点（复用现有配置，不依赖 Pydantic AI 内部 API）
+    try:
+        import httpx
+
+        resp = await httpx.AsyncClient(timeout=60).post(
+            f"{settings.agnes_base_url.rstrip('/')}/chat/completions",
+            headers=settings.headers,
+            json={
+                "model": settings.text_model,
+                "messages": [
+                    {"role": "system", "content": _ENRICH_SYSTEM[req.gen_type]},
+                    {"role": "user", "content": req.prompt.strip()},
+                ],
+                "temperature": 0.7,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        enriched = (data["choices"][0]["message"]["content"] or "").strip()
+    except Exception as exc:
+        logger.error("提示词增强失败: %s", exc, exc_info=True)
+        raise AppError(
+            friendly_error_message(exc),
+            status_code=500,
+            detail=str(exc),
+            retryable=True,
+        )
+
+    if not enriched:
+        raise AppError("AI 未能生成提示词，请重试", status_code=500)
+
+    return EnrichResponse(
+        code=0,
+        message="ok",
+        data={"prompt": enriched, "gen_type": req.gen_type},
+    )
