@@ -29,6 +29,32 @@ export const GEN_TYPE_LABEL: Record<GenType, string> = {
   novel_image: '小说转图',
 };
 
+/** 任务状态中文文案（展示用，避免把英文状态码直接抛给用户） */
+export const STATUS_LABELS: Record<string, string> = {
+  pending: '排队中',
+  queued: '排队中',
+  script_writing: '剧本编写中',
+  storyboard_writing: '分镜拆解中',
+  asset_generating: '素材生成中',
+  video_generating: '视频生成中',
+  qc_checking: '质量检查中',
+  fix_looping: '修复重试中',
+  synthesizing: '合成中',
+  completed: '已完成',
+  failed: '已失败',
+  expired: '已过期',
+};
+
+export function statusLabel(status: string): string {
+  return STATUS_LABELS[status] ?? status.replace(/_/g, ' ');
+}
+
+/** 会话 ID 截断展示：保留前 6 位，完整值放 title 悬浮提示 */
+export function shortSessionId(full: string | undefined): string {
+  if (!full) return '';
+  return full.length > 6 ? `${full.slice(0, 6)}…` : full;
+}
+
 // 任务响应（对应 Java TaskResponse dto）
 export interface TaskResponse {
   id: number;

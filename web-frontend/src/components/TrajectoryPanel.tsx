@@ -6,13 +6,28 @@ import { useTaskStore } from '../store/taskStore';
 import { parseResultUrls } from '../types/task';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Video, CheckCircle, XCircle, Clock, AlertCircle } from 'lucide-react';
+import { statusLabel } from '../types/task';
 
 const NODE_NAMES: Record<string, string> = {
   requirement_parser: '需求解析',
   script_writer: '剧本生成',
   storyboarder: '分镜拆解',
+  image_generator: '图像生成',
   video_generator: '视频生成',
-  qc_agent: '质量检查',
+  qc_checker: '质量检查',
+  fix_looping: '修复重试',
+};
+
+const EVENT_NAMES: Record<string, string> = {
+  session_started: '会话开始',
+  node_entered: '进入节点',
+  node_completed: '节点完成',
+  tool_called: '调用工具',
+  tool_result: '工具返回',
+  progress: '进度更新',
+  interrupted: '流程中断',
+  completed: '创作完成',
+  failed: '创作失败',
 };
 
 export default function TrajectoryPanel() {
@@ -76,7 +91,7 @@ export default function TrajectoryPanel() {
         {task && (
           <span className={`ml-auto flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${getStatusColor(task.status)}`}>
             {getStatusIcon(task.status)}
-            {task.status.replace(/_/g, ' ')}
+            {statusLabel(task.status)}
             {!connected && <AlertCircle className="h-3 w-3" />}
           </span>
         )}
@@ -121,7 +136,7 @@ export default function TrajectoryPanel() {
                 {ev.type === 'completed' && <CheckCircle className="h-4 w-4 text-emerald-500" />}
                 {ev.type === 'failed' && <XCircle className="h-4 w-4 text-red-500" />}
                 <span className="text-slate-700">
-                  {NODE_NAMES[ev.data.nodeId ?? ''] ?? ev.data.nodeName ?? ev.type}
+                  {NODE_NAMES[ev.data.nodeId ?? ''] ?? ev.data.nodeName ?? EVENT_NAMES[ev.type] ?? ev.type}
                 </span>
                 {ev.data.progress != null && (
                   <span className="ml-auto text-xs text-slate-400">{ev.data.progress}%</span>
@@ -167,7 +182,6 @@ export default function TrajectoryPanel() {
                     src={url}
                     controls
                     className="w-full"
-                    poster={`/api/tasks/${activeTaskId}/poster`}
                   />
                 </motion.div>
               ))}

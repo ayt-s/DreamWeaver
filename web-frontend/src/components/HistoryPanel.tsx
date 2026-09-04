@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 import { Video, Trash2, Calendar } from 'lucide-react';
 import type { TaskResponse } from '../types/task';
-import { parseResultUrls } from '../types/task';
+import { parseResultUrls, statusLabel, shortSessionId } from '../types/task';
 
 interface HistoryPanelProps {
   tasks: TaskResponse[];
@@ -70,10 +70,12 @@ export default function HistoryPanel({ tasks }: HistoryPanelProps) {
                           : 'bg-amber-100 text-amber-700'
                     }`}
                   >
-                    {task.status.replace(/_/g, ' ')}
+                    {statusLabel(task.status)}
                   </span>
                 </div>
-                <p className="mt-1 text-xs text-slate-500">会话 {task.sessionId}</p>
+                <p className="mt-1 text-xs text-slate-500" title={task.sessionId}>
+                  会话 {shortSessionId(task.sessionId)}
+                </p>
                 {urls.length > 0 && (
                   <p className="mt-1 text-xs text-violet-600">
                     {urls.length} 个视频片段

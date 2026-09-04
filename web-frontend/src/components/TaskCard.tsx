@@ -2,7 +2,7 @@ import { motion } from 'framer-motion';
 import { Video, Image as ImageIcon, Trash2, Hourglass } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { GenType, TaskResponse, TaskStatus } from '../types/task';
-import { parseResultUrls, parseImageUrls, GEN_TYPE_LABEL } from '../types/task';
+import { parseResultUrls, parseImageUrls, GEN_TYPE_LABEL, shortSessionId } from '../types/task';
 
 interface TaskCardProps {
   task: TaskResponse;
@@ -85,8 +85,8 @@ export default function TaskCard({ task }: TaskCardProps) {
               {STATE_LABEL[state]}
             </span>
           </div>
-          <p className="mt-1 truncate text-xs text-slate-500">
-            会话 {task.sessionId}
+          <p className="mt-1 truncate text-xs text-slate-500" title={task.sessionId}>
+            会话 {shortSessionId(task.sessionId)}
           </p>
           {task.errorMessage && (
             <p className="mt-2 line-clamp-2 text-xs text-red-600">
