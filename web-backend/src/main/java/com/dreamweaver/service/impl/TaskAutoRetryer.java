@@ -39,11 +39,12 @@ public class TaskAutoRetryer {
     private static final String RETRY_COUNT_KEY = "task:retry:count:";
     private static final String VIDEO_LAST_KEY = "task:retry:video:last";
     private static final String IMAGE_LAST_KEY = "task:retry:image:last";
-    private static final long RETRY_COUNT_TTL_S = 24 * 3600;
+    // 计数窗口 3 小时：间歇性 503 下每 3 小时一波重试（每波 ≤3 次），全天多波不死锁
+    private static final long RETRY_COUNT_TTL_S = 3 * 3600;
 
-    /** 真正的硬性失败不自动重试（重试没有意义）：任务已删/权限/余额类 */
+    /** 真正的硬性失败不自动重试（重试没有意义）：任务已删/权限/余额/参数类（含本地图 400 及其 Java 侧中文拦截） */
     private static final Pattern NON_RETRYABLE = Pattern.compile(
-            "不存在|无权限|权限|余额|insufficient|denied|unauthorized");
+            "不存在|无权限|权限|余额|insufficient|denied|unauthorized|media must be|private network|base64|本地上传/内网|公网 URL");
 
     private final TaskMapper taskMapper;
     private final TaskService taskService;

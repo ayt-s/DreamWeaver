@@ -139,6 +139,9 @@ def _describe_rejection(exception: httpx.HTTPStatusError, what: str) -> str:
     if code in _AGNES_ERROR_CN:
         return f"{what}接口拒绝 ({status}): {_AGNES_ERROR_CN[code]}"
     if message:
+        lower = message.lower()
+        if "media must be a public" in lower:
+            return f"{what}接口拒绝 ({status}): 参考图必须为公网 URL（本地上传/内网图片不支持），请改用历史作品或文生图产出"
         return f"{what}接口拒绝 ({status}): {message}"
     return f"{what}接口拒绝: HTTP {status}"
 

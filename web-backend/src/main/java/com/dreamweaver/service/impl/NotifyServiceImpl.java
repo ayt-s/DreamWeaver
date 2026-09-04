@@ -119,11 +119,22 @@ public class NotifyServiceImpl implements NotifyService {
         // 5. 更新状态（通过 updateById 触发乐观锁 version+1）
         task.setStatus(toStatus);
         task.setUpdatedAt(LocalDateTime.now());
+        int updated;
         if ("failed".equals(toStatus)) {
             task.setErrorMessage(request.getError_message());
+            updated = taskMapper.updateById(task);
+        } else {
+            // completed：显式清空 errorMessage（updateById 忽略 null，走 wrapper 直写 + version+1）
+            updated = taskMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<com.dreamweaver.entity.Task>()
+                    .eq(com.dreamweaver.entity.Task::getId, task.getId())
+                    .eq(com.dreamweaver.entity.Task::getVersion, task.getVersion())
+                    .set(com.dreamweaver.entity.Task::getStatus, "completed")
+                    .set(com.dreamweaver.entity.Task::getResultJson, task.getResultJson())
+                    .set(com.dreamweaver.entity.Task::getImageUrls, task.getImageUrls())
+                    .set(com.dreamweaver.entity.Task::getErrorMessage, null)
+                    .set(com.dreamweaver.entity.Task::getUpdatedAt, LocalDateTime.now())
+                    .setSql("version = version + 1"));
         }
-
-        int updated = taskMapper.updateById(task);
         if (updated == 0) {
             log.warn("notify 任务 {} 乐观锁冲突，丢弃（已有更新的回调处理过）", task.getId());
             return;

@@ -73,6 +73,15 @@ const VIDEO_MODELS = [
   { value: 'agnes-video-2.5', label: 'Agnes Video 2.5 HD（慢但清晰）' },
 ];
 
+/** agnes 只收公网 URL：本地/内网图（上传产物）只能预览，不能用于生成 */
+export function isPublicImageUrl(url: string): boolean {
+  const u = url.trim().toLowerCase();
+  if (u.startsWith('http://localhost') || u.startsWith('http://127.')) return false;
+  if (u.startsWith('http://10.') || u.startsWith('http://192.168.')) return false;
+  if (/^http:\/\/172\.(1[6-9]|2\d|3[01])\./.test(u)) return false;
+  return true;
+}
+
 const selectCls =
   'rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-700 outline-none focus:border-indigo-300';
 const textareaCls =
@@ -177,6 +186,7 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
         <ImagePlus className="h-3.5 w-3.5" /> 图片节点
       </div>
 
+      {/* 图片预览 / 占位 */}
       <div className="relative mb-2 flex h-36 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
         {data.imageUrl ? (
           <img
@@ -191,6 +201,11 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
           </div>
         )}
       </div>
+      {data.imageUrl && !isPublicImageUrl(data.imageUrl) && (
+        <div className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
+          本地上传图仅可预览，生成需公网图：请用历史作品或点「文生图」生成
+        </div>
+      )}
 
       <div className="mb-2 flex items-center gap-1.5">
         <span className="shrink-0 text-[11px] text-slate-500">比例</span>
@@ -781,7 +796,18 @@ export default function CanvasPage() {
               </div>
               <div className="h-8 w-px bg-slate-700" />
               <button
-                onClick={() => mutation.mutate()}
+                onClick={() => {
+                  const bad = plan.segments
+                    .filter((s) => !isPublicImageUrl(s.image_url))
+                    .map((s) => '「' + (s.prompt || '片段').slice(0, 16) + '」');
+                  if (bad.length > 0) {
+                    window.alert(
+                      `以下片段的图片是本地/内网上传图，不能用于生成：\n${bad.join('\n')}\n\n请改用历史作品图，或在该图片节点点「文生图」先产出公网图。`,
+                    );
+                    return;
+                  }
+                  mutation.mutate();
+                }}
                 disabled={!canSubmit || mutation.isPending}
                 className="rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
               >

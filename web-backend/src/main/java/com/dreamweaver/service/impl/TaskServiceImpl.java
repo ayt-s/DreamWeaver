@@ -120,13 +120,15 @@ public class TaskServiceImpl implements TaskService {
 
         // 同一任务原地重新生成：清空旧产物与错误，保留 id/prompt/genType/userId，
         // 重新走 提交→排队→生成→回调 链路（不再创建新任务 id）
-        original.setStatus("pending");
-        original.setSessionId(null);
-        original.setResultJson(null);
-        original.setImageUrls(null);
-        original.setErrorMessage(null);
-        original.setUpdatedAt(LocalDateTime.now());
-        taskMapper.updateById(original);
+        // 注意：updateById 的 FieldStrategy.NOT_NULL 会忽略 null 字段，显式置空必须走 wrapper
+        taskMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<com.dreamweaver.entity.Task>()
+                .eq(com.dreamweaver.entity.Task::getId, id)
+                .set(com.dreamweaver.entity.Task::getStatus, "pending")
+                .set(com.dreamweaver.entity.Task::getSessionId, null)
+                .set(com.dreamweaver.entity.Task::getResultJson, null)
+                .set(com.dreamweaver.entity.Task::getImageUrls, null)
+                .set(com.dreamweaver.entity.Task::getErrorMessage, null)
+                .set(com.dreamweaver.entity.Task::getUpdatedAt, LocalDateTime.now()));
 
         CreateTaskRequest request = new CreateTaskRequest();
         request.setPrompt(original.getPrompt());
@@ -139,6 +141,40 @@ public class TaskServiceImpl implements TaskService {
     /**
      * 统一提交链路（新建）：落库 pending → 调 FastAPI → 回写 session_id。
      */
+    /**
+     * 画布片段参考图必须是公网 URL（agnès 拒收 localhost/内网/base64 之外形态），
+     * 本地上传图只能预览；发现有内网/本地 URL 直接拒绝，避免生成环节 400。
+     */
+    private void validateSegmentUrlsPublic(String segmentsJson) {
+        if (segmentsJson == null || segmentsJson.isBlank()) {
+            return;
+        }
+        try {
+            java.util.List<java.util.Map<String, Object>> segs =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readValue(
+                            segmentsJson, new com.fasterxml.jackson.core.type.TypeReference<java.util.List<java.util.Map<String, Object>>>() {});
+            for (java.util.Map<String, Object> seg : segs) {
+                Object u = seg.get("image_url");
+                if (u == null) {
+                    continue;
+                }
+                String url = String.valueOf(u).trim().toLowerCase();
+                if (url.startsWith("http://localhost")
+                        || url.startsWith("http://127.")
+                        || url.startsWith("http://10.")
+                        || url.startsWith("http://192.168.")
+                        || url.startsWith("http://172.")) {
+                    throw new IllegalArgumentException(
+                            "画布片段包含本地上传/内网图片，agnès 无法生成：请改用历史作品或「文生图」产出（提示词→生成）");
+                }
+            }
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            log.warn("segments 校验解析失败: {}", e.getMessage());
+        }
+    }
+
     private TaskResponse submitNewTask(CreateTaskRequest request) {
         // 1. 落库（pending）
         Task task = new Task();
@@ -158,6 +194,7 @@ public class TaskServiceImpl implements TaskService {
      * createTask 与 regenerateTask 共用。
      */
     private TaskResponse dispatchToAgent(Task task, CreateTaskRequest request) {
+        validateSegmentUrlsPublic(request.getSegments());
         String agentBase = agentServiceProperties.getBaseUrl();
         Map<String, Object> body = new java.util.HashMap<>();
         body.put("prompt", request.getPrompt());
@@ -200,6 +237,11 @@ public class TaskServiceImpl implements TaskService {
             String sessionId = (String) agentResp.getData().get("session_id");
             task.setSessionId(sessionId);
             task.setStatus("queued");
+            // 内存态清空旧产物/错误：updateById 的 NOT_NULL 策略会忽略 null，
+            // 但会把 entity 里残留的旧值（regenerate 时加载的）重新写回——必须先置 null 挡掉
+            task.setErrorMessage(null);
+            task.setResultJson(null);
+            task.setImageUrls(null);
             task.setUpdatedAt(LocalDateTime.now());
             taskMapper.updateById(task);
             // 武装 Redis TTL 看门狗：视频任务 30 分钟、其余 10 分钟无回调自动转 failed
