@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import CreatePage from './pages/CreatePage';
 import GalleryPage from './pages/GalleryPage';
+import ImageVideoPage from './pages/ImageVideoPage';
 import './index.css';
 
 const queryClient = new QueryClient({
@@ -22,6 +23,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <Routes>
           <Route path="/" element={<CreatePage />} />
           <Route path="/gallery" element={<GalleryPage />} />
+          <Route path="/canvas" element={<ImageVideoPage />} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>

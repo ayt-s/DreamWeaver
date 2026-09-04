@@ -1,12 +1,11 @@
 import { motion } from 'framer-motion';
 import { useForm } from 'react-hook-form';
 import { useMutation } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { createVideoTask } from '../api/tasks';
 import { useTaskStore } from '../store/taskStore';
-import type { GenType, CanvasSegment } from '../types/task';
+import type { GenType } from '../types/task';
 import { Sparkles, Loader2, Zap } from 'lucide-react';
-import CanvasComposer from './CanvasComposer';
-import { useState } from 'react';
 
 interface CreateForm {
   prompt: string;
@@ -21,7 +20,7 @@ const SUGGESTIONS = [
 
 const GEN_TYPE_OPTIONS: { value: GenType; label: string; desc: string }[] = [
   { value: 'text_video', label: '文生视频', desc: '文字描述直接生成视频' },
-  { value: 'image_video', label: '图生视频', desc: '无限画布：加图+描述生成片段，一线串成长视频' },
+  { value: 'image_video', label: '图生视频', desc: '独立画布页：加图+描述生成片段，一线串成长视频' },
   { value: 'text_image', label: '文生图', desc: '文字描述直接生成图片' },
 ];
 
@@ -32,8 +31,8 @@ const PLACEHOLDER: Record<GenType, string> = {
 };
 
 export default function CreatePanel() {
+  const navigate = useNavigate();
   const setActiveTask = useTaskStore((s) => s.setActiveTask);
-  const [segments, setSegments] = useState<CanvasSegment[]>([]);
   const {
     register,
     handleSubmit,
@@ -47,7 +46,6 @@ export default function CreatePanel() {
     mutationFn: createVideoTask,
     onSuccess: (task) => {
       setActiveTask(task.id);
-      setSegments([]);
       reset({ prompt: '', genType: 'text_video' });
     },
   });
@@ -56,35 +54,6 @@ export default function CreatePanel() {
 
   const onSubmit = (values: CreateForm) => {
     const prompt = values.prompt.trim();
-
-    // 无限画布图生视频：按片段提交，模型侧逐段生成 + 拼接长视频
-    if (values.genType === 'image_video') {
-      if (segments.length > 0) {
-        const valid = segments.filter((s) => s.imageUrl.trim());
-        if (valid.length === 0) {
-          window.alert('请在画布中至少为片段填入一张图片 URL');
-          return;
-        }
-        mutation.mutate({
-          prompt:
-            valid.map((s) => s.prompt.trim()).filter(Boolean).join('；') ||
-            '无限画布图生视频',
-          genType: 'image_video',
-          segments: JSON.stringify(
-            valid.map((s) => ({
-              image_url: s.imageUrl.trim(),
-              prompt: s.prompt.trim(),
-              seconds: s.seconds || 5,
-            })),
-          ),
-        });
-        return;
-      }
-      // 无画布片段：退化到普通图生视频，由模型侧自动生成参考图
-      mutation.mutate({ prompt: prompt || '给我一张参考图并生成一段视频', genType: 'image_video' });
-      return;
-    }
-
     mutation.mutate({ prompt, genType: values.genType });
   };
 
@@ -116,7 +85,13 @@ export default function CreatePanel() {
             <button
               key={opt.value}
               type="button"
-              onClick={() => setValue('genType', opt.value)}
+              onClick={() => {
+                if (opt.value === 'image_video') {
+                  navigate('/canvas');
+                  return;
+                }
+                setValue('genType', opt.value);
+              }}
               className={`rounded-xl border px-3 py-2.5 text-left transition-all ${
                 genType === opt.value
                   ? 'border-violet-500 bg-violet-50 ring-2 ring-violet-500/20'
@@ -136,11 +111,6 @@ export default function CreatePanel() {
             </button>
           ))}
         </div>
-
-        {/* 无限画布模式：片段编辑器 */}
-        {genType === 'image_video' && (
-          <CanvasComposer segments={segments} onChange={setSegments} />
-        )}
 
         {/* 文本描述（画布模式下作为补充/汇总） */}
         <div className="relative">

@@ -4,7 +4,13 @@ import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { GenType, TaskResponse, TaskStatus } from '../types/task';
-import { parseResultUrls, parseImageUrls, GEN_TYPE_LABEL, shortSessionId } from '../types/task';
+import {
+  parseResultUrls,
+  parseImageUrls,
+  GEN_TYPE_LABEL,
+  shortSessionId,
+  cachedImageUrl,
+} from '../types/task';
 import { deleteTask, regenerateTask } from '../api/tasks';
 
 interface TaskCardProps {
@@ -69,6 +75,9 @@ export default function TaskCard({ task }: TaskCardProps) {
   const queryClient = useQueryClient();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
+  /** 卡片标题：优先展示创作需求原文，缺失时才用「任务 #id」兜底 */
+  const displayTitle = task.prompt?.trim() ? task.prompt.trim() : `任务 #${task.id}`;
+
   const isTerminal = TERMINAL_STATUSES.includes(task.status);
 
   const refreshList = () => queryClient.invalidateQueries({ queryKey: ['tasks'] });
@@ -106,8 +115,11 @@ export default function TaskCard({ task }: TaskCardProps) {
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-semibold text-slate-900">
-              任务 #{task.id}
+            <span
+              className="truncate text-sm font-semibold text-slate-900"
+              title={displayTitle}
+            >
+              {displayTitle}
             </span>
             <span className="inline-flex shrink-0 items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
               {GEN_TYPE_LABEL[genType] ?? genType}
@@ -139,7 +151,7 @@ export default function TaskCard({ task }: TaskCardProps) {
               className="group relative overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
             >
               <img
-                src={url}
+                src={cachedImageUrl(url)}
                 alt={`任务 ${task.id} 图片 ${i + 1}`}
                 loading="lazy"
                 className="aspect-video w-full object-cover transition-transform group-hover:scale-105"

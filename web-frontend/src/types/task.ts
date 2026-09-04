@@ -67,6 +67,43 @@ export interface TaskResponse {
   /** 文生图产出的图片 URL 数组（JSON 字符串） */
   imageUrls?: string;
   errorMessage?: string;
+  /** 创作需求原文（画廊卡片标题；重新生成时复用） */
+  prompt?: string;
+}
+
+/** 任务分页列表（对应 Java TaskListResponse dto） */
+export interface TaskListResponse {
+  list: TaskResponse[];
+  total: number;
+  page: number;
+  size: number;
+}
+
+/**
+ * 画廊分类筛选（待补充生成类型在此数组追加即可；'' = 全部）。
+ * key 对应后端 gen_type。
+ */
+export const GEN_TYPE_FILTERS: Array<{ key: GenType | ''; label: string }> = [
+  { key: '', label: '全部' },
+  { key: 'text_image', label: '文生图' },
+  { key: 'text_video', label: '文生视频' },
+  { key: 'image_video', label: '图生视频' },
+];
+
+/**
+ * 展示用图片 URL：非本地的 http(s) 图走 Redis 本地缓存出口（/api/images/cache），
+ * 避免每次直连 agnes 产物 CDN 加载慢；agnes 侧始终保留原始 URL（生成必须公网可访问）。
+ */
+export function cachedImageUrl(url: string): string {
+  if (
+    url.startsWith('http://localhost') ||
+    url.startsWith('http://127.0.0.1') ||
+    url.startsWith('/') ||
+    url.startsWith('data:')
+  ) {
+    return url;
+  }
+  return `/api/images/cache?url=${encodeURIComponent(url)}`;
 }
 
 /** 解析 resultJson 为视频 URL 列表（容错：null/非法 JSON → 空数组） */
