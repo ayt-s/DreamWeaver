@@ -47,13 +47,33 @@ def _get(path: str, timeout: float = 10.0) -> dict:
     return data.get("data") or {}
 
 
+def _parse_nodes_json(nodes_json: str) -> tuple[list, dict | None]:
+    """解析 nodesJson：兼容纯数组（历史数据）与 {theme, nodes} 包装（前端 2026-09 后格式）。
+
+    返回 (nodes, wrapper)；wrapper 非 None 表示原数据带 theme 包装，保存时需保留。
+    """
+    try:
+        parsed = json.loads(nodes_json or "[]")
+    except json.JSONDecodeError:
+        return [], None
+    if isinstance(parsed, dict):
+        return parsed.get("nodes") or [], parsed
+    return parsed, None
+
+
+def _serialize_nodes(nodes: list, wrapper: dict | None) -> str:
+    """按原格式序列化 nodes——带包装则保留 theme，避免 agent 保存后主题丢失。"""
+    if wrapper is not None:
+        wrapped = dict(wrapper)
+        wrapped["nodes"] = nodes
+        return json.dumps(wrapped, ensure_ascii=False)
+    return json.dumps(nodes, ensure_ascii=False)
+
+
 def inspect_canvas(canvas_id: int) -> dict:
     """读取指定画布项目的完整内容（节点 + 连线）。"""
     project = _get(f"/api/canvas/{canvas_id}")
-    try:
-        nodes = json.loads(project.get("nodesJson") or "[]")
-    except json.JSONDecodeError:
-        nodes = []
+    nodes, _wrapper = _parse_nodes_json(project.get("nodesJson"))
     try:
         edges = json.loads(project.get("edgesJson") or "[]")
     except json.JSONDecodeError:
@@ -95,15 +115,17 @@ def edit_prompt(canvas_id: int, node_id: str, new_prompt: str) -> dict:
         target["data"] = {}
     old_prompt = target["data"].get("prompt", "")
     target["data"]["prompt"] = new_prompt
-    # 立即持久化到数据库
+    # 立即持久化到数据库（重新读取原数据以保留 theme 包装格式）
+    raw = _get(f"/api/canvas/{canvas_id}")
+    _parsed, wrapper = _parse_nodes_json(raw.get("nodesJson"))
     _put(
         f"/api/canvas/{canvas_id}",
-        {"nodesJson": json.dumps(nodes, ensure_ascii=False),
+        {"nodesJson": _serialize_nodes(nodes, wrapper),
          "edgesJson": json.dumps(edges, ensure_ascii=False)},
     )
     return {
         "id": node_id,
-        "node_type": target["data"].get("type"),
+        "node_type": target.get("type"),
         "old_prompt": old_prompt[:200] + ("..." if len(old_prompt) > 200 else ""),
         "new_prompt": new_prompt[:200] + ("..." if len(new_prompt) > 200 else ""),
         "saved": True,
@@ -113,9 +135,13 @@ def edit_prompt(canvas_id: int, node_id: str, new_prompt: str) -> dict:
 
 def save_canvas(canvas_id: int, nodes: list, edges: list) -> dict:
     """把画布节点/连线整体保存回数据库（用于 agent 编排后持久化）。"""
+    # 重新读取原数据以保留 theme 包装格式（nodes 参数来自 LLM，不携带 wrapper 信息）
+    project = _get(f"/api/canvas/{canvas_id}")
+    _parsed, wrapper = _parse_nodes_json(project.get("nodesJson"))
     return _put(
         f"/api/canvas/{canvas_id}",
-        {"nodesJson": json.dumps(nodes, ensure_ascii=False), "edgesJson": json.dumps(edges, ensure_ascii=False)},
+        {"nodesJson": _serialize_nodes(nodes, wrapper),
+         "edgesJson": json.dumps(edges, ensure_ascii=False)},
     )
 
 

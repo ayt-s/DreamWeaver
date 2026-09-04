@@ -369,9 +369,6 @@ export default function CanvasPage() {
 
   // 序列化：只保留画布持久化所需字段
   const serializeCanvas = useCallback(() => {
-    const nodesJson = JSON.stringify(
-      nodes.map(({ id, type, position, data }) => ({ id, type, position, data })),
-    );
     const edgesJson = JSON.stringify(
       edges.map(({ id, source, target, markerEnd }) => {
         const e: Record<string, unknown> = { id, source, target };

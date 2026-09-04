@@ -27,8 +27,10 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
+
+from app.errors import AppError, friendly_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +60,7 @@ class ChatResponse(BaseModel):
 async def chat(req: ChatRequest) -> ChatResponse:
     """调用 Pydantic AI agent，返回文本 + 工具调用轨迹。"""
     if not req.message.strip():
-        raise HTTPException(status_code=422, detail="message 不能为空")
+        raise AppError("message 不能为空", status_code=422)
 
     from app.agent.chat_agent import chat_agent
 
@@ -83,20 +85,26 @@ async def chat(req: ChatRequest) -> ChatResponse:
         result = await chat_agent.run(full_prompt)
     except Exception as exc:
         logger.error("Agent 调用失败: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"agent 调用失败: {exc}")
+        # 原始异常只进日志；用户看到的是中文友好映射（与全局异常层同一规范）
+        raise AppError(
+            friendly_error_message(exc),
+            status_code=500,
+            detail=str(exc),
+            retryable=True,
+        )
 
-    # 提取工具调用轨迹（Pydantic AI 会把 tool calls 挂在 result.all_messages() 上）
+    # 提取工具调用轨迹（Pydantic AI 2.39: kind="response" 的 msg.parts 里有 ToolCallPart）
     tool_calls: list[ToolCallRecord] = []
     try:
         from pydantic_ai.messages import ToolCallPart, ToolReturnPart
         for msg in result.all_messages():
-            if msg.kind != "model":
+            if getattr(msg, "kind", None) != "response":
                 continue
-            for part in msg.content:
+            for part in getattr(msg, "parts", []) or []:
                 if isinstance(part, ToolCallPart):
                     tool_calls.append(ToolCallRecord(
                         tool_name=part.tool_name,
-                        args=dict(part.args),
+                        args=dict(part.args) if hasattr(part.args, "keys") else {},
                         result={},
                         status="called",
                     ))
@@ -110,6 +118,6 @@ async def chat(req: ChatRequest) -> ChatResponse:
             "reply": result.output,
             "tool_calls": [tc.model_dump() for tc in tool_calls],
             "canvas_id": req.canvas_id,
-            "model": "agnes-2.5-flash",
+            "model": chat_agent._model.model_name if hasattr(chat_agent, "_model") else "unknown",
         },
     )
