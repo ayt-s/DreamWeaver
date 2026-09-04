@@ -45,9 +45,9 @@ async def test_image_generator_per_shot():
 
     # storyboard 被回填
     assert result["storyboard"][0]["reference_images"] == [result["image_urls"][0]]
-    assert result["storyboard"][0]["mode"] == "image"
+    assert result["storyboard"][0]["mode"] == "reference"
     assert result["storyboard"][1]["reference_images"] == [result["image_urls"][1]]
-    assert result["storyboard"][1]["mode"] == "image"
+    assert result["storyboard"][1]["mode"] == "reference"
 
     # 状态更新
     assert result["status"] == TaskStatus.ASSET_GENERATING

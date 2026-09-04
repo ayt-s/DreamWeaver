@@ -4,7 +4,7 @@ Phase 4 P0：对每个镜次 prompt_en 逐镜生成图像，回填到对应 shot
 生成的图像 URL 同时写入 state.image_urls 供前端画廊展示。
 
 图生视频贯通：image_generator 产出后，storyboarder 已在 reference_images
-字段填入对应图的 URL，video_generator 提交时自动走 mode="image"。
+字段填入对应图的 URL，video_generator 提交时自动走 mode="reference"（agnès Video 2.5 合法值）。
 """
 import asyncio
 import logging
@@ -35,7 +35,7 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
     image_urls: list[str] = []
 
     for idx, shot in enumerate(storyboard):
-        # 用户已提供参考图（storyboarder 回填的 mode="image"）→ 跳过自动生图，尊重用户输入
+        # 用户已提供参考图（storyboarder 回填的 mode="reference"）→ 跳过自动生图，尊重用户输入
         if shot.get("reference_images"):
             logger.info("shot %d 已有参考图，跳过自动生图", idx)
             continue

@@ -38,7 +38,7 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
         raw_seconds = int(shot.get("duration", 5))
         seconds = max(MIN_SECONDS, min(raw_seconds, MAX_SECONDS))
         # mode 和 reference_images 的填充规则：
-        # - 用户传了参考图 → 用用户图，走 mode="image"
+        # - 用户传了参考图 → 用用户图，走 mode="reference"（agnès 参考模式）
         # - 否则留空，由 image_generator 节点自动生图回填
         storyboard.append({
             "shot_id": shot.get("shot_id", len(storyboard)),

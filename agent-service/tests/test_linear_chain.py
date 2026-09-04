@@ -125,11 +125,11 @@ async def test_linear_chain_with_image_gen():
     assert len(result["image_urls"]) == 2
     assert all(u.startswith("http://mock/image/") for u in result["image_urls"])
 
-    # 4. 图生视频：每个 shot 有 reference_images，mode 改为 "image"
+    # 4. 图生视频：每个 shot 有 reference_images，mode 改为 "reference"
     assert result["storyboard"][0]["reference_images"] == [result["image_urls"][0]]
-    assert result["storyboard"][0]["mode"] == "image"
+    assert result["storyboard"][0]["mode"] == "reference"
     assert result["storyboard"][1]["reference_images"] == [result["image_urls"][1]]
-    assert result["storyboard"][1]["mode"] == "image"
+    assert result["storyboard"][1]["mode"] == "reference"
 
     # 5. video_urls 与 storyboard 一一对应
     assert len(result["video_urls"]) == 2
@@ -227,7 +227,7 @@ async def test_canvas_segments_pipeline(monkeypatch):
 
     # 2. 画布分镜：每段一镜，图生视频模式
     assert len(result["storyboard"]) == 2
-    assert result["storyboard"][0]["mode"] == "image"
+    assert result["storyboard"][0]["mode"] == "reference"
     assert result["storyboard"][0]["reference_images"] == ["http://mock/img/a.png"]
     assert result["storyboard"][1]["reference_images"] == ["http://mock/img/b.png"]
     assert result["storyboard"][0]["seconds"] == "5"

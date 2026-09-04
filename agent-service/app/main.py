@@ -124,22 +124,31 @@ async def _run_session(state: CreativeSessionState) -> None:
         _sessions[state["session_id"]] = result
         # 轨迹完成事件 + 清理总线（节点可能已发过 completed，重复无害）
         await events.emit(state["session_id"], "completed", {})
+        # 会话保留 1 小时用于查轨迹，之后释放，防止 _sessions 无限增长（内存泄漏）
+        asyncio.get_running_loop().call_later(
+            3600, _sessions.pop, state["session_id"], None)
     except Exception as exc:  # 节点异常 → 记 FAILED，不裸崩后台任务
-        logger.error(f"Session {state['session_id']} failed: {exc}")
+        # 异常的 str() 可能为空（如部分 asyncio 异常），兜底用异常类型名，
+        # 保证 Java 侧 errorMessage 不会出现空值
+        msg = str(exc) or type(exc).__name__
+        logger.error(f"Session {state['session_id']} failed: {msg}")
         state["status"] = TaskStatus.FAILED
-        state["error_message"] = str(exc)
+        state["error_message"] = msg
         _sessions[state["session_id"]] = state
-        await events.emit(state["session_id"], "failed", {"error": str(exc)})
+        await events.emit(state["session_id"], "failed", {"error": msg})
         # Phase 2 回调通知失败状态
         from app.callback.java_notify import notify_java_completion
         asyncio.create_task(
             notify_java_completion(
                 session_id=state["session_id"],
                 status=TaskStatus.FAILED,
-                error_message=str(exc),
+                error_message=msg,
             )
         )
         # 不 re-raise：避免 "Task exception was never retrieved" 日志污染
+        # 会话保留 1 小时用于查轨迹，之后释放，防止 _sessions 无限增长（内存泄漏）
+        asyncio.get_running_loop().call_later(
+            3600, _sessions.pop, state["session_id"], None)
 
 
 @app.on_event("startup")
