@@ -1,6 +1,7 @@
 """DreamWeaver Agent 服务配置。
 
 所有密钥走环境变量，绝不落代码。
+
 """
 import os
 
@@ -29,6 +30,10 @@ class Settings:
     # 轮询（Phase 1 内联轮询用，Phase 2 移交独立 Poller）
     poll_interval_s: int = 5
     video_timeout_s: int = 900          # 单任务轮询上限 15 分钟
+
+    # 任务调度队列（排期）：控制同时执行的会话上限，避免无界并发打到 Agnes 限流
+    max_concurrent_sessions: int = int(_env("AGENT_MAX_CONCURRENT_SESSIONS", "2"))
+    session_queue_maxsize: int = int(_env("AGENT_SESSION_QUEUE_SIZE", "200"))
 
     # Phase 2 回调目标（Java Spring Boot 地址）
     java_notify_url: str = _env("JAVA_NOTIFY_URL", "")

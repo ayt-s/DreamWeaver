@@ -35,4 +35,17 @@ public class TaskController {
             @RequestParam(defaultValue = "20") int limit) {
         return CommonResult.ok(taskService.listTasks(limit));
     }
+
+    /** 删除历史作品（仅终态；非终态返回 400） */
+    @DeleteMapping("/{id}")
+    public CommonResult<Void> deleteTask(@PathVariable Long id) {
+        taskService.deleteTask(id);
+        return CommonResult.ok(null);
+    }
+
+    /** 重新生成：以原任务的 prompt + genType 提交全新任务 */
+    @PostMapping("/{id}/regenerate")
+    public CommonResult<TaskResponse> regenerateTask(@PathVariable Long id) {
+        return CommonResult.ok(taskService.regenerateTask(id));
+    }
 }

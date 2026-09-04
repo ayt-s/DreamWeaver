@@ -1,11 +1,14 @@
 # DreamWeaver — Agent 服务入口
-"""FastAPI 入口（Phase 1 MVP）。
+"""FastAPI 入口。
 
-- POST /v1/tasks/video  提交创作任务（后台跑 LangGraph，返回 session_id）
+- POST /v1/tasks/video  提交创作任务（进入调度队列，返回 session_id + 排队编号）
+- POST /v1/tasks/{id}/cancel  取消排队中的会话（已开始执行则 409）
 - GET  /v1/tasks/{id}   查询任务状态（含中间产物，前端轨迹展示用）
 - GET  /v1/tasks/{id}/events  SSE 轨迹事件（Phase 1 简化：轮询状态接口兜底）
+- GET  /v1/scheduler    调度队列快照（执行中 / 排队中，画廊排期展示用）
 
-Phase 1 单机运行可接受；排队/限流/鉴权在 Phase 2 接入。
+并发控制：SessionScheduler 有界并发（默认同时执行 2 个会话），
+超出的会话进入 FIFO 队列排队，避免多个长任务同时压向 Agnes API 触发限流。
 """
 import asyncio
 import json
@@ -24,12 +27,12 @@ from app import events
 from app.graph import compiled_graph
 from app.state import CreativeSessionState, TaskStatus
 from app.poller import poller
+from app.scheduler import scheduler
 
-app = FastAPI(title="DreamWeaver Agent Service", version="0.1.0")
+app = FastAPI(title="DreamWeaver Agent Service", version="0.2.0")
 
 # 内存态会话仓（Phase 1）。生产换 PostgreSQL 落库（设计文档 §4.1）
 _sessions: dict[str, CreativeSessionState] = {}
-_tasks: dict[str, asyncio.Task] = {}
 
 
 # 统一响应体（与 Java CommonResult 对齐：code/message/data）
@@ -54,7 +57,7 @@ class CreateVideoTaskResponse(BaseModel):
 
 
 async def _run_session(state: CreativeSessionState) -> None:
-    """后台执行 LangGraph。Phase 2 改为队列 + 断点恢复接入。"""
+    """后台执行 LangGraph。由 SessionScheduler 调用（有界并发）。"""
     config = {"configurable": {"thread_id": state["session_id"]}}
     try:
         result = await compiled_graph.ainvoke(state, config=config)
@@ -82,6 +85,7 @@ async def _run_session(state: CreativeSessionState) -> None:
 @app.on_event("startup")
 async def _startup() -> None:
     await poller.start()
+    await scheduler.start(runner=_run_session)
 
 
 @app.post("/v1/tasks/video", status_code=202, response_model=ApiResponse)
@@ -90,6 +94,10 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
         raise HTTPException(status_code=422, detail="prompt 不能为空")
 
     session_id = uuid.uuid4().hex[:12]
+
+    if scheduler.snapshot()["queued_count"] >= _queue_maxsize():
+        raise HTTPException(status_code=429, detail="任务队列已满，请稍后再试")
+
     # Java 侧透传的 reference_images 是 JSON 数组字符串，解析失败则视为未传
     ref_images: list = []
     if req.reference_images:
@@ -108,7 +116,7 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
         "raw_prompt": req.prompt,
         "gen_type": req.gen_type or "text_video",
         "reference_images": ref_images,
-        "status": TaskStatus.PENDING,
+        "status": TaskStatus.QUEUED,
         "fix_round": 0,
         "max_fix_rounds": 3,
         "fix_history": [],
@@ -117,12 +125,38 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
         "updated_at": int(time.time()),
     }
     _sessions[session_id] = state
-    _tasks[session_id] = asyncio.create_task(_run_session(state))
+    position = scheduler.submit(session_id)
     return ApiResponse(
         code=0,
         message="ok",
-        data={"session_id": session_id, "status": TaskStatus.PENDING}
+        data={
+            "session_id": session_id,
+            "status": TaskStatus.QUEUED.value,
+            "queue_position": position,
+        }
     )
+
+
+@app.post("/v1/tasks/{session_id}/cancel")
+async def cancel_task(session_id: str) -> ApiResponse:
+    """取消排队中的会话。已开始执行则返回 409（不非法打断运行中任务）。"""
+    if session_id not in _sessions:
+        raise HTTPException(status_code=404, detail="session 不存在")
+    if scheduler.cancel(session_id):
+        _sessions[session_id]["status"] = TaskStatus.FAILED
+        _sessions[session_id]["error_message"] = "用户取消排队"
+        return ApiResponse(
+            code=0,
+            message="ok",
+            data={"session_id": session_id, "canceled": True},
+        )
+    raise HTTPException(status_code=409, detail="会话已开始执行，无法取消")
+
+
+@app.get("/v1/scheduler")
+async def scheduler_snapshot() -> ApiResponse:
+    """调度队列快照：执行中 + 排队中的 session 列表（画廊排期展示）。"""
+    return ApiResponse(code=0, message="ok", data=scheduler.snapshot())
 
 
 @app.get("/v1/tasks/{session_id}/events")
@@ -167,8 +201,14 @@ async def get_task(session_id: str) -> ApiResponse:
     )
 
 
+def _queue_maxsize() -> int:
+    from app.config import settings
+    return settings.session_queue_maxsize
+
+
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     from app.gateway.agnes import gateway as ag
     await ag.close()
     await poller.stop()
+    await scheduler.stop()

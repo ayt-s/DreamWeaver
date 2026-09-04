@@ -1,18 +1,24 @@
 import { motion } from 'framer-motion';
-import { Video, Image as ImageIcon, Trash2, Hourglass } from 'lucide-react';
+import { Video, Image as ImageIcon, Trash2, Hourglass, RefreshCw } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { GenType, TaskResponse, TaskStatus } from '../types/task';
 import { parseResultUrls, parseImageUrls, GEN_TYPE_LABEL, shortSessionId } from '../types/task';
+import { deleteTask, regenerateTask } from '../api/tasks';
 
 interface TaskCardProps {
   task: TaskResponse;
 }
 
-type TaskState = 'completed' | 'failed' | 'running';
+type TaskState = 'completed' | 'failed' | 'running' | 'queued';
+
+const TERMINAL_STATUSES: TaskStatus[] = ['completed', 'failed', 'expired'];
 
 function stateOf(status: TaskStatus): TaskState {
   if (status === 'completed') return 'completed';
   if (status === 'failed') return 'failed';
+  if (status === 'queued' || status === 'pending') return 'queued';
   return 'running';
 }
 
@@ -20,12 +26,14 @@ const STATE_LABEL: Record<TaskState, string> = {
   completed: '完成',
   failed: '失败',
   running: '进行中',
+  queued: '排队中',
 };
 
 const STATE_BADGE: Record<TaskState, string> = {
   completed: 'bg-emerald-100 text-emerald-700',
   failed: 'bg-red-100 text-red-700',
   running: 'bg-amber-100 text-amber-700',
+  queued: 'bg-sky-100 text-sky-700',
 };
 
 function stateIcon(state: TaskState, genType?: GenType): ReactNode {
@@ -51,12 +59,38 @@ function headlineIcon(genType?: GenType): ReactNode {
 
 /**
  * 画廊卡片：展示单个历史生成任务及其产物（视频/图片）。
+ * 终态任务提供「重新生成」「删除」管理操作。
  */
 export default function TaskCard({ task }: TaskCardProps) {
   const state = stateOf(task.status);
   const videoUrls = parseResultUrls(task.resultJson);
   const imageUrls = parseImageUrls(task.imageUrls);
   const genType = task.genType ?? 'text_video';
+  const queryClient = useQueryClient();
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  const isTerminal = TERMINAL_STATUSES.includes(task.status);
+
+  const refreshList = () => queryClient.invalidateQueries({ queryKey: ['tasks'] });
+
+  const regenMutation = useMutation({
+    mutationFn: () => regenerateTask(task.id),
+    onSuccess: refreshList,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteTask(task.id),
+    onSuccess: refreshList,
+  });
+
+  const handleDelete = () => {
+    if (!confirmingDelete) {
+      setConfirmingDelete(true);
+      return;
+    }
+    setConfirmingDelete(false);
+    deleteMutation.mutate();
+  };
 
   return (
     <motion.article
@@ -143,6 +177,40 @@ export default function TaskCard({ task }: TaskCardProps) {
       ) : (
         <div className="px-5 py-4 text-xs text-slate-400">暂无生成产物</div>
       )}
-    </motion.article>
-  );
-}
+
+      {/* 管理操作：删任何任务（运行中会顺带取消 Agent 排期）；重新生成仅终态 */}
+            <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">
+              {isTerminal && (
+                <button
+                  type="button"
+                  onClick={() => regenMutation.mutate()}
+                  disabled={regenMutation.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-3 py-1.5 text-xs font-medium text-violet-600 transition-colors hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${regenMutation.isPending ? 'animate-spin' : ''}`}
+                  />
+                  {regenMutation.isPending ? '提交中…' : '重新生成'}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={deleteMutation.isPending}
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  confirmingDelete
+                    ? 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100'
+                    : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                }`}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {deleteMutation.isPending
+                  ? '删除中…'
+                  : confirmingDelete
+                    ? '再次点击确认'
+                    : '删除'}
+              </button>
+            </div>
+          </motion.article>
+        );
+      }

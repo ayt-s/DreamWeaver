@@ -16,19 +16,26 @@ const baseTask: TaskResponse = {
   status: 'completed',
 };
 
+// TaskCard 现在依赖 useQueryClient，需要 Provider 包裹
+const wrapTaskCard = (task: TaskResponse) => (
+  <QueryClientProvider client={queryClient}>
+    <MemoryRouter>
+      <TaskCard task={task} />
+    </MemoryRouter>
+  </QueryClientProvider>
+);
+
 describe('TaskCard 生成类型展示', () => {
   it('novel_image 任务渲染图片卡片而非视频', () => {
     const { container } = render(
-      <TaskCard
-        task={{
-          ...baseTask,
-          genType: 'novel_image',
-          imageUrls: JSON.stringify([
-            'http://mock/image/ch1.png',
-            'http://mock/image/ch2.png',
-          ]),
-        }}
-      />,
+      wrapTaskCard({
+        ...baseTask,
+        genType: 'novel_image',
+        imageUrls: JSON.stringify([
+          'http://mock/image/ch1.png',
+          'http://mock/image/ch2.png',
+        ]),
+      }),
     );
     expect(screen.getByText('小说转图')).toBeInTheDocument();
     const imgs = screen.getAllByRole('img');
@@ -39,16 +46,34 @@ describe('TaskCard 生成类型展示', () => {
 
   it('text_video 任务渲染视频卡片', () => {
     const { container } = render(
-      <TaskCard
-        task={{
-          ...baseTask,
-          genType: 'text_video',
-          resultJson: JSON.stringify(['http://mock/minio/a.mp4']),
-        }}
-      />,
+      wrapTaskCard({
+        ...baseTask,
+        genType: 'text_video',
+        resultJson: JSON.stringify(['http://mock/minio/a.mp4']),
+      }),
     );
     expect(screen.getByText('文生视频')).toBeInTheDocument();
     expect(container.querySelectorAll('video')).toHaveLength(1);
+  });
+});
+
+describe('TaskCard 画廊管理操作', () => {
+  it('终态任务展示「重新生成」「删除」操作', () => {
+    render(wrapTaskCard({ ...baseTask, status: 'failed' }));
+    expect(screen.getByText('重新生成')).toBeInTheDocument();
+    expect(screen.getByText('删除')).toBeInTheDocument();
+  });
+
+  it('进行中任务展示「删除」但无「重新生成」', () => {
+    render(wrapTaskCard({ ...baseTask, status: 'queued' }));
+    expect(screen.queryByText('重新生成')).not.toBeInTheDocument();
+    expect(screen.getByText('删除')).toBeInTheDocument();
+  });
+
+  it('删除需二次点击确认，点击操作不直接发请求（无 Provider 层错误）', () => {
+    render(wrapTaskCard({ ...baseTask, status: 'failed' }));
+    fireEvent.click(screen.getByText('删除'));
+    expect(screen.getByText('再次点击确认')).toBeInTheDocument();
   });
 });
 

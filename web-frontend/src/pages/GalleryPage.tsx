@@ -10,9 +10,17 @@ import TaskCard from '../components/TaskCard';
  */
 export default function GalleryPage() {
   const { data: tasks, isLoading, isError, error } = useQuery({
-    queryKey: ['tasks'],
-    queryFn: () => listTasks(20),
-  });
+      queryKey: ['tasks'],
+      queryFn: () => listTasks(20),
+      // 有排队/进行中的任务时每 5s 轮询刷新，让排队与生成状态在画廊自动更新；全为终态则停止轮询
+      refetchInterval: (query) => {
+        const list = query.state.data;
+        const hasActive = list?.some(
+          (t) => !['completed', 'failed', 'expired'].includes(t.status),
+        );
+        return hasActive ? 5000 : false;
+      },
+    });
 
   return (
     <main className="mx-auto max-w-4xl px-4 py-8">
