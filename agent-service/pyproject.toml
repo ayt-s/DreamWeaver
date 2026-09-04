@@ -11,6 +11,8 @@ dependencies = [
     "langgraph>=0.2.50",
     "opencv-python-headless>=4.8",
     "imageio-ffmpeg>=0.5",
+    "pydantic-ai-slim>=2.39",
+    "openai>=1.40",
 ]
 
 [project.optional-dependencies]

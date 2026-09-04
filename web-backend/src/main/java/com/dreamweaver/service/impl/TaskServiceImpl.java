@@ -223,10 +223,11 @@ public class TaskServiceImpl implements TaskService {
                     .bodyToMono(CommonResult.class)
                     .block();
         } catch (Exception e) {
-            // FastAPI 不可达：如实落 failed，前端可删除/重新提交；否则任务会静默卡 pending
-            log.warn("调 FastAPI 提交失败，任务 {} 转 failed: {}", task.getId(), e.getMessage());
+            // FastAPI 不可达：如实落 failed，前端可删除/重新提交；否则任务会静默卡 pending。
+            // 原生异常文本只进日志，用户侧统一显示友好文案（全局异常类兜底原则）。
+            log.warn("调 FastAPI 提交失败，任务 {} 转 failed: {}", task.getId(), e.getMessage(), e);
             task.setStatus("failed");
-            task.setErrorMessage("Agent 服务提交失败: " + e.getMessage());
+            task.setErrorMessage(friendlyAgentErrorMessage(e));
             task.setUpdatedAt(LocalDateTime.now());
             taskMapper.updateById(task);
             return toResponse(task);
@@ -253,6 +254,27 @@ public class TaskServiceImpl implements TaskService {
         }
 
         return toResponse(task);
+    }
+
+    /**
+     * 把 agent 提交阶段异常翻译成用户可读文案（原生细节只进日志，不暴露给前端）。
+     * 与 agent-service 全局异常层的友好化保持一致的原因分类。
+     */
+    private String friendlyAgentErrorMessage(Exception e) {
+        String msg = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
+        if (msg.contains("connection refused") || msg.contains("connectexception")) {
+            return "Agent 服务暂不可用，请稍后重试";
+        }
+        if (msg.contains("timed out") || msg.contains("timeout")) {
+            return "Agent 服务响应超时，请稍后重试";
+        }
+        if (msg.contains("unauthorized") || msg.contains(" 403")) {
+            return "Agent 服务鉴权失败，请联系管理员";
+        }
+        if (msg.contains(" 429")) {
+            return "Agent 任务队列繁忙，请稍后重试";
+        }
+        return "Agent 服务处理失败，请稍后重试";
     }
 
     private TaskResponse toResponse(Task task) {

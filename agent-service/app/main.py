@@ -26,24 +26,30 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import events
+from app.errors import AppError, friendly_error_message, register_exception_handlers
 from app.graph import compiled_graph
 from app.state import CreativeSessionState, TaskStatus
 from app.poller import poller
 from app.scheduler import scheduler
+from app.agent.chat_api import router as agent_chat_router
 
 app = FastAPI(title="DreamWeaver Agent Service", version="0.2.0")
+register_exception_handlers(app)
 
 # 本地产物静态目录（与 nodes/synthesizer.py OUTPUT_ROOT 对应）：
 # /v1/files/<session>/final.mp4 → web-frontend vite 代理 /v1 → 8000，可直接 <video> 播放
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data" / "outputs"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/v1/files", StaticFiles(directory=str(OUTPUT_DIR)), name="files")
+
+# 聊天 Agent 路由（Phase 1）：POST /v1/agent/chat
+app.include_router(agent_chat_router)
 
 # 内存态会话仓（Phase 1）。生产换 PostgreSQL 落库（设计文档 §4.1）
 _sessions: dict[str, CreativeSessionState] = {}
@@ -131,10 +137,10 @@ async def _run_session(state: CreativeSessionState) -> None:
         asyncio.get_running_loop().call_later(
             3600, _sessions.pop, state["session_id"], None)
     except Exception as exc:  # 节点异常 → 记 FAILED，不裸崩后台任务
-        # 异常的 str() 可能为空（如部分 asyncio 异常），兜底用异常类型名，
-        # 保证 Java 侧 errorMessage 不会出现空值
-        msg = str(exc) or type(exc).__name__
-        logger.error(f"Session {state['session_id']} failed: {msg}")
+        # 异常 str() 可能为空（如部分 asyncio 异常），兜底用异常类型名；
+        # 用户侧文案友好化，完整异常只进日志
+        msg = friendly_error_message(exc)
+        logger.error(f"Session {state['session_id']} failed", exc_info=exc)
         state["status"] = TaskStatus.FAILED
         state["error_message"] = msg
         _sessions[state["session_id"]] = state
@@ -163,12 +169,12 @@ async def _startup() -> None:
 @app.post("/v1/tasks/video", status_code=202, response_model=ApiResponse)
 async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
     if not req.prompt.strip():
-        raise HTTPException(status_code=422, detail="prompt 不能为空")
+        raise AppError("prompt 不能为空", status_code=422)
 
     session_id = uuid.uuid4().hex[:12]
 
     if scheduler.snapshot()["queued_count"] >= _queue_maxsize():
-        raise HTTPException(status_code=429, detail="任务队列已满，请稍后再试")
+        raise AppError("任务队列已满，请稍后再试", status_code=429, retryable=True)
 
     ref_images = _parse_json_list(req.reference_images, "reference_images")
     segments = _parse_segments(req.segments)
@@ -204,7 +210,7 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
 async def cancel_task(session_id: str) -> ApiResponse:
     """取消排队中的会话。已开始执行则返回 409（不非法打断运行中任务）。"""
     if session_id not in _sessions:
-        raise HTTPException(status_code=404, detail="session 不存在")
+        raise AppError("session 不存在", status_code=404)
     if scheduler.cancel(session_id):
         _sessions[session_id]["status"] = TaskStatus.FAILED
         _sessions[session_id]["error_message"] = "用户取消排队"
@@ -213,7 +219,7 @@ async def cancel_task(session_id: str) -> ApiResponse:
             message="ok",
             data={"session_id": session_id, "canceled": True},
         )
-    raise HTTPException(status_code=409, detail="会话已开始执行，无法取消")
+    raise AppError("会话已开始执行，无法取消", status_code=409)
 
 
 @app.get("/v1/scheduler")
@@ -247,7 +253,7 @@ async def task_events(session_id: str):
 async def get_task(session_id: str) -> ApiResponse:
     state = _sessions.get(session_id)
     if not state:
-        raise HTTPException(status_code=404, detail="session 不存在")
+        raise AppError("session 不存在", status_code=404)
     return ApiResponse(
         code=0,
         message="ok",

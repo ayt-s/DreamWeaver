@@ -82,6 +82,8 @@ export function isPublicImageUrl(url: string): boolean {
   return true;
 }
 
+const CANVAS_THEME_KEY = 'dreamweaver:canvas-theme';
+
 const selectCls =
   'rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-700 outline-none focus:border-indigo-300';
 const textareaCls =
@@ -345,7 +347,13 @@ export default function CanvasPage() {
   const [nodes, setNodes, onNodesChange] = useNodesState<GraphNode>(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [videoModel, setVideoModel] = useState(VIDEO_MODELS[0].value);
-  const [dark, setDark] = useState(true);
+  // 背景偏好持久化：localStorage 即时保存，另随项目画布数据一起保存（跨设备）
+  const [dark, setDark] = useState<boolean>(
+    () => localStorage.getItem(CANVAS_THEME_KEY) !== 'light',
+  );
+  useEffect(() => {
+    localStorage.setItem(CANVAS_THEME_KEY, dark ? 'dark' : 'light');
+  }, [dark]);
   const [projects, setProjects] = useState<CanvasProjectView[]>([]);
   const [currentProjectId, setCurrentProjectId] = useState<number | null>(null);
   const [projectName, setProjectName] = useState('');
@@ -371,8 +379,12 @@ export default function CanvasPage() {
         return e;
       }),
     );
-    return { nodesJson, edgesJson };
-  }, [nodes, edges]);
+    // theme 随画布数据持久化：nodesJson 用 {theme, nodes} 包装（老数据是纯数组，加载时兼容）
+    return {
+      nodesJson: JSON.stringify({ theme: dark ? 'dark' : 'light', nodes: nodes.map(({ id, type, position, data }) => ({ id, type, position, data })) }),
+      edgesJson,
+    };
+  }, [nodes, edges, dark]);
 
   // 新建项目：prompt 取名 → 服务端建空项目 → 切换到全新默认画布
   const onCreateProject = async () => {
@@ -423,11 +435,15 @@ export default function CanvasPage() {
     try {
       const p = await getProject(id);
       if (p.nodesJson) {
-        setNodes(JSON.parse(p.nodesJson));
+        const parsed = JSON.parse(p.nodesJson);
+        const ns = Array.isArray(parsed) ? parsed : (parsed.nodes ?? []);
+        setNodes(ns);
         setEdges(JSON.parse(p.edgesJson ?? '[]'));
+        if (parsed.theme === 'dark' || parsed.theme === 'light') setDark(parsed.theme === 'dark');
       } else {
         setNodes(initialNodes);
         setEdges(initialEdges);
+        setDark(true);
       }
       setCurrentProjectId(p.id);
       setProjectName(p.name);
@@ -612,8 +628,16 @@ export default function CanvasPage() {
         <Link
           to="/"
           className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium ${theme.btn}`}
+          title="回到首页创作"
         >
-          <ArrowLeft className="h-4 w-4" /> 画廊
+          <ArrowLeft className="h-4 w-4" /> 返回首页
+        </Link>
+        <Link
+          to="/gallery"
+          className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium ${theme.btn}`}
+          title="作品画廊"
+        >
+          <Clapperboard className="h-4 w-4" /> 画廊
         </Link>
         <h1 className={`text-sm font-semibold ${theme.headText}`}>无限画布 · 图生视频</h1>
         <span className={`ml-2 hidden text-[11px] ${theme.hint} xl:inline`}>

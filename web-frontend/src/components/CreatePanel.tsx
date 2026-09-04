@@ -5,7 +5,15 @@ import { useNavigate } from 'react-router-dom';
 import { createVideoTask } from '../api/tasks';
 import { useTaskStore } from '../store/taskStore';
 import type { GenType } from '../types/task';
-import { Sparkles, Loader2, Zap } from 'lucide-react';
+import {
+  Sparkles,
+  Loader2,
+  Zap,
+  Image,
+  Clapperboard,
+  LayoutGrid,
+  type LucideIcon,
+} from 'lucide-react';
 
 interface CreateForm {
   prompt: string;
@@ -18,10 +26,10 @@ const SUGGESTIONS = [
   '中国风山水画的动态视觉效果，8秒',
 ];
 
-const GEN_TYPE_OPTIONS: { value: GenType; label: string; desc: string }[] = [
-  { value: 'text_video', label: '文生视频', desc: '文字描述直接生成视频' },
-  { value: 'image_video', label: '图生视频', desc: '独立画布页：加图+描述生成片段，一线串成长视频' },
-  { value: 'text_image', label: '文生图', desc: '文字描述直接生成图片' },
+const GEN_TYPE_OPTIONS: { value: GenType; label: string; desc: string; icon: LucideIcon }[] = [
+  { value: 'text_image', label: '文生图', desc: '文字描述直接生成图片', icon: Image },
+  { value: 'text_video', label: '文生视频', desc: '文字描述直接生成视频', icon: Clapperboard },
+  { value: 'image_video', label: '图生视频', desc: '独立画布页：加图+描述生成片段，一线串成长视频', icon: LayoutGrid },
 ];
 
 const PLACEHOLDER: Record<GenType, string> = {
@@ -81,35 +89,62 @@ export default function CreatePanel() {
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
         {/* 生成类型选择 */}
         <div className="grid grid-cols-3 gap-2">
-          {GEN_TYPE_OPTIONS.map((opt) => (
+          {GEN_TYPE_OPTIONS.map((opt) => {
+            const isCanvas = opt.value === 'image_video';
+            const active = genType === opt.value;
+            const Icon = opt.icon;
+            return (
             <button
               key={opt.value}
               type="button"
               onClick={() => {
-                if (opt.value === 'image_video') {
+                if (isCanvas) {
                   navigate('/canvas');
                   return;
                 }
                 setValue('genType', opt.value);
               }}
-              className={`rounded-xl border px-3 py-2.5 text-left transition-all ${
-                genType === opt.value
-                  ? 'border-violet-500 bg-violet-50 ring-2 ring-violet-500/20'
-                  : 'border-slate-200 bg-white hover:border-violet-300'
+              className={`group rounded-xl border px-3 py-2.5 text-left transition-all ${
+                isCanvas
+                  ? 'border-transparent bg-gradient-to-br from-violet-600 via-indigo-600 to-cyan-500 shadow-md hover:shadow-lg hover:scale-[1.02]'
+                  : active
+                    ? 'border-violet-500 bg-gradient-to-br from-violet-50 to-indigo-50 ring-2 ring-violet-500/20'
+                    : 'border-slate-200 bg-white hover:border-violet-300 hover:bg-violet-50/60'
               }`}
             >
               <span
-                className={`block text-xs font-semibold ${
-                  genType === opt.value ? 'text-violet-700' : 'text-slate-700'
+                className={`flex items-center gap-1.5 text-xs font-semibold ${
+                  isCanvas ? 'text-white' : active ? 'text-violet-700' : 'text-slate-700'
                 }`}
               >
+                <span
+                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md transition-colors ${
+                    isCanvas
+                      ? 'bg-white/25 text-white'
+                      : active
+                        ? 'bg-violet-600 text-white'
+                        : 'bg-violet-100 text-violet-600 group-hover:bg-violet-200'
+                  }`}
+                >
+                  <Icon className="h-3 w-3" />
+                </span>
                 {opt.label}
+                {isCanvas && (
+                  <span className="rounded-full bg-white/25 px-1.5 py-0.5 text-[9px] font-medium text-white">
+                    画布入口
+                  </span>
+                )}
               </span>
-              <span className="mt-0.5 block text-[10px] leading-tight text-slate-400">
+              <span
+                className={`mt-0.5 block text-[10px] leading-tight ${
+                  isCanvas ? 'text-white/85' : 'text-slate-400'
+                }`}
+              >
                 {opt.desc}
               </span>
             </button>
-          ))}
+            );
+          })}
         </div>
 
         {/* 文本描述（画布模式下作为补充/汇总） */}

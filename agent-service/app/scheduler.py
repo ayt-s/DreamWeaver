@@ -132,8 +132,9 @@ class SessionScheduler:
         try:
             await self._runner(state)
         except Exception as exc:  # 兜底：不让 worker 崩溃
-            logger.error("调度器执行会话 %s 异常: %s", session_id, exc)
-            state["error_message"] = str(exc)
+                    from app.errors import friendly_error_message
+                    logger.error("调度器执行会话 %s 异常", session_id, exc_info=exc)
+                    state["error_message"] = friendly_error_message(exc)
 
 
 # 全局单例（与 poller 同风格）；并发上限/队列容量从配置读取
