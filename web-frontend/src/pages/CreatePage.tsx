@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { Film } from 'lucide-react';
+import { BookOpen, Film } from 'lucide-react';
 import CreatePanel from '../components/CreatePanel';
 import TrajectoryPanel from '../components/TrajectoryPanel';
 import HistoryPanel from '../components/HistoryPanel';
@@ -16,7 +16,15 @@ export default function CreatePage() {
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
       {/* Top bar */}
-      <div className="mb-6 flex justify-end">
+      <div className="mb-6 flex justify-end gap-2">
+        <Link
+          to="/novel"
+          className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-xs font-medium text-white shadow-sm transition-colors hover:bg-amber-700"
+          title="小说转漫剧：粘贴小说 → 自动分镜 → 转入无限画布生成"
+        >
+          <BookOpen className="h-4 w-4" />
+          小说转漫剧
+        </Link>
         <Link
           to="/gallery"
           className="inline-flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-xs font-medium text-white shadow-sm transition-colors hover:bg-violet-700"

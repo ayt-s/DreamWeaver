@@ -32,5 +32,10 @@ public class NovelPreprocessRequest {
     @Max(value = 12, message = "secondsPerSegment 需在 4-12 之间")
     private Integer secondsPerSegment = 5;
 
+    /**
+     * 是否生成角色立绘。
+     * <p>Phase 1 阶段仅接收并透传给 agent-service，UI 层不暴露；agent 侧当前管线尚未启用。</p>
+     */
+    @Deprecated(since = "Phase 2") // Phase 3 才实现定妆图功能
     private Boolean generateCharacterPortrait = false;
 }

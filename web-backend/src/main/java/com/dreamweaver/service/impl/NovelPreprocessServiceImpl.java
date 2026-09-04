@@ -99,12 +99,14 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
             HttpRequest httpReq = HttpRequest.newBuilder()
                     .uri(URI.create(AGENT_URL))
                     .timeout(Duration.ofSeconds(60))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .POST(HttpRequest.BodyPublishers.ofString(requestBody, java.nio.charset.StandardCharsets.UTF_8))
                     .build();
             HttpResponse<String> resp = HTTP.send(httpReq, HttpResponse.BodyHandlers.ofString());
             int code = resp.statusCode();
             String body = resp.body();
+            log.info("agent-service preprocess http={} bodyHead={}",
+                    code, body != null ? body.substring(0, Math.min(400, body.length())) : "(null)");
             if (code < 200 || code >= 300) {
                 errorMsg = "agent-service 返回 " + code + ": " + truncate(body, 400);
                 log.warn("novel preprocess agent 非 2xx: {}", errorMsg);
@@ -205,23 +207,25 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
             throw new IllegalArgumentException("该项目尚未生成分镜，无法同步到画布");
         }
 
-        // 布局常量
-        int[] imageX = {120, 460, 800};
-        int[] videoX = {120, 460, 800};
+        // 布局：图片行 y=60，视频行 y=460；每行 3 列 x=120/460/800，第二行整体下移 200
+        int[] colX = {120, 460, 800};
         int imageY = 60;
-        int videoY = 260;
+        int videoY = 460;
+        int rowStep = 200;
         int composeX = 1200;
-        int composeY = 300;
+        int composeY = 400;
 
         List<Map<String, Object>> nodes = new ArrayList<>();
         for (int i = 0; i < segments.size(); i++) {
             NovelSegment seg = segments.get(i);
-            int x = imageX[i % 3];
-            int y = imageY + (i / 3) * 220;
+            int x = colX[i % 3];
+            int row = i / 3;
+
+            // 图片节点
             Map<String, Object> imgNode = new LinkedHashMap<>();
             imgNode.put("id", "img" + i);
             imgNode.put("type", "image");
-            imgNode.put("position", Map.of("x", x, "y", y));
+            imgNode.put("position", Map.of("x", x, "y", imageY + row * rowStep));
             Map<String, Object> imgData = new LinkedHashMap<>();
             imgData.put("type", "image");
             imgData.put("prompt", seg.getImagePrompt());
@@ -231,12 +235,11 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
             imgNode.put("data", imgData);
             nodes.add(imgNode);
 
-            int vx = videoX[i % 3];
-            int vy = videoY + (i / 3) * 220;
+            // 视频节点
             Map<String, Object> vidNode = new LinkedHashMap<>();
             vidNode.put("id", "vid" + i);
             vidNode.put("type", "video");
-            vidNode.put("position", Map.of("x", vx, "y", vy));
+            vidNode.put("position", Map.of("x", x, "y", videoY + row * rowStep));
             Map<String, Object> vidData = new LinkedHashMap<>();
             vidData.put("type", "video");
             vidData.put("prompt", seg.getVideoPrompt());

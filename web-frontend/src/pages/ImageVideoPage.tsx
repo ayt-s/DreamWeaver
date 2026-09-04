@@ -31,6 +31,7 @@ import {
   Moon,
   Save,
   FolderPlus,
+  Bot,
 } from 'lucide-react';
 import {
   createVideoTask,
@@ -38,6 +39,7 @@ import {
   listTasks,
   uploadImage,
 } from '../api/tasks';
+import ChatPanel from '../components/ChatPanel';
 import {
   createProject,
   listProjects,
@@ -354,6 +356,7 @@ export default function CanvasPage() {
   useEffect(() => {
     localStorage.setItem(CANVAS_THEME_KEY, dark ? 'dark' : 'light');
   }, [dark]);
+  const [chatPanelOpen, setChatPanelOpen] = useState(false);
   const [projects, setProjects] = useState<CanvasProjectView[]>([]);
   const [currentProjectId, setCurrentProjectId] = useState<number | null>(null);
   const [projectName, setProjectName] = useState('');
@@ -619,7 +622,7 @@ export default function CanvasPage() {
       };
 
   return (
-    <div className={`flex h-screen flex-col ${theme.page}`}>
+    <div className={`relative flex h-screen flex-col ${theme.page}`}>
       {/* 顶栏 */}
       <header className={`flex items-center gap-3 border-b ${theme.header} px-4 py-2.5`}>
         <Link
@@ -696,6 +699,14 @@ export default function CanvasPage() {
           >
             {dark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
             {dark ? '白底' : '黑底'}
+          </button>
+          {/* AI 助手 */}
+          <button
+            onClick={() => setChatPanelOpen(true)}
+            title="打开画布助手（agent）"
+            className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
+          >
+            <Bot className="h-3.5 w-3.5" /> AI 助手
           </button>
         </div>
       </header>
@@ -842,6 +853,13 @@ export default function CanvasPage() {
           </div>
         </main>
       </div>
+      <ChatPanel
+        open={chatPanelOpen}
+        onClose={() => setChatPanelOpen(false)}
+        canvasId={currentProjectId}
+        hasProject={currentProjectId !== null}
+        dark={dark}
+      />
     </div>
   );
 }
