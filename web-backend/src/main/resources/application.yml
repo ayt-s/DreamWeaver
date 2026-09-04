@@ -4,6 +4,14 @@ server:
 spring:
   application:
     name: dreamweaver-web-backend
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 12MB
   datasource:
     url: jdbc:mysql://localhost:3306/dreamweaver?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
     username: ${MYSQL_USER:root}
@@ -28,3 +36,6 @@ dreamweaver:
     default-shot-seconds: 5
     # 管理员列表（逗号分隔的 userId）
     admins: ${QUOTA_ADMINS:}
+
+app:
+  upload-dir: ./uploads

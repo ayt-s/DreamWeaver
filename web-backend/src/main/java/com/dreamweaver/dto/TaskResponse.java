@@ -24,4 +24,7 @@ public class TaskResponse {
     private String imageUrls;
 
     private String errorMessage;
+
+    /** 创作需求原文（画廊卡片标题展示；重新生成时复用） */
+    private String prompt;
 }

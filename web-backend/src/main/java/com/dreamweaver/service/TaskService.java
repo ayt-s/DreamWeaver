@@ -1,6 +1,7 @@
 package com.dreamweaver.service;
 
 import com.dreamweaver.dto.CreateTaskRequest;
+import com.dreamweaver.dto.TaskListResponse;
 import com.dreamweaver.dto.TaskResponse;
 
 /**
@@ -15,8 +16,8 @@ public interface TaskService {
     /** 查询任务状态 */
     TaskResponse getTask(Long id);
 
-    /** 任务列表（倒序，供画廊页展示） */
-    java.util.List<TaskResponse> listTasks(int limit);
+    /** 任务分页列表（倒序，含 genType 筛选，供画廊页展示） */
+    TaskListResponse listTasks(int page, int size, String genType);
 
     /**
          * 删除历史作品。
@@ -25,7 +26,7 @@ public interface TaskService {
         void deleteTask(Long id);
 
     /**
-     * 重新生成：以原任务的 prompt + genType 提交一个全新任务（保留旧记录作历史）。
+     * 重新生成：同一任务原地重跑（保留 id，复用原 prompt + genType）。
      * 仅允许终态任务发起。
      */
     TaskResponse regenerateTask(Long id);

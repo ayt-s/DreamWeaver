@@ -2,6 +2,7 @@ package com.dreamweaver.controller;
 
 import com.dreamweaver.common.CommonResult;
 import com.dreamweaver.dto.CreateTaskRequest;
+import com.dreamweaver.dto.TaskListResponse;
 import com.dreamweaver.dto.TaskResponse;
 import com.dreamweaver.service.TaskService;
 import jakarta.validation.Valid;
@@ -31,9 +32,11 @@ public class TaskController {
     }
 
     @GetMapping
-    public CommonResult<List<TaskResponse>> listTasks(
-            @RequestParam(defaultValue = "20") int limit) {
-        return CommonResult.ok(taskService.listTasks(limit));
+    public CommonResult<TaskListResponse> listTasks(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int size,
+            @RequestParam(required = false) String genType) {
+        return CommonResult.ok(taskService.listTasks(page, size, genType));
     }
 
     /** 删除历史作品（仅终态；非终态返回 400） */
@@ -43,7 +46,7 @@ public class TaskController {
         return CommonResult.ok(null);
     }
 
-    /** 重新生成：以原任务的 prompt + genType 提交全新任务 */
+    /** 重新生成：同一任务原地重跑（复用原 prompt + genType） */
     @PostMapping("/{id}/regenerate")
     public CommonResult<TaskResponse> regenerateTask(@PathVariable Long id) {
         return CommonResult.ok(taskService.regenerateTask(id));

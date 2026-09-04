@@ -41,6 +41,8 @@ public class NotifyServiceImpl implements NotifyService {
     private final TaskMapper taskMapper;
     private final ApiQuotaMapper apiQuotaMapper;
     private final ObjectMapper objectMapper;
+    private final StuckTaskWatchdog stuckTaskWatchdog;
+    private final ImageCacheService imageCacheService;
 
     /** 默认单镜时长（秒），当回调未携带 shot_seconds 时使用 */
     private static final int DEFAULT_SHOT_SECONDS = 5;
@@ -125,6 +127,17 @@ public class NotifyServiceImpl implements NotifyService {
         if (updated == 0) {
             log.warn("notify 任务 {} 乐观锁冲突，丢弃（已有更新的回调处理过）", task.getId());
             return;
+        }
+        // 已闭环：解除 Redis 看门狗
+        stuckTaskWatchdog.clear(task.getId());
+        // 预取产物图到 Redis 缓存（异步，失败静默；画廊展示不再等 agnes CDN）
+        if (imageUrls != null) {
+            for (String imageUrl : imageUrls) {
+                if (imageUrl != null && !imageUrl.isBlank()) {
+                    String finalUrl = imageUrl;
+                    java.util.concurrent.CompletableFuture.runAsync(() -> imageCacheService.warm(finalUrl));
+                }
+            }
         }
 
         log.info("notify 任务 {} 状态 {} → {}，URLs 数量={}",
