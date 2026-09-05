@@ -58,8 +58,10 @@ export default function NovelPage() {
     setConverting(true);
     try {
       // 步骤 1：获取角色/场景锚定图（优先读 localStorage 缓存，避免每次转画布都调 agent）
-      // 同本小说的多个章节共享同一份锚定图 → 跨章节角色一致
-      const cacheKey = `dreamweaver-anchors-novel-${project.id}`;
+      // 缓存 key 用 project.projectName（用户手输的小说名，如"长生烬"）
+      // 同本小说的多章节（不同 novel_project.id，但同名）共享同一份锚定图 → 跨章节角色一致
+      // 注意：预处理每次新建 novel_project 记录，id 会不同，所以不能用 id 做 key
+      const cacheKey = `dreamweaver-anchors-novel-${project.projectName}`;
       let anchorRefsObj: { characters: Record<string, string>; scenes: Record<string, string> } | null = null;
       try {
         const cached = localStorage.getItem(cacheKey);
