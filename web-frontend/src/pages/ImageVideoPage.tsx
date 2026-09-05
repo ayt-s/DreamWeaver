@@ -33,6 +33,9 @@ import {
   FolderPlus,
   Trash2,
   Bot,
+  Images,
+  Plus,
+  X,
 } from 'lucide-react';
 import {
   createVideoTask,
@@ -407,6 +410,150 @@ export default function CanvasPage() {
     }
   }, [anchorRefsParam]);
 
+  // 锚定图面板 state（角色/场景锚定图，key 是名称，value 是 URL）
+  const [anchorPanelOpen, setAnchorPanelOpen] = useState(false);
+  const [anchorCharRefs, setAnchorCharRefs] = useState<Record<string, string>>({});
+  const [anchorSceneRefs, setAnchorSceneRefs] = useState<Record<string, string>>({});
+  const [charRefName, setCharRefName] = useState('');
+  const [charRefUrl, setCharRefUrl] = useState('');
+  const [sceneRefName, setSceneRefName] = useState('');
+  const [sceneRefUrl, setSceneRefUrl] = useState('');
+  const anchorRefBox = useRef<HTMLDivElement>(null);
+
+  // 切换项目时，从项目数据同步锚定图 state
+  useEffect(() => {
+    if (!currentProjectId) {
+      setAnchorCharRefs({});
+      setAnchorSceneRefs({});
+      return;
+    }
+    const p = projects.find((x) => x.id === currentProjectId);
+    if (!p) return;
+    const parseJson = (s?: string | null) => {
+      if (!s) return {};
+      try {
+        const o = JSON.parse(s);
+        return o && typeof o === 'object' ? (o as Record<string, string>) : {};
+      } catch {
+        return {};
+      }
+    };
+    setAnchorCharRefs(parseJson(p.characterRefs));
+    setAnchorSceneRefs(parseJson(p.sceneRefs));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProjectId, projects]);
+
+  // URL ?anchorRefs=<base64> 自动合并到当前画布的锚定图 state
+  // 优先级：URL anchorRefs > 画布现有 anchorRefs
+  // 必须在项目加载完成后执行，否则 currentProjectId 还没设置
+  useEffect(() => {
+    if (!anchorRefs || !currentProjectId) return;
+    const chars = anchorRefs.characters ?? {};
+    const scenes = anchorRefs.scenes ?? {};
+    // 合并到现有 state（覆盖同名 key）
+    setAnchorCharRefs((prev) => ({ ...prev, ...chars }));
+    setAnchorSceneRefs((prev) => ({ ...prev, ...scenes }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anchorRefs, currentProjectId]);
+
+  // 点击面板外部关闭
+  useEffect(() => {
+    if (!anchorPanelOpen) return;
+    const onClick = (e: MouseEvent) => {
+      // e.target 类型是 EventTarget，需要 cast；用 any 避开 @xyflow 的 Node 类型遮蔽
+      if (anchorRefBox.current && !anchorRefBox.current.contains(e.target as any)) {
+        setAnchorPanelOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [anchorPanelOpen]);
+
+  // 保存锚定图到当前项目（无项目先新建）
+  const saveAnchorsToProject = async (charRefs: Record<string, string>, sceneRefs: Record<string, string>) => {
+    let id = currentProjectId;
+    if (id === null) {
+      const name = projectName.trim() || `画布 ${new Date().toLocaleTimeString()}`;
+      const p = await createProject(name);
+      id = p.id;
+      setProjects((ps) => [...ps, p]);
+      setCurrentProjectId(p.id);
+      setProjectName(p.name);
+    }
+    const charJson = Object.keys(charRefs).length > 0 ? JSON.stringify(charRefs) : undefined;
+    const sceneJson = Object.keys(sceneRefs).length > 0 ? JSON.stringify(sceneRefs) : undefined;
+    await saveProject(id, {
+      characterRefs: charJson,
+      sceneRefs: sceneJson,
+    });
+    // 更新本地 projects 缓存，让面板切换项目时能看到
+    setProjects((ps) => ps.map((x) => (x.id === id ? { ...x, characterRefs: charJson, sceneRefs: sceneJson } : x)));
+  };
+
+  // 添加角色锚定图
+  const addCharRef = async () => {
+    const name = charRefName.trim();
+    const url = charRefUrl.trim();
+    if (!name || !url) return;
+    if (!/^https?:\/\//.test(url)) {
+      window.alert('URL 必须是 http:// 或 https:// 开头');
+      return;
+    }
+    const next = { ...anchorCharRefs, [name]: url };
+    setAnchorCharRefs(next);
+    setCharRefName('');
+    setCharRefUrl('');
+    try {
+      await saveAnchorsToProject(next, anchorSceneRefs);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : '保存失败');
+    }
+  };
+
+  // 删除角色锚定图
+  const removeCharRef = async (name: string) => {
+    const next = { ...anchorCharRefs };
+    delete next[name];
+    setAnchorCharRefs(next);
+    try {
+      await saveAnchorsToProject(next, anchorSceneRefs);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : '保存失败');
+    }
+  };
+
+  // 添加场景锚定图
+  const addSceneRef = async () => {
+    const name = sceneRefName.trim();
+    const url = sceneRefUrl.trim();
+    if (!name || !url) return;
+    if (!/^https?:\/\//.test(url)) {
+      window.alert('URL 必须是 http:// 或 https:// 开头');
+      return;
+    }
+    const next = { ...anchorSceneRefs, [name]: url };
+    setAnchorSceneRefs(next);
+    setSceneRefName('');
+    setSceneRefUrl('');
+    try {
+      await saveAnchorsToProject(anchorCharRefs, next);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : '保存失败');
+    }
+  };
+
+  // 删除场景锚定图
+  const removeSceneRef = async (name: string) => {
+    const next = { ...anchorSceneRefs };
+    delete next[name];
+    setAnchorSceneRefs(next);
+    try {
+      await saveAnchorsToProject(anchorCharRefs, next);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : '保存失败');
+    }
+  };
+
   // 载入项目列表
   useEffect(() => {
     listProjects()
@@ -696,14 +843,16 @@ export default function CanvasPage() {
 
   const mutation = useMutation({
     mutationFn: () => {
-      // 提交前：如果 URL 带 anchorRefs，把角色+场景锚定图合并到每个 segment 的 reference_images
+      // 提交前：把画布 state 的锚定图（优先）或 URL anchorRefs（兜底）合并到每个 segment 的 reference_images
       let segmentsJson: string | undefined;
       if (plan.segments.length > 0) {
+        // 优先用画布 state（用户手动管理/从 URL 合并过），URL anchorRefs 作兜底
+        const charRefsMap = Object.keys(anchorCharRefs).length > 0 ? anchorCharRefs : (anchorRefs?.characters ?? {});
+        const sceneRefsMap = Object.keys(anchorSceneRefs).length > 0 ? anchorSceneRefs : (anchorRefs?.scenes ?? {});
         const enriched = plan.segments.map((seg) => {
-          if (!anchorRefs) return seg;
           const extraRefs: string[] = [];
-          for (const url of Object.values(anchorRefs.characters || {})) extraRefs.push(url);
-          for (const url of Object.values(anchorRefs.scenes || {})) extraRefs.push(url);
+          for (const url of Object.values(charRefsMap)) extraRefs.push(url);
+          for (const url of Object.values(sceneRefsMap)) extraRefs.push(url);
           const merged = [seg.image_url, ...extraRefs].filter((u): u is string => !!u);
           return { ...seg, reference_images: merged.slice(0, 5) };
         });
@@ -862,6 +1011,23 @@ export default function CanvasPage() {
             {dark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
             {dark ? '白底' : '黑底'}
           </button>
+          {/* 锚定图管理：角色/场景锚定图，跨章节复用 */}
+          <button
+            onClick={() => setAnchorPanelOpen((o) => !o)}
+            title="管理角色/场景锚定图（跨章节复用）"
+            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${theme.btn} ${
+              Object.keys(anchorCharRefs).length > 0 || Object.keys(anchorSceneRefs).length > 0
+                ? 'border-blue-400 text-blue-600'
+                : ''
+            }`}
+          >
+            <Images className="h-3.5 w-3.5" /> 锚定图
+            {(Object.keys(anchorCharRefs).length > 0 || Object.keys(anchorSceneRefs).length > 0) && (
+              <span className="text-[10px] text-blue-500">
+                {Object.keys(anchorCharRefs).length + Object.keys(anchorSceneRefs).length}
+              </span>
+            )}
+          </button>
           {/* AI 助手 */}
           <button
             onClick={() => setChatPanelOpen(true)}
@@ -872,6 +1038,111 @@ export default function CanvasPage() {
           </button>
         </div>
       </header>
+
+      {/* 锚定图面板：角色/场景锚定图，跨小说章节复用 */}
+      {anchorPanelOpen && (
+        <div
+          ref={anchorRefBox}
+          className={`absolute top-14 right-3 z-40 w-80 rounded-xl border shadow-xl ${dark ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'}`}
+        >
+          <div className={`flex items-center justify-between border-b px-3 py-2 ${dark ? 'border-slate-700' : 'border-slate-200'}`}>
+            <span className={`text-xs font-semibold ${dark ? 'text-white' : 'text-slate-800'}`}>锚定图</span>
+            <button
+              onClick={() => setAnchorPanelOpen(false)}
+              className={`text-xs ${dark ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-800'}`}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="max-h-96 overflow-y-auto p-3">
+            <div className="mb-3">
+              <div className={`mb-1.5 text-[11px] font-semibold uppercase tracking-wide ${dark ? 'text-slate-400' : 'text-slate-500'}`}>
+                角色锚定图
+              </div>
+              <div className="flex gap-1">
+                <input
+                  value={charRefName}
+                  onChange={(e) => setCharRefName(e.target.value)}
+                  placeholder="名称"
+                  className={`w-16 rounded border px-2 py-1 text-xs outline-none ${theme.input}`}
+                />
+                <input
+                  value={charRefUrl}
+                  onChange={(e) => setCharRefUrl(e.target.value)}
+                  placeholder="图片 URL"
+                  className={`flex-1 rounded border px-2 py-1 text-xs outline-none ${theme.input}`}
+                />
+                <button
+                  onClick={addCharRef}
+                  disabled={!charRefName.trim() || !charRefUrl.trim()}
+                  className={`rounded border px-2 py-1 ${dark ? 'border-slate-600 hover:bg-slate-700' : 'border-slate-300 hover:bg-slate-100'} disabled:cursor-not-allowed disabled:opacity-40`}
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </div>
+              {Object.entries(anchorCharRefs).map(([name, url]) => (
+                <div key={name} className={`mt-2 flex items-center gap-2 rounded border p-1.5 ${dark ? 'border-slate-700 bg-slate-900/40' : 'border-slate-200 bg-slate-50'}`}>
+                  <img src={cachedImageUrl(url)} alt={name} className="h-10 w-10 rounded object-cover" />
+                  <div className="flex-1 truncate text-xs">{name}</div>
+                  <button
+                    onClick={() => removeCharRef(name)}
+                    className={`text-xs ${dark ? 'text-slate-400 hover:text-red-400' : 'text-slate-500 hover:text-red-500'}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              {Object.keys(anchorCharRefs).length === 0 && (
+                <div className={`mt-2 text-xs ${dark ? 'text-slate-500' : 'text-slate-400'}`}>暂无角色锚定图</div>
+              )}
+            </div>
+            <div className="border-t pt-3" style={{ borderColor: dark ? '#334155' : '#e2e8f0' }}>
+              <div className={`mb-1.5 text-[11px] font-semibold uppercase tracking-wide ${dark ? 'text-slate-400' : 'text-slate-500'}`}>
+                场景锚定图
+              </div>
+              <div className="flex gap-1">
+                <input
+                  value={sceneRefName}
+                  onChange={(e) => setSceneRefName(e.target.value)}
+                  placeholder="名称"
+                  className={`w-16 rounded border px-2 py-1 text-xs outline-none ${theme.input}`}
+                />
+                <input
+                  value={sceneRefUrl}
+                  onChange={(e) => setSceneRefUrl(e.target.value)}
+                  placeholder="图片 URL"
+                  className={`flex-1 rounded border px-2 py-1 text-xs outline-none ${theme.input}`}
+                />
+                <button
+                  onClick={addSceneRef}
+                  disabled={!sceneRefName.trim() || !sceneRefUrl.trim()}
+                  className={`rounded border px-2 py-1 ${dark ? 'border-slate-600 hover:bg-slate-700' : 'border-slate-300 hover:bg-slate-100'} disabled:cursor-not-allowed disabled:opacity-40`}
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </div>
+              {Object.entries(anchorSceneRefs).map(([name, url]) => (
+                <div key={name} className={`mt-2 flex items-center gap-2 rounded border p-1.5 ${dark ? 'border-slate-700 bg-slate-900/40' : 'border-slate-200 bg-slate-50'}`}>
+                  <img src={cachedImageUrl(url)} alt={name} className="h-10 w-10 rounded object-cover" />
+                  <div className="flex-1 truncate text-xs">{name}</div>
+                  <button
+                    onClick={() => removeSceneRef(name)}
+                    className={`text-xs ${dark ? 'text-slate-400 hover:text-red-400' : 'text-slate-500 hover:text-red-500'}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              {Object.keys(anchorSceneRefs).length === 0 && (
+                <div className={`mt-2 text-xs ${dark ? 'text-slate-500' : 'text-slate-400'}`}>暂无场景锚定图</div>
+              )}
+            </div>
+            <div className={`mt-3 border-t pt-2 text-[11px] ${dark ? 'border-slate-700 text-slate-500' : 'border-slate-200 text-slate-400'}`}>
+              锚定图会在提交成片时合并到每个分镜的 reference_images，让角色/场景跨章节保持一致。
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1">
         {/* 左侧面板 */}
