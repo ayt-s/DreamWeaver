@@ -41,8 +41,116 @@ async def _download(url: str, dest: Path, timeout: float = 300.0) -> None:
                     f.write(chunk)
 
 
+async def _probe_duration(path: Path) -> float:
+    """用 ffprobe 探测视频时长（秒）。失败返回 -1。"""
+    cmd = [
+        FFMPEG_EXE, "-i", str(path),
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return -1.0
+    # ffmpeg -i 会把时长写到 stderr
+    text = stderr.decode("utf-8", errors="replace")
+    import re
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
+    if not m:
+        return -1.0
+    h, mn, s = m.groups()
+    return int(h) * 3600 + int(mn) * 60 + float(s)
+
+
 async def _concat_videos(inputs: list[Path], output: Path) -> bool:
-    """ffmpeg concat 拼接（-c copy 无损，速度快）。返回是否成功。"""
+    """ffmpeg 拼接视频。多段时用 xfade 做交叉淡化过渡，失败降级到 concat 硬切。"""
+    if len(inputs) == 1:
+        # 单段直接拷贝
+        import shutil
+        shutil.copyfile(inputs[0], output)
+        return output.exists() and output.stat().st_size > 0
+
+    # 多段：先尝试 xfade 过渡，失败降级到 concat
+    xfade_ok = await _concat_with_xfade(inputs, output)
+    if xfade_ok:
+        return True
+    logger.warning("xfade 失败，降级到 concat 硬切")
+    return await _concat_videos_plain(inputs, output)
+
+
+async def _concat_with_xfade(inputs: list[Path], output: Path) -> bool:
+    """ffmpeg filter_complex xfade 交叉淡化。过渡 0.5 秒。"""
+    # 探测每段时长
+    durations = []
+    for p in inputs:
+        d = await _probe_duration(p)
+        if d <= 0:
+            logger.warning("无法探测 %s 时长，降级 concat", p.name)
+            return False
+        durations.append(d)
+
+    # 每个 transition 0.5 秒；offset[i] = 前面所有段的累计时长 - 过渡时长 * i
+    TRANSITION = 0.5
+    n = len(inputs)
+    inputs_args: list[str] = []
+    for p in inputs:
+        inputs_args.extend(["-i", str(p)])
+
+    # 构建 filter_complex：xfade 链式串联
+    # [0:v][1:v]xfade=transition=fade:duration=0.5:offset=D0-0.5[v01];
+    # [v01][2:v]xfade=transition=fade:duration=0.5:offset=D0+D1-0.5*2[v012]; ...
+    filter_parts: list[str] = []
+    for i in range(n - 1):
+        if i == 0:
+            src_left = "[0:v]"
+        else:
+            src_left = f"[v0{i}]"
+        src_right = f"[{i+1}:v]"
+        if i == n - 2:
+            out_label = "[vout]"
+        else:
+            out_label = f"[v0{i+1}]"
+        # offset = 前 i+1 段累计时长 - 已用过渡时长 * i - 本次过渡时长
+        cumulative = sum(durations[: i + 1])
+        offset = cumulative - TRANSITION * (i + 1)
+        if offset < 0:
+            # 段太短放不下过渡，跳过 xfade
+            return False
+        filter_parts.append(
+            f"{src_left}{src_right}xfade=transition=fade:duration={TRANSITION}:offset={offset:.3f}{out_label}"
+        )
+
+    filter_complex = ";".join(filter_parts)
+    cmd = [
+        FFMPEG_EXE, "-y",
+        *inputs_args,
+        "-filter_complex", filter_complex,
+        "-map", "[vout]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        str(output),
+    ]
+    logger.info("xfade cmd: %s", " ".join(cmd[:5]) + " ... filter_complex=" + filter_complex[:200])
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=1200)
+    except asyncio.TimeoutError:
+        proc.kill()
+        logger.error("xfade 超时")
+        return False
+    if proc.returncode != 0:
+        logger.warning("xfade 失败 rc=%s stderr=%s", proc.returncode, stderr.decode("utf-8", errors="replace")[-300:])
+        return False
+    return output.exists() and output.stat().st_size > 0
+
+
+async def _concat_videos_plain(inputs: list[Path], output: Path) -> bool:
+    """ffmpeg concat demuxer 硬切拼接（原逻辑，作为 xfade 失败兜底）。"""
     list_file = output.parent / "concat_list.txt"
     with open(list_file, "w", encoding="utf-8") as f:
         for p in inputs:
