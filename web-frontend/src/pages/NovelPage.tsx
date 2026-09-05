@@ -57,26 +57,46 @@ export default function NovelPage() {
     if (!project) return;
     setConverting(true);
     try {
-      // 步骤 1：先调 agent 生成角色/场景锚定图（约 2-3 分钟）
-      let anchorRefs = '';
+      // 步骤 1：获取角色/场景锚定图（优先读 localStorage 缓存，避免每次转画布都调 agent）
+      // 同本小说的多个章节共享同一份锚定图 → 跨章节角色一致
+      const cacheKey = `dreamweaver-anchors-novel-${project.id}`;
+      let anchorRefsObj: { characters: Record<string, string>; scenes: Record<string, string> } | null = null;
       try {
-        const analysis = project.analysisJson ? JSON.parse(project.analysisJson) : {};
-        const characters = analysis.characters || {};
-        const scenes = analysis.scenes || [];
-        if (Object.keys(characters).length > 0 || scenes.length > 0) {
-          const anchors = await generateAnchors({
-            characters,
-            scenes,
-            style: project.visualStyle || '电影写实',
-          });
-          anchorRefs = encodeURIComponent(JSON.stringify({
-            characters: anchors.characters || {},
-            scenes: anchors.scenes || {},
-          }));
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed && (Object.keys(parsed.characters || {}).length > 0 || Object.keys(parsed.scenes || {}).length > 0)) {
+            anchorRefsObj = parsed;
+          }
         }
       } catch (e) {
-        console.warn('锚定图生成失败，跳过：', e);
+        console.warn('读 localStorage anchorRefs 缓存失败，重新生成：', e);
       }
+      if (!anchorRefsObj) {
+        try {
+          const analysis = project.analysisJson ? JSON.parse(project.analysisJson) : {};
+          const characters = analysis.characters || {};
+          const scenes = analysis.scenes || [];
+          if (Object.keys(characters).length > 0 || scenes.length > 0) {
+            const anchors = await generateAnchors({
+              characters,
+              scenes,
+              style: project.visualStyle || '电影写实',
+            });
+            anchorRefsObj = {
+              characters: anchors.characters || {},
+              scenes: anchors.scenes || {},
+            };
+            // 写入 localStorage，同本小说下次转画布直接读
+            localStorage.setItem(cacheKey, JSON.stringify(anchorRefsObj));
+          }
+        } catch (e) {
+          console.warn('锚定图生成失败，跳过：', e);
+        }
+      }
+      const anchorRefs = anchorRefsObj
+        ? encodeURIComponent(JSON.stringify(anchorRefsObj))
+        : '';
 
       // 步骤 2：转画布并跳转（anchorRefs 通过 URL query 传给 ImageVideoPage）
       const canvas = await toCanvas(project.id);
