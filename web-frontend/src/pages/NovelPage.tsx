@@ -14,6 +14,24 @@ import { preprocessNovel, toCanvas } from '../api/novel';
 import { generateAnchors } from '../api/novelAnchors';
 import type { NovelProject, NovelSegment } from '../types/novel';
 
+/** 从 projectName 剥离章节标识，得到"小说名"。
+ *  例：
+ *    "长生烬-第一章"         → "长生烬"
+ *    "长生烬 第一章 警花的恐惧" → "长生烬"
+ *    "长生烬·第一章"         → "长生烬"
+ *    "长生烬01" / "长生烬-01" → "长生烬"
+ *    "长生烬 1"              → "长生烬"
+ *  剥离失败时返回原 projectName（保底）。
+ */
+function stripChapterSuffix(name: string): string {
+  const trimmed = name.trim();
+  // 匹配结尾的： 第X章 / ·第X章 / -第X章 / -X / _X / -XX / 空格+数字+章尾
+  const chapterPattern =
+    /[-·\s]?(?:第\s*[\d一二三四五六七八九十百]+章|[\d一二三四五六七八九十]+)\s*[-·\s]*[^-\d一二三四五六七八九十\s]*$/;
+  const stripped = trimmed.replace(chapterPattern, '').trim();
+  return stripped || trimmed;
+}
+
 type Phase = 'input' | 'processing' | 'segments' | 'error';
 
 export default function NovelPage() {
@@ -58,10 +76,10 @@ export default function NovelPage() {
     setConverting(true);
     try {
       // 步骤 1：获取角色/场景锚定图（优先读 localStorage 缓存，避免每次转画布都调 agent）
-      // 缓存 key 用 project.projectName（用户手输的小说名，如"长生烬"）
-      // 同本小说的多章节（不同 novel_project.id，但同名）共享同一份锚定图 → 跨章节角色一致
-      // 注意：预处理每次新建 novel_project 记录，id 会不同，所以不能用 id 做 key
-      const cacheKey = `dreamweaver-anchors-novel-${project.projectName}`;
+      // 缓存 key 用"小说名"（从 projectName 剥离章节标识），同本小说多章节共享同一份锚定图
+      // 例：projectName="长生烬-第一章" 或 "长生烬 第一章 警花的恐惧" → 缓存 key 都是 "长生烬"
+      const novelKey = stripChapterSuffix(project.projectName);
+      const cacheKey = `dreamweaver-anchors-novel-${novelKey}`;
       let anchorRefsObj: { characters: Record<string, string>; scenes: Record<string, string> } | null = null;
       try {
         const cached = localStorage.getItem(cacheKey);
