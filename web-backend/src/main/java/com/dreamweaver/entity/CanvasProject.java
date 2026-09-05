@@ -23,11 +23,20 @@ public class CanvasProject {
 
     private Long userId;
 
+    /** 父项目 ID（子项目指向父项目，NULL 表示顶级） */
+    private Long parentId;
+
     /** React Flow 节点数组 JSON 字符串 */
     private String nodesJson;
 
     /** React Flow 连线数组 JSON 字符串 */
     private String edgesJson;
+
+    /** 角色锚定图 JSON（{"角色名": "url"}） */
+    private String characterRefs;
+
+    /** 场景锚定图 JSON（{"场景名": "url"}） */
+    private String sceneRefs;
 
     private LocalDateTime createdAt;
 

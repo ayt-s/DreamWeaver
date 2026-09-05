@@ -7,6 +7,11 @@ export interface CanvasProjectView {
   updatedAt?: string;
   nodesJson?: string | null;
   edgesJson?: string | null;
+  parentId?: number | null;
+  /** 角色锚定图 JSON（{"角色名": "url"}） */
+  characterRefs?: string | null;
+  /** 场景锚定图 JSON（{"场景名": "url"}） */
+  sceneRefs?: string | null;
 }
 
 /** 创建项目（空画布） */
@@ -24,10 +29,16 @@ export function getProject(id: number): Promise<CanvasProjectView> {
   return unwrap(client.get(`/canvas/${id}`));
 }
 
-/** 保存画布内容 / 重命名（只更新传入的字段） */
+/** 保存画布内容 / 重命名 / 锚定图（只更新传入的字段） */
 export function saveProject(
   id: number,
-  body: { name?: string; nodesJson?: string; edgesJson?: string },
+  body: {
+    name?: string;
+    nodesJson?: string;
+    edgesJson?: string;
+    characterRefs?: string;
+    sceneRefs?: string;
+  },
 ): Promise<CanvasProjectView> {
   return unwrap(client.put(`/canvas/${id}`, body));
 }

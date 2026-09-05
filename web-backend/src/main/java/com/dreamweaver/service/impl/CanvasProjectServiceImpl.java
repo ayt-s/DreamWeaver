@@ -51,7 +51,8 @@ public class CanvasProjectServiceImpl implements CanvasProjectService {
     @Override
     @Transactional
     public CanvasProject saveProject(Long id, Long userId, String name,
-                                     String nodesJson, String edgesJson) {
+                                     String nodesJson, String edgesJson,
+                                     String characterRefs, String sceneRefs) {
         CanvasProject existing = getProject(id, userId);
         if (existing == null) {
             throw new IllegalArgumentException("画布项目不存在: " + id);
@@ -66,6 +67,12 @@ public class CanvasProjectServiceImpl implements CanvasProjectService {
         }
         if (edgesJson != null) {
             patch.setEdgesJson(edgesJson);
+        }
+        if (characterRefs != null) {
+            patch.setCharacterRefs(characterRefs);
+        }
+        if (sceneRefs != null) {
+            patch.setSceneRefs(sceneRefs);
         }
         mapper.updateById(patch);
         log.info("画布项目保存: id={} {}", id, name == null ? "" : "rename=" + name);

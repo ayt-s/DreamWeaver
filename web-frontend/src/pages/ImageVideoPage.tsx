@@ -414,6 +414,21 @@ export default function CanvasPage() {
       .catch(() => setProjects([]));
   }, []);
 
+  // URL ?project=<id> 自动加载该项目（从 NovelPage 转画布跳转时带上）
+  // 必须在项目列表加载完成后执行，否则 onSelectProject 内部 getProject 虽能直接调后端，
+  // 但下拉框选中态需要 projects 列表里也有这一项。用 setTimeout 延后一拍。
+  const projectParam = searchParams.get('project');
+  useEffect(() => {
+    if (projectParam && !currentProjectId) {
+      const id = Number(projectParam);
+      if (Number.isFinite(id) && id > 0) {
+        // 延后一拍，让项目列表先加载完（下拉框选中态更准）
+        setTimeout(() => onSelectProject(id), 50);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 序列化：只保留画布持久化所需字段
   const serializeCanvas = useCallback(() => {
     const edgesJson = JSON.stringify(

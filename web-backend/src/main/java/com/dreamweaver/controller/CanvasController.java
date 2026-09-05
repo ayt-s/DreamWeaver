@@ -62,7 +62,8 @@ public class CanvasController {
     public CommonResult<CanvasProjectView> saveProject(
             @PathVariable Long id, @RequestBody CanvasProjectRequest req) {
         CanvasProject p = projectService.saveProject(
-                id, DEFAULT_USER_ID, req.getName(), req.getNodesJson(), req.getEdgesJson());
+                id, DEFAULT_USER_ID, req.getName(), req.getNodesJson(), req.getEdgesJson(),
+                req.getCharacterRefs(), req.getSceneRefs());
         return CommonResult.ok(CanvasProjectView.of(p));
     }
 

@@ -20,7 +20,8 @@ public interface CanvasProjectService {
     CanvasProject getProject(Long id, Long userId);
 
     /** 保存画布内容 / 重命名（只更新非空字段），返回最新实体 */
-    CanvasProject saveProject(Long id, Long userId, String name, String nodesJson, String edgesJson);
+    CanvasProject saveProject(Long id, Long userId, String name, String nodesJson, String edgesJson,
+                             String characterRefs, String sceneRefs);
 
     /** 删除项目 */
     void deleteProject(Long id, Long userId);
