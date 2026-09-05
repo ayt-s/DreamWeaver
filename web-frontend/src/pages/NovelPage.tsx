@@ -38,6 +38,7 @@ export default function NovelPage() {
   const navigate = useNavigate();
   const [phase, setPhase] = useState<Phase>('input');
   const [projectName, setProjectName] = useState('');
+  const [novelName, setNovelName] = useState('');
   const [novelText, setNovelText] = useState('');
   const [targetSegments, setTargetSegments] = useState(6);
   const [secondsPerSegment, setSecondsPerSegment] = useState(5);
@@ -76,9 +77,9 @@ export default function NovelPage() {
     setConverting(true);
     try {
       // 步骤 1：获取角色/场景锚定图（优先读 localStorage 缓存，避免每次转画布都调 agent）
-      // 缓存 key 用"小说名"（从 projectName 剥离章节标识），同本小说多章节共享同一份锚定图
-      // 例：projectName="长生烬-第一章" 或 "长生烬 第一章 警花的恐惧" → 缓存 key 都是 "长生烬"
-      const novelKey = stripChapterSuffix(project.projectName);
+      // 缓存 key 优先用用户显式填的"小说名"，回退到从 projectName 剥离章节标识。
+      // 这样同本小说多章节自动共享一份锚定图，跨章节角色/场景视觉一致。
+      const novelKey = (novelName.trim() || stripChapterSuffix(project.projectName)).trim();
       const cacheKey = `dreamweaver-anchors-novel-${novelKey}`;
       let anchorRefsObj: { characters: Record<string, string>; scenes: Record<string, string> } | null = null;
       try {
@@ -134,6 +135,7 @@ export default function NovelPage() {
 
   const reset = () => {
     setProjectName('');
+    setNovelName('');
     setNovelText('');
     setProject(null);
     setErrorMsg('');
@@ -164,11 +166,13 @@ export default function NovelPage() {
         {phase === 'input' && (
           <InputPanel
             projectName={projectName}
+            novelName={novelName}
             novelText={novelText}
             targetSegments={targetSegments}
             secondsPerSegment={secondsPerSegment}
             canSubmit={!!canSubmit}
             setProjectName={setProjectName}
+            setNovelName={setNovelName}
             setNovelText={setNovelText}
             setTargetSegments={setTargetSegments}
             setSecondsPerSegment={setSecondsPerSegment}
@@ -208,19 +212,21 @@ function PhasePill({ phase }: { phase: Phase }) {
 // ==================== Tab 1：输入 ====================
 function InputPanel(props: {
   projectName: string;
+  novelName: string;
   novelText: string;
   targetSegments: number;
   secondsPerSegment: number;
   canSubmit: boolean;
   setProjectName: (v: string) => void;
+  setNovelName: (v: string) => void;
   setNovelText: (v: string) => void;
   setTargetSegments: (v: number) => void;
   setSecondsPerSegment: (v: number) => void;
   onSubmit: () => void;
 }) {
   const {
-    projectName, novelText, targetSegments, secondsPerSegment,
-    setProjectName, setNovelText, setTargetSegments, setSecondsPerSegment, onSubmit,
+    projectName, novelName, novelText, targetSegments, secondsPerSegment,
+    setProjectName, setNovelName, setNovelText, setTargetSegments, setSecondsPerSegment, onSubmit,
   } = props;
 
   const charCount = novelText.length;
@@ -240,6 +246,17 @@ function InputPanel(props: {
           value={projectName}
           onChange={(e) => setProjectName(e.target.value)}
           placeholder="如：长生烬·第一章"
+          maxLength={64}
+          className="mb-4 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500"
+        />
+
+        <label className="mb-1.5 block text-xs text-slate-400">
+          小说名 <span className="text-slate-500">（可选，同本小说多章节填一样，锚定图跨章节复用）</span>
+        </label>
+        <input
+          value={novelName}
+          onChange={(e) => setNovelName(e.target.value)}
+          placeholder="如：长生烬"
           maxLength={64}
           className="mb-4 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500"
         />

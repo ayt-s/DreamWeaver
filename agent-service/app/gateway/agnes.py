@@ -9,6 +9,7 @@
 import asyncio
 import json
 import logging
+import random
 import time
 from typing import Any, Awaitable, Callable, TypeVar
 
@@ -146,36 +147,120 @@ def _describe_rejection(exception: httpx.HTTPStatusError, what: str) -> str:
     return f"{what}接口拒绝: HTTP {status}"
 
 
-class AgnesGateway:
-    def __init__(self) -> None:
-        self.base_url = settings.agnes_base_url
-        self.headers = settings.headers
+class AgnesClient:
+    """单个 Agnes 端点的封装（1 provider = 1 base_url + 1 api_key + 1 AsyncClient）。
+
+    多端点扩容场景下 AgnesGateway 会创建多个 AgnesClient 实例。
+    """
+
+    def __init__(self, base_url: str, api_key: str, name: str) -> None:
+        self.name = name
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
         self._client = httpx.AsyncClient(
             base_url=self.base_url, headers=self.headers, timeout=60.0
         )
 
+    def build_request(self, method: str, url: str) -> httpx.Request:
+        return self._client.build_request(method, url)
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+
+class AgnesGateway:
+    """多 Agnes 端点池 + 会话粘性路由 + 提交失败跨 provider failover。
+
+    - 单 provider 时等价于原实现
+    - 会话粘性：一个 session_id 的所有请求（chat/image/video/poll）走同一个 provider，
+      保证 video 提交和后续 poll 使用同一账号
+    - 提交失败：同 provider 内退避重试 N 次，耗尽后切下一个 provider 再试一轮
+    - 查询/轮询：按 video_id 记录的 provider 路由（poller 传入）
+    """
+
+    def __init__(self) -> None:
+        self.providers: dict[str, AgnesClient] = {}
+        self.provider_names: list[str] = []
+        for p in settings.agnes_providers:
+            name = p["name"]
+            self.providers[name] = AgnesClient(p["base_url"], p["api_key"], name)
+            self.provider_names.append(name)
+        if not self.provider_names:
+            # 兜底：无 provider 时用 settings.agnes_base_url + api_key（可能为空串）
+            self.providers["intl"] = AgnesClient(
+                settings.agnes_base_url, settings.agnes_api_key, "intl"
+            )
+            self.provider_names = ["intl"]
+        # 会话 → provider 粘性映射（新 session 首次调用时 round-robin 分配）
+        self._session_provider: dict[str, str] = {}
+        self._rr_index = 0
+        self._rr_lock = asyncio.Lock()
+
+    async def pick_client(self, session_id: str | None = None,
+                          provider_name: str | None = None) -> AgnesClient:
+        """按 provider_name 优先 → session 粘性 → round-robin 选 client。"""
+        if provider_name and provider_name in self.providers:
+            return self.providers[provider_name]
+        if session_id:
+            cached = self._session_provider.get(session_id)
+            if cached and cached in self.providers:
+                return self.providers[cached]
+            async with self._rr_lock:
+                name = self.provider_names[self._rr_index % len(self.provider_names)]
+                self._rr_index += 1
+                self._session_provider[session_id] = name
+                return self.providers[name]
+        # 无 session_id（chat/novel 等共享调用）：直接 round-robin 但不写入粘性
+        async with self._rr_lock:
+            name = self.provider_names[self._rr_index % len(self.provider_names)]
+            self._rr_index += 1
+        return self.providers[name]
+
+    def bind_session(self, session_id: str, provider_name: str) -> None:
+        """显式绑定 session 到 provider（failover 切换后调用）。"""
+        self._session_provider[session_id] = provider_name
+        logger.info("session %s 粘附切换到 provider %s", session_id, provider_name)
+
     # ---------- 文本 ----------
     async def chat(self, prompt: str, model: str | None = None,
-                   temperature: float = 0.2, max_tokens: int = 4096) -> str:
-        """调用文本模型，返回纯文本内容（Phase 1 用简单形式，结构化输出后续加）。"""
-        resp = await self._client.post("/chat/completions", json={
-            "model": model or settings.text_model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        })
+                   temperature: float = 0.2, max_tokens: int = 4096,
+                   session_id: str | None = None) -> str:
+        """调用文本模型，返回纯文本内容（Phase 1 用简单形式，结构化输出后续加）。
+
+        多 provider 场景：按 session_id 粘性路由（同一 session 内 chat/storyboard/
+        script/image/video 都用同一个 provider），无 session_id 时 round-robin。
+        """
+        client = await self.pick_client(session_id=session_id)
+        resp = await _with_retry(
+            lambda: client._client.post("/chat/completions", json={
+                "model": model or settings.text_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }),
+            f"文本({client.name})",
+        )
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]
 
     # ---------- 图像 ----------
     async def generate_image(self, prompt: str,
-                             model: str | None = None) -> list[str]:
-        """同步调用图像 API，返回图片 URL 列表。"""
-        resp = await self._client.post("/images/generations", json={
-            "model": model or settings.image_model,
-            "prompt": prompt,
-        })
+                             model: str | None = None,
+                             session_id: str | None = None) -> list[str]:
+        """同步调用图像 API，返回图片 URL 列表。多 provider 按 session 粘性路由。"""
+        client = await self.pick_client(session_id=session_id)
+        resp = await _with_retry(
+            lambda: client._client.post("/images/generations", json={
+                "model": model or settings.image_model,
+                "prompt": prompt,
+            }),
+            f"图像({client.name})",
+        )
         resp.raise_for_status()
         data = resp.json()
         urls: list[str] = [item["url"] for item in data["data"]]
@@ -186,8 +271,17 @@ class AgnesGateway:
                            seconds: str | None = None,
                            aspect_ratio: str | None = None,
                            mode: str = "text",
-                           reference_images: list[str] | None = None) -> dict[str, Any]:
-        """提交视频生成任务，返回包含 video_id / model_name 的 dict。"""
+                           reference_images: list[str] | None = None,
+                           session_id: str | None = None) -> dict[str, Any]:
+        """提交视频生成任务，返回包含 video_id / model_name / provider 的 dict。
+
+        多 provider 场景：
+        1. 从 provider 池按 session 粘性取一个 client 开始尝试
+        2. 该 client 内退避重试 N 次（原有 429/503 退避逻辑）
+        3. 如果同 client 全部失败，切到下一个 provider 再试一轮（粘附切换）
+        4. 全部 provider 都失败则抛原错误
+        返回 dict 额外带 provider 字段，poller 用它查询该视频。
+        """
         payload: dict[str, Any] = {
             "model": model or settings.video_model_fast,
             "prompt": prompt,
@@ -200,86 +294,114 @@ class AgnesGateway:
         if reference_images:
             # 图生视频/参考模式：图片需公网可访问 URL
             payload["images"] = reference_images
-        logger.warning("submit_video payload: %s", _json_compact(payload))
+        logger.warning("submit_video payload (session=%s): %s", session_id, _json_compact(payload))
 
-        # 全局节流：与平台视频 RPM 对齐；所有会话共享同一门
-        await get_video_gate().acquire()
-
-        max_attempts = settings.video_submit_max_attempts
+        # 单 provider 内尝试次数（每个 provider 独立预算）
+        attempts_per_provider = max(1, settings.video_submit_max_attempts)
+        # 决定起点：如果有 session 粘性走粘性 provider 开始，否则 round-robin
+        starting_index = 0
+        if session_id and session_id in self._session_provider:
+            idx = self.provider_names.index(self._session_provider[session_id])
+            starting_index = idx
+        # 收集所有 provider 按起点顺序排列
+        rotated = self.provider_names[starting_index:] + self.provider_names[:starting_index]
         last_reason = "未知错误"
-        for attempt in range(1, max_attempts + 1):
-            try:
-                resp = await self._client.post("/videos", json=payload)
-            except httpx.TransportError as e:
-                last_reason = f"网络异常 {e}"
-                if attempt == max_attempts:
-                    break
-                wait = 5 * attempt
-                logger.warning("视频提交网络异常，%ds 后重试 (%d/%d)", wait, attempt, max_attempts)
-                await asyncio.sleep(wait)
-                continue
+        for provider_name in rotated:
+            client = self.providers[provider_name]
+            for attempt in range(1, attempts_per_provider + 1):
+                await get_video_gate().acquire()
+                try:
+                    resp = await client._client.post("/videos", json=payload)
+                except httpx.TransportError as e:
+                    last_reason = f"[{provider_name}] 网络异常 {e}"
+                    if attempt == attempts_per_provider:
+                        break
+                    wait = 5 * attempt
+                    logger.warning("视频提交[%s]网络异常，%ds 后重试 (%d/%d)",
+                                   provider_name, wait, attempt, attempts_per_provider)
+                    await asyncio.sleep(wait)
+                    continue
 
-            if resp.status_code == 200:
-                data = resp.json()
-                return {
-                    "video_id": data["id"],
-                    "model_name": payload["model"],
-                }
+                if resp.status_code == 200:
+                    data = resp.json()
+                    logger.info("视频提交成功 provider=%s video_id=%s session=%s",
+                                provider_name, data["id"], session_id)
+                    return {
+                        "video_id": data["id"],
+                        "model_name": payload["model"],
+                        "provider": provider_name,
+                    }
 
-            if resp.status_code == 429:
-                # 限流：指数退避，RPM≈2 时稍等即可
-                wait = min(5 * (2 ** (attempt - 1)), 30)
-                last_reason = f"平台限流(429)"
-                if attempt == max_attempts:
-                    break
-                logger.warning("视频提交被限流，%ds 后重试 (%d/%d)", wait, attempt, max_attempts)
-                await asyncio.sleep(wait)
-                continue
+                if resp.status_code == 429:
+                    # 限流：指数退避，RPM≈2 时稍等即可。封顶 60s + ±20% 抖动防并发会话同时退避完撞墙
+                    base_wait = min(5 * (2 ** (attempt - 1)), 60)
+                    wait = base_wait * (1 + random.uniform(-0.2, 0.2))
+                    last_reason = f"[{provider_name}] 平台限流(429)"
+                    if attempt == attempts_per_provider:
+                        break
+                    logger.warning("视频提交[%s]被限流，%.1fs 后重试 (%d/%d)",
+                                   provider_name, wait, attempt, attempts_per_provider)
+                    await asyncio.sleep(wait)
+                    continue
 
-            if resp.status_code >= 500:
-                # 服务端繁忙：video_queue_full → 长等待（队列可能要几分钟才消化）
-                code = _extract_code(resp)
-                queue_full = code == "video_queue_full" or "queue" in code.lower()
-                wait = 30 * attempt if queue_full else 10 * attempt
-                last_reason = f"服务端 {resp.status_code} ({code or 'server error'})"
-                if attempt == max_attempts:
-                    break
-                logger.warning("视频提交%s，%ds 后重试 (%d/%d)", last_reason, wait, attempt, max_attempts)
-                await asyncio.sleep(wait)
-                continue
+                if resp.status_code >= 500:
+                    # 服务端繁忙：video_queue_full → 长等待（队列可能要几分钟才消化），封顶 120s + 抖动
+                    code = _extract_code(resp)
+                    queue_full = code == "video_queue_full" or "queue" in code.lower()
+                    base_wait = min(30 * attempt, 120) if queue_full else min(10 * attempt, 60)
+                    wait = base_wait * (1 + random.uniform(-0.2, 0.2))
+                    last_reason = f"[{provider_name}] 服务端 {resp.status_code} ({code or 'server error'})"
+                    if attempt == attempts_per_provider:
+                        break
+                    logger.warning("视频提交[%s]%s，%.1fs 后重试 (%d/%d)",
+                                   provider_name, last_reason, wait, attempt, attempts_per_provider)
+                    await asyncio.sleep(wait)
+                    continue
 
-            # 4xx：参数/模式/权限错误 → 立即失败，把平台真实原因带给用户
-            raise RuntimeError(_describe_rejection(
-                httpx.HTTPStatusError(
-                    f"视频提交 {resp.status_code}",
-                    request=self._client.build_request("POST", str(self._client.base_url) + "/videos"),
-                    response=resp,
-                ),
-                "视频",
-            ))
+                # 4xx：参数/模式/权限错误 → 立即失败，不切换 provider（换账号也救不了）
+                raise RuntimeError(_describe_rejection(
+                    httpx.HTTPStatusError(
+                        f"视频提交[{provider_name}] {resp.status_code}",
+                        request=client.build_request("POST", str(client.base_url) + "/videos"),
+                        response=resp,
+                    ),
+                    "视频",
+                ))
 
-        raise RuntimeError(f"视频提交多次失败（队列繁忙/限流，已重试 {max_attempts} 次）：{last_reason}")
+            logger.warning("provider %s 视频提交 %d 次尝试耗尽，切换到下一 provider",
+                           provider_name, attempts_per_provider)
+
+        raise RuntimeError(
+            f"视频提交所有 provider 都失败（已尝试 {len(rotated)} 个 provider × "
+            f"{attempts_per_provider} 次重试）：{last_reason}"
+        )
 
     async def query_video(self, video_id: str, model_name: str,
-                          mode: str = "text") -> dict[str, Any]:
+                          mode: str = "text",
+                          provider_name: str | None = None) -> dict[str, Any]:
         """查询视频任务状态（实测 2026-09：返回含 progress 百分比、internal_status）。
 
         ⚠️ 实测确认：本版本 API 的 id/video_id/task_id 为同值（task_xxx 格式），
         统一用 video_id 参数查询 + 显式带 model_name，不要走 task_id 查询路径。
 
+        多 provider 场景：query_video 按 provider_name 选择 client（由 poller 传入，
+        保证和提交时的 provider 一致）。未指定时走 session 粘性（若可查）或第一个。
+
         重试策略：429 限流时指数退避（最多 3 次），5xx 服务端错误同样重试。
         """
+        client = await self.pick_client(provider_name=provider_name)
         resp = await _with_retry(
-            lambda: self._client.get(
+            lambda: client._client.get(
                 "/agnesapi",
                 params={"video_id": video_id, "model_name": model_name},
             ),
-            f"视频查询 {video_id}",
+            f"视频查询({client.name}) {video_id}",
         )
         return resp.json()
 
     async def close(self) -> None:
-        await self._client.aclose()
+        for client in self.providers.values():
+            await client.close()
 
 
 # ---------- 懒加载单例 ----------

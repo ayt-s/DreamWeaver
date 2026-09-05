@@ -10,10 +10,34 @@ def _env(key: str, default: str = "") -> str:
     return os.getenv(key, default)
 
 
+def _load_agnes_providers() -> list[dict]:
+    """加载 Agnes 多端点池（同家供应商多账号，官方允许的扩容）。
+
+    - 默认: 国际 AGNES_BASE_URL + AGNES_API_KEY
+    - 可选: 国内 AGNES_BASE_URL_cn + AGNES_API_KEY_cn
+    未配置的端点自动从池中排除；只有 1 个端点时等价于单点。
+    """
+    providers: list[dict] = []
+    intl_base = _env("AGNES_BASE_URL", "https://apihub.agnes-ai.com/v1")
+    intl_key = _env("AGNES_API_KEY")
+    if intl_key:
+        providers.append({"name": "intl", "base_url": intl_base, "api_key": intl_key})
+    cn_base = _env("AGNES_BASE_URL_cn")
+    cn_key = _env("AGNES_API_KEY_cn")
+    if cn_base and cn_key:
+        providers.append({"name": "cn", "base_url": cn_base, "api_key": cn_key})
+    return providers
+
+
 class Settings:
     """Phase 1 最小配置集。"""
 
-    # Agnes API（只存在于本层，前端与 Java 都拿不到）
+    # Agnes API - 多端点池（同家供应商双账号扩容）
+    # intl 用默认 AGNES_BASE_URL/AGNES_API_KEY；cn 用 AGNES_BASE_URL_cn/AGNES_API_KEY_cn
+    # 未配置的端点自动排除；gateway 按池大小做 round-robin + failover
+    agnes_providers: list[dict] = _load_agnes_providers()
+
+    # Agnes API（单点默认：国际端点，chat/novel 走这里）
     agnes_base_url: str = _env("AGNES_BASE_URL", "https://apihub.agnes-ai.com/v1")
     agnes_api_key: str = _env("AGNES_API_KEY")
 
@@ -38,8 +62,10 @@ class Settings:
     # 视频接口限流适配（实测：平台视频 RPM≈2/分钟，队列满 503 常见）
     # 提交节流：两次 /videos 提交最小间隔（秒）→ 默认 35s ≈ 1.7 次/分钟，给余量
     video_submit_interval_s: float = float(_env("AGNES_VIDEO_SUBMIT_INTERVAL_S", "35"))
-    # 提交总尝试次数（含 429/503 退避重试），视频队列繁忙时最长约 5 分钟内仍失败才放弃
-    video_submit_max_attempts: int = int(_env("AGNES_VIDEO_MAX_ATTEMPTS", "6"))
+    # 提交总尝试次数（含 429/503 退避重试）。加大退避后最坏 ~7.5 分钟：
+    #   429 退避封顶 60s（10 次全 429 ≈ 5-6 分钟）；503 队列满封顶 120s（10 次 ≈ 7 分钟）
+    #   加 ±20% 抖动防止并发会话同时退避完撞墙
+    video_submit_max_attempts: int = int(_env("AGNES_VIDEO_MAX_ATTEMPTS", "10"))
 
     # Phase 2 回调目标（Java Spring Boot 地址）
     java_notify_url: str = _env("JAVA_NOTIFY_URL", "")

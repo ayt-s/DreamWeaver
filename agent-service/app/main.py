@@ -40,6 +40,7 @@ from app.scheduler import scheduler
 from app.agent.chat_api import router as agent_chat_router
 from app.controller.novel_api import router as novel_api_router
 from app.controller.novel_anchors_api import router as novel_anchors_router
+from app.controller.internal_api import router as internal_router
 
 app = FastAPI(title="DreamWeaver Agent Service", version="0.2.0")
 register_exception_handlers(app)
@@ -58,6 +59,9 @@ app.include_router(novel_api_router)
 
 # 小说角色/场景锚定图路由：POST /v1/novel/anchors
 app.include_router(novel_anchors_router)
+
+# 内部同步端点（Java 侧启动时拉取本地 fallback 记录，防回调失败丢数据）
+app.include_router(internal_router)
 
 # 内存态会话仓（Phase 1）。生产换 PostgreSQL 落库（设计文档 §4.1）
 _sessions: dict[str, CreativeSessionState] = {}
@@ -103,9 +107,12 @@ def _parse_json_list(raw: str | None, name: str) -> list:
 
 
 def _parse_segments(raw: str | None) -> list:
-    """解析无限画布片段 JSON：[] -> [{image_url, prompt, seconds}]。
+    """解析无限画布片段 JSON：[] -> [{image_url, prompt, seconds, reference_images}]。
 
-    只保留带 image_url 的条目，其余字段尽量宽容。
+    保留两类 segment：
+    1. 带 image_url 的（用户单张图）
+    2. 带 reference_images 数组的（用户多图/锚定图）
+    两者都无则丢弃。
     """
     if not raw:
         return []
@@ -115,14 +122,20 @@ def _parse_segments(raw: str | None) -> list:
             return []
         segments = []
         for s in parsed:
-            if not isinstance(s, dict) or not s.get("image_url"):
+            if not isinstance(s, dict):
                 continue
+            image_url = str(s.get("image_url", "")).strip()
+            # 兼容用户提供多参考图（锚定图等）
+            ref_images = s.get("reference_images") or []
+            if not image_url and not ref_images:
+                continue  # 既无单图也无多图，丢弃
             try:
                 seconds = int(s.get("seconds", 5) or 5)
             except (TypeError, ValueError):
                 seconds = 5
             segments.append({
-                "image_url": str(s.get("image_url", "")).strip(),
+                "image_url": image_url,
+                "reference_images": list(ref_images),
                 "prompt": str(s.get("prompt", "")).strip(),
                 "seconds": seconds,
                 "aspect_ratio": str(s.get("aspect_ratio") or "16:9").strip(),
