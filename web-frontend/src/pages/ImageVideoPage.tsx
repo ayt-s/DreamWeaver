@@ -190,7 +190,7 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
         <ImagePlus className="h-3.5 w-3.5" /> 图片节点
       </div>
 
-      {/* 图片预览 / 占位 */}
+      {/* 图片预览 / 占位：有图显示图；无图但有 prompt 显示 prompt 预览（小说转画布常用）；都没有显示默认占位 */}
       <div className="relative mb-2 flex h-36 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
         {data.imageUrl ? (
           <img
@@ -198,6 +198,16 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
             alt="参考图"
             className="h-full w-full object-contain"
           />
+        ) : data.prompt && data.prompt.trim() ? (
+          <div className="flex flex-col items-center justify-center gap-1.5 px-3 text-center">
+            <Wand2 className="h-5 w-5 text-indigo-300" />
+            <div className="text-[10px] font-medium text-indigo-500">
+              待生成 · 点「文生图」
+            </div>
+            <p className="line-clamp-4 max-w-full text-[10px] leading-relaxed text-slate-600">
+              {data.prompt}
+            </p>
+          </div>
         ) : (
           <div className="flex flex-col items-center gap-1 text-slate-400">
             <Wand2 className="h-8 w-8" />
