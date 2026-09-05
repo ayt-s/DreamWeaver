@@ -14,24 +14,9 @@ import {
 import { getNovelProject, listNovelProjects, preprocessNovel, toCanvas } from '../api/novel';
 import { generateAnchors } from '../api/novelAnchors';
 import type { NovelProject, NovelSegment } from '../types/novel';
+import { stripChapterSuffix } from '../utils/projectName';
 
-/** 从 projectName 剥离章节标识，得到"小说名"。
- *  例：
- *    "长生烬-第一章"         → "长生烬"
- *    "长生烬 第一章 警花的恐惧" → "长生烬"
- *    "长生烬·第一章"         → "长生烬"
- *    "长生烬01" / "长生烬-01" → "长生烬"
- *    "长生烬 1"              → "长生烬"
- *  剥离失败时返回原 projectName（保底）。
- */
-function stripChapterSuffix(name: string): string {
-  const trimmed = name.trim();
-  // 匹配结尾的： 第X章 / ·第X章 / -第X章 / -X / _X / -XX / 空格+数字+章尾
-  const chapterPattern =
-    /[-·\s]?(?:第\s*[\d一二三四五六七八九十百]+章|[\d一二三四五六七八九十]+)\s*[-·\s]*[^-\d一二三四五六七八九十\s]*$/;
-  const stripped = trimmed.replace(chapterPattern, '').trim();
-  return stripped || trimmed;
-}
+/** 从 projectName 剥离章节标识 → 小说名。共用工具见 ../utils/projectName.ts */
 
 type Phase = 'input' | 'processing' | 'segments' | 'error';
 
@@ -48,56 +33,6 @@ export default function NovelPage() {
   const [converting, setConverting] = useState(false);
 
   const canSubmit = projectName.trim() && novelText.trim().length >= 100;
-
-  // 从已有项目加载：列出所有小说项目（按小说名分组），选一个后加载其原文
-  const onLoadFromExisting = async () => {
-    try {
-      const list = await listNovelProjects();
-      if (list.length === 0) {
-        window.alert('还没有任何小说项目，请先粘贴文本并提交预处理。');
-        return;
-      }
-      // 按小说名分组展示（同本小说多章节归到同一组）
-      const groups = new Map<string, typeof list>();
-      for (const p of list) {
-        const key = stripChapterSuffix(p.projectName);
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key)!.push(p);
-      }
-      const listText = Array.from(groups.entries())
-        .sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'))
-        .map(([, ps]) => {
-          ps.sort((a, b) => a.id - b.id);
-          return ps
-            .map((p) => `${p.id}. ${p.projectName}（${p.status}）`)
-            .map((l) => `    ${l}`)
-            .join('\n');
-        })
-        .join('\n');
-      const input = window.prompt(
-        `选择已有项目加载原文（按小说名分组）：\n\n${listText}\n\n输入项目 ID 数字，或输入 0 / 留空 / 点取消 = 取消：`,
-        '',
-      );
-      if (!input || input.trim() === '0') return;
-      const id = Number(input.trim());
-      if (!Number.isInteger(id) || !list.some((p) => p.id === id)) {
-        window.alert('无效的项目 ID');
-        return;
-      }
-      const full = await getNovelProject(id);
-      if (full) {
-        setProjectName(full.projectName);
-        // 自动填充 novelName（从 projectName 剥离章节标识）
-        setNovelName(stripChapterSuffix(full.projectName));
-        setNovelText(full.novelText || '');
-        window.alert(`已加载「${full.projectName}」原文（${full.novelText?.length || 0} 字）`);
-      } else {
-        window.alert('项目加载失败');
-      }
-    } catch (e) {
-      window.alert(e instanceof Error ? e.message : '加载失败');
-    }
-  };
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
@@ -228,7 +163,6 @@ export default function NovelPage() {
             setTargetSegments={setTargetSegments}
             setSecondsPerSegment={setSecondsPerSegment}
             onSubmit={handleSubmit}
-            onLoadFromExisting={onLoadFromExisting}
           />
         )}
         {phase === 'processing' && (
@@ -247,6 +181,20 @@ export default function NovelPage() {
         )}
       </main>
     </div>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    ready: { label: '就绪', cls: 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10' },
+    pending: { label: '处理中', cls: 'border-amber-500/40 text-amber-300 bg-amber-500/10' },
+    failed: { label: '失败', cls: 'border-red-500/40 text-red-300 bg-red-500/10' },
+  };
+  const m = map[status] || { label: status, cls: 'border-slate-600 text-slate-400 bg-slate-700/30' };
+  return (
+    <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${m.cls}`}>
+      {m.label}
+    </span>
   );
 }
 
@@ -275,16 +223,74 @@ function InputPanel(props: {
   setTargetSegments: (v: number) => void;
   setSecondsPerSegment: (v: number) => void;
   onSubmit: () => void;
-  onLoadFromExisting: () => void;
 }) {
   const {
     projectName, novelName, novelText, targetSegments, secondsPerSegment,
     setProjectName, setNovelName, setNovelText, setTargetSegments, setSecondsPerSegment, onSubmit,
-    onLoadFromExisting,
   } = props;
 
   const charCount = novelText.length;
   const valid = useMemo(() => charCount >= 100 && projectName.trim(), [charCount, projectName]);
+
+  // 已有项目下拉面板状态（内联，不用 prompt）
+  const [showExisting, setShowExisting] = useState(false);
+  const [existingProjects, setExistingProjects] = useState<NovelProject[]>([]);
+  const [loadingExisting, setLoadingExisting] = useState(false);
+  const [loadingId, setLoadingId] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [loadNotice, setLoadNotice] = useState('');
+
+  const openExisting = async () => {
+    setShowExisting((s) => !s);
+    setLoadError('');
+    setLoadNotice('');
+    if (existingProjects.length > 0) return; // 已加载过，不重复请求
+    setLoadingExisting(true);
+    try {
+      const list = await listNovelProjects();
+      setExistingProjects(list);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : '加载已有项目失败');
+    } finally {
+      setLoadingExisting(false);
+    }
+  };
+
+  // 按小说名分组（同本小说多章节归到同一组，和 Canvas 顶栏一致）
+  const groupedProjects = useMemo(() => {
+    const groups = new Map<string, NovelProject[]>();
+    for (const p of existingProjects) {
+      const key = stripChapterSuffix(p.projectName);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(p);
+    }
+    return Array.from(groups.entries())
+      .sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'))
+      .map(([groupName, ps]) => ({
+        groupName,
+        projects: ps.sort((a, b) => a.id - b.id),
+      }));
+  }, [existingProjects]);
+
+  const selectExistingProject = async (id: number) => {
+    setLoadingId(id);
+    setLoadError('');
+    try {
+      const full = await getNovelProject(id);
+      if (full) {
+        setProjectName(full.projectName);
+        setNovelName(stripChapterSuffix(full.projectName));
+        setNovelText(full.novelText || '');
+        setLoadNotice(`已加载「${full.projectName}」原文（${full.novelText?.length || 0} 字），可直接编辑后重新预处理`);
+      } else {
+        setLoadError('项目加载失败');
+      }
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : '加载失败');
+    } finally {
+      setLoadingId(null);
+    }
+  };
 
   return (
     <div className="mx-auto max-w-4xl space-y-4 p-6">
@@ -299,10 +305,10 @@ function InputPanel(props: {
           <span>项目名称 *</span>
           <button
             type="button"
-            onClick={onLoadFromExisting}
+            onClick={openExisting}
             className="inline-flex items-center gap-1 text-[11px] text-indigo-300 hover:text-indigo-200"
           >
-            <FolderOpen className="h-3.5 w-3.5" /> 从已有项目加载
+            <FolderOpen className="h-3.5 w-3.5" /> {showExisting ? '收起已有项目' : '从已有项目加载'}
           </button>
         </label>
         <input
@@ -312,6 +318,74 @@ function InputPanel(props: {
           maxLength={64}
           className="mb-4 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500"
         />
+
+        {/* 已有项目下拉面板（内联，按小说名分组） */}
+        {showExisting && (
+          <div className="mb-4 rounded-lg border border-slate-700 bg-slate-800/60 p-3">
+            <div className="mb-2 flex items-center justify-between text-xs">
+              <span className="text-slate-400">已有项目（按小说名分组，点选加载原文）</span>
+              <button
+                type="button"
+                onClick={() => setShowExisting(false)}
+                className="text-slate-500 hover:text-slate-300"
+                title="关闭"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+
+            {loadingExisting ? (
+              <div className="flex items-center gap-2 py-4 text-xs text-slate-400">
+                <Loader2 className="h-4 w-4 animate-spin" /> 加载已有项目…
+              </div>
+            ) : loadError ? (
+              <div className="py-3 text-xs text-red-400">{loadError}</div>
+            ) : existingProjects.length === 0 ? (
+              <div className="py-3 text-xs text-slate-500">
+                还没有任何小说项目，请先粘贴文本并提交预处理。
+              </div>
+            ) : (
+              <div className="max-h-72 overflow-y-auto pr-1">
+                {groupedProjects.map((group) => (
+                  <div key={group.groupName} className="mb-2">
+                    <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-slate-300">
+                      <BookOpen className="h-3 w-3 text-indigo-400" />
+                      <span>{group.groupName}</span>
+                      <span className="text-slate-600">·</span>
+                      <span className="text-slate-500">{group.projects.length} 章</span>
+                    </div>
+                    <div className="ml-1 space-y-1">
+                      {group.projects.map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          disabled={loadingId !== null}
+                          onClick={() => selectExistingProject(p.id)}
+                          className="flex w-full items-center gap-2 rounded border border-slate-700 bg-slate-900/40 px-2.5 py-1.5 text-left text-xs text-slate-300 hover:border-indigo-500 hover:bg-slate-800 disabled:cursor-wait disabled:opacity-50"
+                        >
+                          {loadingId === p.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-indigo-400" />
+                          ) : (
+                            <FolderOpen className="h-3.5 w-3.5 text-slate-500" />
+                          )}
+                          <span className="flex-1 truncate">{p.projectName}</span>
+                          <StatusBadge status={p.status} />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {loadNotice && (
+              <div className="mt-2 flex items-start gap-1.5 rounded bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-300">
+                <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>{loadNotice}</span>
+              </div>
+            )}
+          </div>
+        )}
 
         <label className="mb-1.5 block text-xs text-slate-400">
           小说名 <span className="text-slate-500">（可选，同本小说多章节填一样，锚定图跨章节复用）</span>
