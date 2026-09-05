@@ -52,6 +52,24 @@ import {
 import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
 
 /* ------------------------------------------------------------------ */
+/* 工具：从项目名剥离章节标识，得到"小说名"用于下拉分组                    */
+/* ------------------------------------------------------------------ */
+
+/** 从项目名剥离章节后缀，得到小说名。
+ *  "长生烬-第一章" → "长生烬"
+ *  "长生烬 第一章 警花的恐惧" → "长生烬"
+ *  "长生烬01" → "长生烬"
+ *  剥离失败返回原名（保底）。
+ */
+function stripChapterSuffix(name: string): string {
+  const trimmed = name.trim();
+  const chapterPattern =
+    /[-·\s]?(?:第\s*[\d一二三四五六七八九十百]+章|[\d一二三四五六七八九十]+)\s*[-·\s]*[^-\d一二三四五六七八九十\s]*$/;
+  const stripped = trimmed.replace(chapterPattern, '').trim();
+  return stripped || trimmed;
+}
+
+/* ------------------------------------------------------------------ */
 /* 节点数据模型                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -715,24 +733,43 @@ export default function CanvasPage() {
               : '未接入图片，将按文本生成视频'}
           </span>
           <div className={`h-5 w-px ${dark ? 'bg-slate-700' : 'bg-slate-300'}`} />
-          {/* 项目选择 */}
+          {/* 项目选择：按小说名分组（<optgroup>），同本小说多章节归到同一组下 */}
           <select
             value={currentProjectId ?? ''}
             onChange={(e) => {
               const v = e.target.value;
               if (v) onSelectProject(Number(v));
             }}
-            title="切换画布项目"
+            title="切换画布项目（按小说名分组）"
             className={`rounded-lg border px-2 py-1 text-xs outline-none ${theme.input}`}
           >
             <option value="" disabled>
               {currentProjectId ? '切换项目…' : '新建后保存即成为项目'}
             </option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
+            {(() => {
+              // 按 stripChapterSuffix 分组：小说名 → [项目]
+              const groups = new Map<string, typeof projects>();
+              for (const p of projects) {
+                const key = stripChapterSuffix(p.name);
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key)!.push(p);
+              }
+              // 每组内按 id 升序（创建时间顺序），组间按小说名排序
+              return Array.from(groups.entries())
+                .sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'))
+                .map(([groupName, ps]) => {
+                  ps.sort((a, b) => a.id - b.id);
+                  return (
+                    <optgroup key={groupName} label={groupName}>
+                      {ps.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                });
+            })()}
           </select>
           {/* 项目名称（重命名/新建保存用） */}
           <input
