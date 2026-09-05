@@ -65,11 +65,20 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
     segments = list(state.get("segments", []))
     storyboard = []
     for idx, seg in enumerate(segments):
-        image_url = str(seg.get("image_url", "")).strip()
+        # 多参考图：优先读前端透传的 reference_images 数组
+        # （用户源图 + 角色锚定图 + 场景锚定图），兼容旧 image_url 单张。
+        # agnes reference 模式硬限制 5 张。
+        ref_images = list(seg.get("reference_images") or [])
+        if not ref_images:
+            image_url = str(seg.get("image_url", "")).strip()
+            if image_url:
+                ref_images.append(image_url)
+        if len(ref_images) > 5:
+            ref_images = ref_images[:5]
         cn = str(seg.get("prompt", "")).strip()
         # 描述为空时给默认动作，避免空提示词
         if not cn:
-            cn = "对图片内容做缓慢推进的动态运镜"
+            cn = "对参考图内容做缓慢推进的动态运镜"
         en_prompt = await translate_to_en(cn)
         raw_seconds = int(seg.get("seconds", 5) or 5)
         seconds = max(MIN_SECONDS, min(raw_seconds, MAX_SECONDS))
@@ -77,10 +86,10 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
         storyboard.append({
             "shot_id": idx,
             "prompt_en": en_prompt,
-            "mode": "reference",  # 用户提供参考图，参考模式(agnès Video 2.5 合法值)
+            "mode": "reference" if ref_images else "text",
             "seconds": str(seconds),
             "aspect_ratio": ratio,
-            "reference_images": [image_url],
+            "reference_images": ref_images,
             "cn_description": cn,
         })
 
