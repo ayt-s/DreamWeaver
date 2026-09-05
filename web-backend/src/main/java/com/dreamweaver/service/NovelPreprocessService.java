@@ -22,6 +22,9 @@ public interface NovelPreprocessService {
     /** 按 id 查询项目，不存在返回 null */
     NovelProject get(Long id);
 
+    /** 按用户查询项目列表（轻量字段：不含 segments，避免大对象传输）。按 updatedAt 倒序，上限 50 */
+    java.util.List<NovelProjectResponse> listByUser(Long userId);
+
     /** 响应视图（segments 已反序列化为对象） */
     NovelProjectResponse toResponse(NovelProject p);
 

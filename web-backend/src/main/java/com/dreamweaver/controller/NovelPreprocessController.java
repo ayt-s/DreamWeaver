@@ -40,6 +40,12 @@ public class NovelPreprocessController {
         return CommonResult.ok(service.toResponse(service.get(id)));
     }
 
+    /** 项目列表（按用户，按更新时间倒序，轻量字段不含 segments） */
+    @GetMapping
+    public CommonResult<java.util.List<NovelProjectResponse>> list() {
+        return CommonResult.ok(service.listByUser(DEFAULT_USER_ID));
+    }
+
     /** 更新分镜片段 JSON */
     @PutMapping("/{id}/segments")
     public CommonResult<NovelProjectResponse> updateSegments(

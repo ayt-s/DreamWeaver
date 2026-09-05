@@ -159,6 +159,31 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
     }
 
     @Override
+    public java.util.List<NovelProjectResponse> listByUser(Long userId) {
+        // 轻量查询：按 updatedAt 倒序，上限 50；只回填 id/name/status/createdAt/updatedAt/visualStyle/canvasProjectId
+        var rows = mapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<NovelProject>()
+                        .eq(NovelProject::getUserId, userId)
+                        .orderByDesc(NovelProject::getUpdatedAt)
+                        .last("LIMIT 50")
+        );
+        java.util.List<NovelProjectResponse> out = new java.util.ArrayList<>(rows.size());
+        for (NovelProject p : rows) {
+            NovelProjectResponse r = new NovelProjectResponse();
+            r.setId(p.getId());
+            r.setProjectName(p.getProjectName());
+            // 不回填 novelText / chaptersJson / analysisJson / segments，避免大对象
+            r.setVisualStyle(p.getVisualStyle());
+            r.setCanvasProjectId(p.getCanvasProjectId());
+            r.setStatus(p.getStatus());
+            r.setCreatedAt(p.getCreatedAt());
+            r.setUpdatedAt(p.getUpdatedAt());
+            out.add(r);
+        }
+        return out;
+    }
+
+    @Override
     public NovelProjectResponse toResponse(NovelProject p) {
         if (p == null) return null;
         NovelProjectResponse r = new NovelProjectResponse();

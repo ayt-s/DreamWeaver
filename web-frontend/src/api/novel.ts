@@ -16,6 +16,11 @@ export function getNovelProject(id: number): Promise<NovelProject> {
   return unwrap(client.get(`/novel/${id}`));
 }
 
+/** 项目列表（轻量字段：不含 novelText/segments，按更新时间倒序，上限 50） */
+export function listNovelProjects(): Promise<NovelProject[]> {
+  return unwrap(client.get('/novel'));
+}
+
 /** 更新分镜列表 */
 export function updateSegments(
   id: number,
