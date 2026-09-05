@@ -36,6 +36,7 @@ import {
   Images,
   Plus,
   X,
+  RefreshCw,
 } from 'lucide-react';
 import {
   createVideoTask,
@@ -418,6 +419,7 @@ export default function CanvasPage() {
   const [charRefUrl, setCharRefUrl] = useState('');
   const [sceneRefName, setSceneRefName] = useState('');
   const [sceneRefUrl, setSceneRefUrl] = useState('');
+  const [regenerating, setRegenerating] = useState<{ kind: 'char' | 'scene'; name: string } | null>(null);
   const anchorRefBox = useRef<HTMLDivElement>(null);
 
   // 切换项目时，从项目数据同步锚定图 state
@@ -539,6 +541,52 @@ export default function CanvasPage() {
       await saveAnchorsToProject(anchorCharRefs, next);
     } catch (e) {
       window.alert(e instanceof Error ? e.message : '保存失败');
+    }
+  };
+
+  // 重新生成单个锚定图：prompt 弹框填描述（默认当前名称），调 agent anchors 生成新 URL 覆盖
+  const regenerateAnchor = async (kind: 'char' | 'scene', name: string) => {
+    const defaultDesc = name;
+    const descInput = window.prompt(
+      `重新生成「${name}」的锚定图。请输入角色/场景描述（用于生成提示词）：`,
+      defaultDesc,
+    );
+    if (descInput === null) return; // 取消
+    const description = descInput.trim() || defaultDesc;
+    setRegenerating({ kind, name });
+    try {
+      const res = await fetch('/v1/novel/anchors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          kind === 'char'
+            ? { characters: { [name]: description } }  // characters 是 dict{name: desc}
+            : { scenes: [description] },               // scenes 是 string[]
+        ),
+      });
+      const json = await res.json();
+      // agent 直接返回 NovelAnchorsResponse：{code, message, data: {characters: {name: url}, scenes: {desc: url}}}
+      // scenes 返回 key 是 desc（描述文本），不是 name，所以场景用 description 作 key 取
+      const newUrl = kind === 'char'
+        ? json?.data?.characters?.[name]
+        : json?.data?.scenes?.[description];
+      if (!newUrl) {
+        window.alert(`重新生成失败：${json?.message || '未知错误'}`);
+        return;
+      }
+      if (kind === 'char') {
+        const next = { ...anchorCharRefs, [name]: newUrl };
+        setAnchorCharRefs(next);
+        await saveAnchorsToProject(next, anchorSceneRefs);
+      } else {
+        const next = { ...anchorSceneRefs, [name]: newUrl };
+        setAnchorSceneRefs(next);
+        await saveAnchorsToProject(anchorCharRefs, next);
+      }
+    } catch (e) {
+      window.alert(e instanceof Error ? `重新生成失败：${e.message}` : '重新生成失败');
+    } finally {
+      setRegenerating(null);
     }
   };
 
@@ -1085,8 +1133,16 @@ export default function CanvasPage() {
                   <img src={cachedImageUrl(url)} alt={name} className="h-10 w-10 rounded object-cover" />
                   <div className="flex-1 truncate text-xs">{name}</div>
                   <button
+                    onClick={() => regenerateAnchor('char', name)}
+                    title="重新生成（不满意时替换）"
+                    disabled={regenerating?.kind === 'char' && regenerating?.name === name}
+                    className={`text-xs ${dark ? 'text-slate-400 hover:text-blue-400' : 'text-slate-500 hover:text-blue-500'} disabled:cursor-wait disabled:opacity-40`}
+                  >
+                    <RefreshCw className={`h-4 w-4 ${regenerating?.kind === 'char' && regenerating?.name === name ? 'animate-spin' : ''}`} />
+                  </button>
+                  <button
                     onClick={() => removeCharRef(name)}
-                    className={`text-xs ${dark ? 'text-slate-400 hover:text-red-400' : 'text-slate-500 hover:text-red-500'}`}
+                    className={dark ? 'text-xs text-slate-400 hover:text-red-400' : 'text-xs text-slate-500 hover:text-red-500'}
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
@@ -1126,8 +1182,16 @@ export default function CanvasPage() {
                   <img src={cachedImageUrl(url)} alt={name} className="h-10 w-10 rounded object-cover" />
                   <div className="flex-1 truncate text-xs">{name}</div>
                   <button
+                    onClick={() => regenerateAnchor('scene', name)}
+                    title="重新生成（不满意时替换）"
+                    disabled={regenerating?.kind === 'scene' && regenerating?.name === name}
+                    className={`text-xs ${dark ? 'text-slate-400 hover:text-blue-400' : 'text-slate-500 hover:text-blue-500'} disabled:cursor-wait disabled:opacity-40`}
+                  >
+                    <RefreshCw className={`h-4 w-4 ${regenerating?.kind === 'scene' && regenerating?.name === name ? 'animate-spin' : ''}`} />
+                  </button>
+                  <button
                     onClick={() => removeSceneRef(name)}
-                    className={`text-xs ${dark ? 'text-slate-400 hover:text-red-400' : 'text-slate-500 hover:text-red-500'}`}
+                    className={dark ? 'text-xs text-slate-400 hover:text-red-400' : 'text-xs text-slate-500 hover:text-red-500'}
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
