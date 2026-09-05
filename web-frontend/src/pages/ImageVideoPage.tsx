@@ -47,7 +47,7 @@ import {
   saveProject,
   type CanvasProjectView,
 } from '../api/canvas';
-import { cachedImageUrl, parseImageUrls, type TaskResponse, type TaskSource } from '../types/task';
+import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
 
 /* ------------------------------------------------------------------ */
 /* 节点数据模型                                                         */
@@ -362,10 +362,19 @@ export default function CanvasPage() {
   const [projectName, setProjectName] = useState('');
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  // URL ?source=manga 时提交成片会带 source（从小说转画布的路径 NovelPage → /canvas?project=X&source=manga）
+  // URL ?anchorRefs 携带从小说转画布时生成的角色/场景锚定图
   const [searchParams] = useSearchParams();
-  const sourceParam = searchParams.get('source');
-  const submitSource: TaskSource = sourceParam === 'manga' ? 'manga' : 'default';
+  const anchorRefsParam = searchParams.get('anchorRefs');
+  const anchorRefs = useMemo(() => {
+    if (!anchorRefsParam) return null;
+    try {
+      const parsed = JSON.parse(decodeURIComponent(anchorRefsParam));
+      if (parsed && typeof parsed === 'object') return parsed as { characters?: Record<string, string>; scenes?: Record<string, string> };
+      return null;
+    } catch {
+      return null;
+    }
+  }, [anchorRefsParam]);
 
   // 载入项目列表
   useEffect(() => {
@@ -583,16 +592,29 @@ export default function CanvasPage() {
   });
 
   const mutation = useMutation({
-    mutationFn: () =>
-      createVideoTask({
+    mutationFn: () => {
+      // 提交前：如果 URL 带 anchorRefs，把角色+场景锚定图合并到每个 segment 的 reference_images
+      let segmentsJson: string | undefined;
+      if (plan.segments.length > 0) {
+        const enriched = plan.segments.map((seg) => {
+          if (!anchorRefs) return seg;
+          const extraRefs: string[] = [];
+          for (const url of Object.values(anchorRefs.characters || {})) extraRefs.push(url);
+          for (const url of Object.values(anchorRefs.scenes || {})) extraRefs.push(url);
+          const merged = [seg.image_url, ...extraRefs].filter((u): u is string => !!u);
+          return { ...seg, reference_images: merged.slice(0, 5) };
+        });
+        segmentsJson = JSON.stringify(enriched);
+      }
+      return createVideoTask({
         prompt:
           plan.texts.join('；') ||
           (plan.segments.length > 0 ? '无限画布图生视频' : '无限画布'),
         genType: plan.segments.length > 0 ? 'image_video' : 'text_video',
-        source: submitSource,
-        segments: plan.segments.length > 0 ? JSON.stringify(plan.segments) : undefined,
+        segments: segmentsJson,
         videoModel: videoModel || undefined,
-      }),
+      });
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['tasks'] });
       navigate('/');

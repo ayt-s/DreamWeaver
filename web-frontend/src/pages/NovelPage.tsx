@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import { preprocessNovel, toCanvas } from '../api/novel';
+import { generateAnchors } from '../api/novelAnchors';
 import type { NovelProject, NovelSegment } from '../types/novel';
 
 type Phase = 'input' | 'processing' | 'segments' | 'error';
@@ -56,8 +57,33 @@ export default function NovelPage() {
     if (!project) return;
     setConverting(true);
     try {
+      // 步骤 1：先调 agent 生成角色/场景锚定图（约 2-3 分钟）
+      let anchorRefs = '';
+      try {
+        const analysis = project.analysisJson ? JSON.parse(project.analysisJson) : {};
+        const characters = analysis.characters || {};
+        const scenes = analysis.scenes || [];
+        if (Object.keys(characters).length > 0 || scenes.length > 0) {
+          const anchors = await generateAnchors({
+            characters,
+            scenes,
+            style: project.visualStyle || '电影写实',
+          });
+          anchorRefs = encodeURIComponent(JSON.stringify({
+            characters: anchors.characters || {},
+            scenes: anchors.scenes || {},
+          }));
+        }
+      } catch (e) {
+        console.warn('锚定图生成失败，跳过：', e);
+      }
+
+      // 步骤 2：转画布并跳转（anchorRefs 通过 URL query 传给 ImageVideoPage）
       const canvas = await toCanvas(project.id);
-      navigate(`/canvas?project=${canvas.id}`);
+      const url = anchorRefs
+        ? `/canvas?project=${canvas.id}&anchorRefs=${anchorRefs}`
+        : `/canvas?project=${canvas.id}`;
+      navigate(url);
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
       setPhase('error');
