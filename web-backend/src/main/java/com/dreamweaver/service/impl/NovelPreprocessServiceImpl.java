@@ -233,13 +233,12 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
             throw new IllegalArgumentException("该项目尚未生成分镜，无法同步到画布");
         }
 
-        // 布局：图片行 y=60，视频行 y=460；每行 3 列 x=120/460/800，第二行整体下移 200
+        // 布局：图片行 y=60 起每行 3 列，成片节点在右侧
         int[] colX = {120, 460, 800};
         int imageY = 60;
-        int videoY = 460;
         int rowStep = 200;
-        int composeX = 1200;
-        int composeY = 400;
+        int composeX = 1300;
+        int composeY = 200;
 
         List<Map<String, Object>> nodes = new ArrayList<>();
         for (int i = 0; i < segments.size(); i++) {
@@ -247,51 +246,33 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
             int x = colX[i % 3];
             int row = i / 3;
 
-            // 图片节点
+            // 图片节点（type 必须匹配前端 nodeTypes 注册的 "imageNode"，字段名 ratio/imageUrl 也要匹配）
             Map<String, Object> imgNode = new LinkedHashMap<>();
             imgNode.put("id", "img" + i);
-            imgNode.put("type", "image");
+            imgNode.put("type", "imageNode");
             imgNode.put("position", Map.of("x", x, "y", imageY + row * rowStep));
             Map<String, Object> imgData = new LinkedHashMap<>();
-            imgData.put("type", "image");
             imgData.put("prompt", seg.getImagePrompt());
-            imgData.put("aspectRatio", "16:9");
-            imgData.put("nodeLabel", "图" + (i + 1));
-            imgData.put("imageUrls", new ArrayList<String>());
+            imgData.put("ratio", "16:9");
+            imgData.put("imageUrl", "");
             imgNode.put("data", imgData);
             nodes.add(imgNode);
-
-            // 视频节点
-            Map<String, Object> vidNode = new LinkedHashMap<>();
-            vidNode.put("id", "vid" + i);
-            vidNode.put("type", "video");
-            vidNode.put("position", Map.of("x", x, "y", videoY + row * rowStep));
-            Map<String, Object> vidData = new LinkedHashMap<>();
-            vidData.put("type", "video");
-            vidData.put("prompt", seg.getVideoPrompt());
-            vidData.put("aspectRatio", "16:9");
-            vidData.put("nodeLabel", "片" + (i + 1));
-            vidData.put("seconds", seg.getSeconds() != null ? seg.getSeconds() : 5);
-            vidData.put("description", seg.getPlot());
-            vidNode.put("data", vidData);
-            nodes.add(vidNode);
         }
 
+        // 成片节点（type 用 "videoNode"——前端唯一注册的成片组件，UI 显示"成片·长视频合成"）
+        // 所有 imageNode 连到它，提交成片时 agent 按 x 坐标顺序逐段生成视频并 xfade 拼接
         Map<String, Object> composeNode = new LinkedHashMap<>();
         composeNode.put("id", "compose");
-        composeNode.put("type", "compose");
+        composeNode.put("type", "videoNode");
         composeNode.put("position", Map.of("x", composeX, "y", composeY));
         Map<String, Object> composeData = new LinkedHashMap<>();
-        composeData.put("type", "compose");
-        composeData.put("nodeLabel", "成片·" + p.getProjectName());
-        composeData.put("aspectRatio", "16:9");
+        composeData.put("seconds", 5);
         composeNode.put("data", composeData);
         nodes.add(composeNode);
 
         List<Map<String, Object>> edges = new ArrayList<>();
         for (int i = 0; i < segments.size(); i++) {
-            edges.add(Map.of("id", "e" + i + "-iv", "source", "img" + i, "target", "vid" + i));
-            edges.add(Map.of("id", "e" + i + "-vc", "source", "vid" + i, "target", "compose"));
+            edges.add(Map.of("id", "e" + i + "-ic", "source", "img" + i, "target", "compose"));
         }
 
         String nodesJson = safeJson(nodes);
@@ -300,7 +281,7 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
         // 两步法：先建空项目拿 id，再保存 nodes/edges
         CanvasProject created = canvasProjectService.createProject(p.getProjectName(), DEFAULT_USER_ID);
         CanvasProject saved = canvasProjectService.saveProject(
-                created.getId(), DEFAULT_USER_ID, p.getProjectName(), nodesJson, edgesJson);
+                created.getId(), DEFAULT_USER_ID, p.getProjectName(), nodesJson, edgesJson, null, null);
 
         // 回填 canvasProjectId 关联
         NovelProject patch = new NovelProject();
@@ -313,7 +294,8 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
 
         return new CanvasProjectView(
                 saved.getId(), saved.getProjectName(), saved.getUpdatedAt(),
-                saved.getNodesJson(), saved.getEdgesJson());
+                saved.getNodesJson(), saved.getEdgesJson(), saved.getParentId(),
+                saved.getCharacterRefs(), saved.getSceneRefs());
     }
 
     // ========== 工具方法 ==========
