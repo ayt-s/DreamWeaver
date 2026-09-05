@@ -62,10 +62,11 @@ class Settings:
     # 视频接口限流适配（实测：平台视频 RPM≈2/分钟，队列满 503 常见）
     # 提交节流：两次 /videos 提交最小间隔（秒）→ 默认 35s ≈ 1.7 次/分钟，给余量
     video_submit_interval_s: float = float(_env("AGNES_VIDEO_SUBMIT_INTERVAL_S", "35"))
-    # 提交总尝试次数（含 429/503 退避重试）。加大退避后最坏 ~7.5 分钟：
-    #   429 退避封顶 60s（10 次全 429 ≈ 5-6 分钟）；503 队列满封顶 120s（10 次 ≈ 7 分钟）
-    #   加 ±20% 抖动防止并发会话同时退避完撞墙
-    video_submit_max_attempts: int = int(_env("AGNES_VIDEO_MAX_ATTEMPTS", "10"))
+    # 提交总尝试次数（含 429/503 退避重试）。多 provider 场景下撞墙就切账号，
+    # 不依赖加长退避。每 provider 最坏 6 次 × 30s 封顶 ≈ 2-3 分钟，双 provider 总 ~6 分钟。
+    #   429 退避封顶 30s + ±20% 抖动防并发会话同时退避完撞墙
+    #   503 队列满封顶 60s + 抖动（队列消化需时间）
+    video_submit_max_attempts: int = int(_env("AGNES_VIDEO_MAX_ATTEMPTS", "6"))
 
     # Phase 2 回调目标（Java Spring Boot 地址）
     java_notify_url: str = _env("JAVA_NOTIFY_URL", "")

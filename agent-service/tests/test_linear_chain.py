@@ -27,7 +27,8 @@ class _FakePoller:
     async def stop(self):
         pass
 
-    async def submit(self, video_id, model_name, session_id, shot_index):
+    async def submit(self, video_id, model_name, session_id, shot_index,
+                     provider: str = "intl"):
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
         fut.set_result({
@@ -49,22 +50,33 @@ class _FakePoller:
 class MockGateway:
     """替换真实网关：文本返回固定 JSON，图像/视频同步完成。"""
 
-    async def chat(self, prompt, model=None, temperature=0.0, max_tokens=4096) -> str:
+    async def chat(self, prompt, model=None, temperature=0.0, max_tokens=4096,
+                   session_id=None) -> str:
         if "解析为结构化 Brief" in prompt:
             return '{"theme": "产品宣传", "style": "科技感", "duration_seconds": "5", "audience": "年轻用户", "mood": "酷炫"}'
         if "Translate the following" in prompt:
             return "A futuristic product showcase, slow camera push-in, neon lighting"
         return '[{"shot_id": 1, "visual": "产品特写旋转", "camera": "推", "duration": 3, "style_note": "霓虹灯光"}, {"shot_id": 2, "visual": "产品场景切换", "camera": "移", "duration": 2, "style_note": "冷色调"}]'
 
-    async def generate_image(self, prompt, model=None) -> list[str]:
+    async def generate_image(self, prompt, model=None, session_id=None) -> list[str]:
         return [f"http://mock/image/img_{prompt[:8]}.png"]
 
     async def submit_video(self, prompt, model=None, seconds=None,
-                           aspect_ratio=None, mode="text", reference_images=None) -> dict:
-        return {"video_id": f"video_{mode}_{len(reference_images or [])}", "model_name": "agnes-video-2.5-flash"}
+                           aspect_ratio=None, mode="text", reference_images=None,
+                           session_id=None) -> dict:
+        return {
+            "video_id": f"video_{mode}_{len(reference_images or [])}",
+            "model_name": "agnes-video-2.5-flash",
+            "provider": "intl",
+        }
 
-    async def query_video(self, video_id, model_name, mode="text") -> dict:
+    async def query_video(self, video_id, model_name, mode="text",
+                          provider_name=None) -> dict:
         return {"status": "completed", "video_url": "http://mock/minio/shot.mp4"}
+
+    def bind_session(self, session_id: str, provider_name: str) -> None:
+        # 多 provider 粘附切换用；测试中只记录不操作
+        pass
 
     async def close(self) -> None:
         pass

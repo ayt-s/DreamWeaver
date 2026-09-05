@@ -333,8 +333,9 @@ class AgnesGateway:
                     }
 
                 if resp.status_code == 429:
-                    # 限流：指数退避，RPM≈2 时稍等即可。封顶 60s + ±20% 抖动防并发会话同时退避完撞墙
-                    base_wait = min(5 * (2 ** (attempt - 1)), 60)
+                    # 限流：指数退避，RPM≈2 时稍等即可。封顶 30s + ±20% 抖动防并发会话同时退避完撞墙。
+                    # 多 provider 场景下撞墙就切账号，不依赖加长退避。
+                    base_wait = min(5 * (2 ** (attempt - 1)), 30)
                     wait = base_wait * (1 + random.uniform(-0.2, 0.2))
                     last_reason = f"[{provider_name}] 平台限流(429)"
                     if attempt == attempts_per_provider:
@@ -345,10 +346,10 @@ class AgnesGateway:
                     continue
 
                 if resp.status_code >= 500:
-                    # 服务端繁忙：video_queue_full → 长等待（队列可能要几分钟才消化），封顶 120s + 抖动
+                    # 服务端繁忙：video_queue_full → 长等待（队列可能要几分钟才消化），封顶 60s + 抖动
                     code = _extract_code(resp)
                     queue_full = code == "video_queue_full" or "queue" in code.lower()
-                    base_wait = min(30 * attempt, 120) if queue_full else min(10 * attempt, 60)
+                    base_wait = min(30 * attempt, 60) if queue_full else min(10 * attempt, 60)
                     wait = base_wait * (1 + random.uniform(-0.2, 0.2))
                     last_reason = f"[{provider_name}] 服务端 {resp.status_code} ({code or 'server error'})"
                     if attempt == attempts_per_provider:
