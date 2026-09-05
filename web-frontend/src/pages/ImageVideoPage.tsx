@@ -449,17 +449,55 @@ export default function CanvasPage() {
     }
   };
 
-  // 新建项目：prompt 取名 → 服务端建空项目 → 切换到全新默认画布
+  // 新建项目：先 prompt 新名，再 prompt 选择已有项目（可跳过）作为起点
+  // 选了就 clone（复用源项目的 nodes/edges），否则空白画布
   const onCreateProject = async () => {
     const name = window.prompt('新建画布项目名称：');
     if (!name || !name.trim()) return;
     try {
       const p = await createProject(name.trim());
+      // 让用户选一个已有项目作为起点（可跳过）
+      let cloneFrom: number | null = null;
+      if (projects.length > 0) {
+        const listText = projects
+          .map((x) => `${x.id}. ${x.name}`)
+          .join('\n');
+        const input = window.prompt(
+          `可选：选择一个已有项目作为起点（clone 其画布）。\n\n` +
+            `${listText}\n\n输入项目 ID 数字，或输入 0 / 留空 / 点取消 = 空白画布：`,
+          '',
+        );
+        if (input && input.trim() !== '0') {
+          const id = Number(input.trim());
+          if (Number.isInteger(id) && projects.some((x) => x.id === id)) {
+            cloneFrom = id;
+          }
+        }
+      }
+      if (cloneFrom !== null) {
+        const src = await getProject(cloneFrom);
+        if (src.nodesJson || src.edgesJson) {
+          // clone 成功：保存源内容到新项目
+          await saveProject(p.id, {
+            nodesJson: src.nodesJson || undefined,
+            edgesJson: src.edgesJson || undefined,
+          });
+          // 加载源内容到本地
+          onSelectProject(p.id);
+          setProjects((ps) => ps.map((x) => (x.id === p.id ? { ...x, nodesJson: src.nodesJson, edgesJson: src.edgesJson } : x)));
+          window.alert(`已基于「${src.name}」创建「${p.name}」`);
+        } else {
+          window.alert(`「${src.name}」为空画布，已创建空白新项目「${p.name}」`);
+          setNodes(initialNodes);
+          setEdges(initialEdges);
+        }
+      } else {
+        setNodes(initialNodes);
+        setEdges(initialEdges);
+      }
       setProjects((ps) => [...ps, p]);
       setCurrentProjectId(p.id);
       setProjectName(p.name);
-      setNodes(initialNodes);
-      setEdges(initialEdges);
     } catch (e) {
       window.alert(e instanceof Error ? e.message : '创建失败');
     }
