@@ -78,10 +78,16 @@ def _ensure_camera_terms(camera: str) -> str:
 
 
 def compose_image_prompt(seg: dict, style: str, analysis: dict | None = None) -> str:
-    """拼一段图像生成 prompt（四段式）。
+    """拼一段图像生成 prompt（六段式，按优先级从高到低排列）。
 
-    结构：[主体] → [场景] → [角色] → [镜头] → [风格] → 红线
-    角色段是角色一致性的关键锚点，不能省略。
+    结构：[角色锚] → [主体动作] → [场景] → [镜头] → [风格] → 红线
+    优先级说明：
+    1. 角色锚：角色特征卡最详细，agnès 会优先用角色锚定图对齐外观
+    2. 主体动作：这个镜头具体发生什么（≤30 字）
+    3. 场景：地点 + 时间 + 天气 + 光线
+    4. 镜头：镜头类型 + 运动方向 + 构图
+    5. 风格：色调 + 光影 + 时代感
+    末尾红线：agnès 对末尾约束响应最好，放红线兜底
     """
     subject = _extract_subject(seg)
     scene = seg.get("scene", "")
@@ -89,11 +95,11 @@ def compose_image_prompt(seg: dict, style: str, analysis: dict | None = None) ->
     characters = _format_characters(seg, analysis)
     mood = seg.get("mood", "")
 
-    # 用 [段名] 前缀明确分段，agnès 更擅长识别这种结构化输入
+    # 用 [段名] 前缀明确分段，按优先级从高到低排列
     parts = []
-    parts.append(f"[主体] {subject}")
+    parts.append(f"[角色锚] {characters}")  # 优先级最高：角色外观一致性
+    parts.append(f"[主体动作] {subject}")  # 次高：画面主体内容
     parts.append(f"[场景] {scene}")
-    parts.append(f"[角色] {characters}")
     parts.append(f"[镜头] {camera}")
     style_suffix = f"，情绪{mood}" if mood else ""
     parts.append(f"[风格] {style}{style_suffix}")
@@ -104,7 +110,10 @@ def compose_image_prompt(seg: dict, style: str, analysis: dict | None = None) ->
 def compose_video_prompt(
     seg: dict, style: str, analysis: dict | None = None
 ) -> str:
-    """视频 prompt：在 image prompt 基础上追加以秒为单位的时长提示。"""
+    """视频 prompt：在 image prompt 基础上追加以秒为单位的时长提示。
+
+    时长放在最前面，agnès 视频模式会优先读取时长约束。
+    """
     base = compose_image_prompt(seg, style, analysis)
     seconds = int(seg.get("seconds", 5))
     return f"时长 {seconds} 秒。{base}"
