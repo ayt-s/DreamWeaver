@@ -55,8 +55,9 @@ class VideoPoller:
         logger.info("VideoPoller 已停止")
 
     async def submit(self, video_id: str, model_name: str,
-                     session_id: str, shot_index: int) -> asyncio.Future:
-        """注册一个新提交的任务，返回对应的 Future。"""
+                     session_id: str, shot_index: int,
+                     provider: str = "intl") -> asyncio.Future:
+        """注册一个新提交的任务，返回对应的 Future。provider 用于后续查询路由。"""
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         self.pending_tasks[video_id] = {
@@ -66,9 +67,11 @@ class VideoPoller:
             "future": future,
             "submitted_at": time.time(),
             "last_progress": -1,
+            "provider": provider,
         }
         logger.info(
-            "VideoPoller 注册任务: video_id=%s shot=%d", video_id, shot_index
+            "VideoPoller 注册任务: video_id=%s shot=%d provider=%s",
+            video_id, shot_index, provider,
         )
         return future
 
@@ -89,10 +92,11 @@ class VideoPoller:
                 await self._check_task(video_id, task)
 
     async def _check_task(self, video_id: str, task: dict) -> None:
-        """检查单个任务状态。"""
+        """检查单个任务状态。provider 来自提交时记录（保证查询与提交同账号）。"""
         try:
             result = await gateway.query_video(
-                video_id, task["model_name"]
+                video_id, task["model_name"],
+                provider_name=task.get("provider", "intl"),
             )
 
             # 进度事件
