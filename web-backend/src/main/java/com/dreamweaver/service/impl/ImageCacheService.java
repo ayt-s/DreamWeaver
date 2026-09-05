@@ -37,6 +37,7 @@ public class ImageCacheService {
 
     private final RedissonClient redisson;
     private final HttpClient http = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)  // 强制 HTTP/1.1，避免 HTTP/2 与不支持的远端握手失败
             .connectTimeout(Duration.ofSeconds(10))
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();

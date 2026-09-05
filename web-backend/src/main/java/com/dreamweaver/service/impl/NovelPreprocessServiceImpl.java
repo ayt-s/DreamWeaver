@@ -62,6 +62,7 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
     }
 
     private static final HttpClient HTTP = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)  // agent 8000 (uvicorn) 只支持 HTTP/1.1，强制降级避免请求被拒
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
