@@ -31,6 +31,7 @@ import {
   Moon,
   Save,
   FolderPlus,
+  Trash2,
   Bot,
 } from 'lucide-react';
 import {
@@ -45,6 +46,7 @@ import {
   listProjects,
   getProject,
   saveProject,
+  deleteProject,
   type CanvasProjectView,
 } from '../api/canvas';
 import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
@@ -360,8 +362,9 @@ export default function CanvasPage() {
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [videoModel, setVideoModel] = useState(VIDEO_MODELS[0].value);
   // 背景偏好持久化：localStorage 即时保存，另随项目画布数据一起保存（跨设备）
+  // 默认白底（light）；用户手动切过再按 localStorage 走
   const [dark, setDark] = useState<boolean>(
-    () => localStorage.getItem(CANVAS_THEME_KEY) !== 'light',
+    () => localStorage.getItem(CANVAS_THEME_KEY) === 'dark',
   );
   useEffect(() => {
     localStorage.setItem(CANVAS_THEME_KEY, dark ? 'dark' : 'light');
@@ -408,6 +411,25 @@ export default function CanvasPage() {
       edgesJson,
     };
   }, [nodes, edges, dark]);
+
+  // 删除当前项目：确认后服务端删除，本地清空为新建态
+  const onDeleteProject = async () => {
+    if (!currentProjectId) return;
+    const p = projects.find((x) => x.id === currentProjectId);
+    if (!p) return;
+    if (!window.confirm(`删除项目「${p.name}」？删除后画布内容不可恢复。`)) return;
+    try {
+      await deleteProject(currentProjectId);
+      setProjects((ps) => ps.filter((x) => x.id !== currentProjectId));
+      setCurrentProjectId(null);
+      setProjectName('');
+      setNodes(initialNodes);
+      setEdges([]);
+      window.alert('已删除');
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : '删除失败');
+    }
+  };
 
   // 新建项目：prompt 取名 → 服务端建空项目 → 切换到全新默认画布
   const onCreateProject = async () => {
@@ -732,6 +754,14 @@ export default function CanvasPage() {
             className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${theme.btn}`}
           >
             <FolderPlus className="h-3.5 w-3.5" /> 新建
+          </button>
+          <button
+            onClick={onDeleteProject}
+            title={currentProjectId ? '删除当前画布项目' : '请先切换到要删除的项目'}
+            disabled={!currentProjectId}
+            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${theme.btn} disabled:cursor-not-allowed disabled:opacity-40`}
+          >
+            <Trash2 className="h-3.5 w-3.5" /> 删除
           </button>
           {/* 背景深/浅切换 */}
           <button
