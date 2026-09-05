@@ -9,6 +9,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.utils.retry import with_retry
+
 
 class NovelAnalysis(BaseModel):
     """单章（或整本小说）分析结果。"""
@@ -51,8 +53,9 @@ def _build_agent(model: Any) -> Any:
     return Agent(model=model, system_prompt=SYSTEM_PROMPT, output_type=NovelAnalysis)
 
 
+@with_retry("LLM 分析", preset="llm")
 async def analyze(novel_text: str, model: Any) -> dict:
-    """分析小说（传入前 8000 字），返回 camelCase dict。"""
+    """分析小说（传入前 8000 字），返回 camelCase dict。带重试：wifi 抖动时按 10/30/60s 退避。"""
     text_slice = novel_text[:8000]
     agent = _build_agent(model)
     result = await agent.run(text_slice)

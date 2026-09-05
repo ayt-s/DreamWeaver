@@ -19,6 +19,7 @@ import imageio_ffmpeg
 
 from app.config import settings
 from app.state import CreativeSessionState, TaskStatus
+from app.utils.retry import with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +30,9 @@ OUTPUT_ROOT = Path(
 FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
 
 
+@with_retry("下载产物", preset="download")
 async def _download(url: str, dest: Path, timeout: float = 300.0) -> None:
-    """下载远程视频到本地（Agnes 返回的公网 URL）。"""
+    """下载远程视频到本地（Agnes 返回的公网 URL）。带重试：wifi 抖动时按 5/15/45/90s 退避。"""
     async with httpx.AsyncClient(timeout=timeout) as client:
         async with client.stream("GET", url) as resp:
             resp.raise_for_status()

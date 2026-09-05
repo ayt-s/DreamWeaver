@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.utils.retry import with_retry
+
 
 MIN_SECONDS = 4
 MAX_SECONDS = 12
@@ -66,13 +68,14 @@ def _build_agent(model: Any) -> Any:
     return Agent(model=model, output_type=list[NovelSegmentPydantic])
 
 
+@with_retry("LLM 分镜", preset="llm")
 async def storyboard(
     novel_text: str,
     analysis: dict,
     target_segments: int,
     model: Any,
 ) -> list[dict]:
-    """产出 segment 列表（camelCase 前已经是 snake，直接用 model_dump）。"""
+    """产出 segment 列表（camelCase 前已经是 snake，直接用 model_dump）。带重试：wifi 抖动时按 10/30/60s 退避。"""
     import json
 
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
