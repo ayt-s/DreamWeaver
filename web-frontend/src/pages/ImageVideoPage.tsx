@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ReactFlow,
@@ -47,7 +47,7 @@ import {
   saveProject,
   type CanvasProjectView,
 } from '../api/canvas';
-import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
+import { cachedImageUrl, parseImageUrls, type TaskResponse, type TaskSource } from '../types/task';
 
 /* ------------------------------------------------------------------ */
 /* 节点数据模型                                                         */
@@ -362,6 +362,10 @@ export default function CanvasPage() {
   const [projectName, setProjectName] = useState('');
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  // URL ?source=manga 时提交成片会带 source（从小说转画布的路径 NovelPage → /canvas?project=X&source=manga）
+  const [searchParams] = useSearchParams();
+  const sourceParam = searchParams.get('source');
+  const submitSource: TaskSource = sourceParam === 'manga' ? 'manga' : 'default';
 
   // 载入项目列表
   useEffect(() => {
@@ -460,23 +464,28 @@ export default function CanvasPage() {
     [setEdges],
   );
 
-  // 主链串行化：沿连线方向收集节点（分支会按拓扑序合并）
+  // 主链串行化：沿连线方向收集节点。
+  // 顺序规则：imageNode 按画布 x 坐标升序排列（用户拖节点左右 = 调整片段先后顺序）。
+  // 每个 img 后跟着它出边的 vid → compose（vid 的入度是 1，出边唯一到 compose）。
+  // 未连线的孤立 img 也按 x 坐标纳入。
+  // 这是"按画布顺序"的核心——用户看到的画布布局 = 提交时的拼接顺序。
   const chain = useMemo(() => {
     const outgoing = new Map<string, string>();
-    const incomingCount = new Map<string, number>();
     for (const e of edges) {
       outgoing.set(e.source, e.target);
-      incomingCount.set(e.target, (incomingCount.get(e.target) ?? 0) + 1);
     }
-    const entries = nodes.filter((n) => !incomingCount.has(n.id)).map((n) => n.id);
+    // 收集所有 imageNode，按 x 坐标升序（画布上"从左到右" = 片段先后顺序）
+    const imageNodes = nodes
+      .filter((n) => n.type === 'imageNode')
+      .sort((a, b) => a.position.x - b.position.x || a.position.y - b.position.y);
     const order: string[] = [];
     const seen = new Set<string>();
-    for (const entry of entries) {
-      let cur = entry;
+    for (const imgNode of imageNodes) {
+      let cur: string | undefined = imgNode.id;
       while (cur && !seen.has(cur)) {
         seen.add(cur);
         order.push(cur);
-        cur = outgoing.get(cur) ?? '';
+        cur = outgoing.get(cur);
       }
     }
     return order;
@@ -580,6 +589,7 @@ export default function CanvasPage() {
           plan.texts.join('；') ||
           (plan.segments.length > 0 ? '无限画布图生视频' : '无限画布'),
         genType: plan.segments.length > 0 ? 'image_video' : 'text_video',
+        source: submitSource,
         segments: plan.segments.length > 0 ? JSON.stringify(plan.segments) : undefined,
         videoModel: videoModel || undefined,
       }),
