@@ -35,8 +35,9 @@ public class TaskController {
     public CommonResult<TaskListResponse> listTasks(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "10") int size,
-            @RequestParam(required = false) String genType) {
-        return CommonResult.ok(taskService.listTasks(page, size, genType));
+            @RequestParam(required = false) String genType,
+            @RequestParam(required = false) Boolean draft) {
+        return CommonResult.ok(taskService.listTasks(page, size, genType, draft));
     }
 
     /** 删除历史作品（仅终态；非终态返回 400） */
@@ -57,6 +58,14 @@ public class TaskController {
     public CommonResult<java.util.List<java.util.Map<String, Object>>> getSegments(
             @PathVariable Long id) {
         return CommonResult.ok(taskService.getSegments(id));
+    }
+
+    /** 切换草稿标记：true 移入草稿区，false 移出（回成品区） */
+    @PatchMapping("/{id}/draft")
+    public CommonResult<TaskResponse> setDraft(
+            @PathVariable Long id,
+            @RequestParam(defaultValue = "true") boolean draft) {
+        return CommonResult.ok(taskService.setDraft(id, draft));
     }
 
     /** 穿帮段重新生成：勾选段重生（可改提示词）+ 其余段复用 + 重新拼接成片 */

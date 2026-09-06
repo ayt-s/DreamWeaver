@@ -30,4 +30,7 @@ public class TaskResponse {
 
     /** 创作需求原文（画廊卡片标题展示；重新生成时复用） */
     private String prompt;
+
+    /** 草稿标记：false=成品（默认）true=草稿 */
+    private boolean isDraft;
 }

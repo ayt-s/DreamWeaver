@@ -1,6 +1,7 @@
 import client, { unwrap } from './client';
 import type {
   CreateTaskRequest,
+  DraftFilter,
   GenType,
   TaskListResponse,
   TaskResponse,
@@ -15,18 +16,30 @@ export async function getTask(id: number): Promise<TaskResponse | null> {
   return unwrap(client.get(`/tasks/${id}`));
 }
 
-// 拉取历史任务分页列表（倒序；支持 genType 分类筛选，'' = 全部）
+// 拉取历史任务分页列表（倒序；支持 genType 分类 + draft 草稿二维筛选）
 export async function listTasks(params: {
   page?: number;
   size?: number;
   genType?: GenType | '';
+  draft?: DraftFilter;
 }): Promise<TaskListResponse> {
-  const { page = 1, size = 10, genType = '' } = params;
+  const { page = 1, size = 10, genType = '', draft = '' } = params;
   return unwrap(
     client.get('/tasks', {
-      params: { page, size, genType: genType || undefined },
+      params: {
+        page,
+        size,
+        genType: genType || undefined,
+        // '' = 不筛；'final' -> false；'draft' -> true
+        draft: draft === '' ? undefined : draft === 'draft',
+      },
     }),
   );
+}
+
+// 切换草稿标记：draft=true 移入草稿区，false 移出（回成品区）；仅终态任务可切换
+export async function setTaskDraft(id: number, draft: boolean): Promise<TaskResponse> {
+  return unwrap(client.patch(`/tasks/${id}/draft`, null, { params: { draft } }));
 }
 
 // 删除历史作品（仅终态任务可删，非终态后端返回 400）

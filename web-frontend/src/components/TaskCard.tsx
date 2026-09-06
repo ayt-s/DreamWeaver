@@ -1,5 +1,14 @@
 import { motion } from 'framer-motion';
-import { Video, Image as ImageIcon, Trash2, Hourglass, RefreshCw, ListVideo } from 'lucide-react';
+import {
+  Video,
+  Image as ImageIcon,
+  Trash2,
+  Hourglass,
+  RefreshCw,
+  ListVideo,
+  Archive,
+  ArchiveRestore,
+} from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -12,7 +21,7 @@ import {
   shortSessionId,
   cachedImageUrl,
 } from '../types/task';
-import { deleteTask, regenerateTask } from '../api/tasks';
+import { deleteTask, regenerateTask, setTaskDraft } from '../api/tasks';
 import SegmentManager from './SegmentManager';
 
 interface TaskCardProps {
@@ -81,6 +90,7 @@ export default function TaskCard({ task }: TaskCardProps) {
   const displayTitle = task.prompt?.trim() ? task.prompt.trim() : `任务 #${task.id}`;
 
   const isTerminal = TERMINAL_STATUSES.includes(task.status);
+  const isDraft = task.isDraft === true;
 
   const refreshList = () => queryClient.invalidateQueries({ queryKey: ['tasks'] });
 
@@ -91,6 +101,12 @@ export default function TaskCard({ task }: TaskCardProps) {
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteTask(task.id),
+    onSuccess: refreshList,
+  });
+
+  // 草稿/成品切换：仅终态任务可切换（后端限制），切换后刷新画廊列表
+  const draftMutation = useMutation({
+    mutationFn: () => setTaskDraft(task.id, !isDraft),
     onSuccess: refreshList,
   });
 
@@ -108,7 +124,11 @@ export default function TaskCard({ task }: TaskCardProps) {
       layout
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md"
+      className={`overflow-hidden rounded-2xl border bg-white shadow-sm transition-shadow hover:shadow-md ${
+        isDraft
+          ? 'border-dashed border-amber-300 bg-amber-50/40'
+          : 'border-slate-200'
+      }`}
     >
       {/* Header */}
       <div className="flex items-start gap-3 p-5">
@@ -126,6 +146,12 @@ export default function TaskCard({ task }: TaskCardProps) {
             <span className="inline-flex shrink-0 items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
               {GEN_TYPE_LABEL[genType] ?? genType}
             </span>
+            {isDraft && (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                <Archive className="h-2.5 w-2.5" />
+                草稿
+              </span>
+            )}
             <span
               className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${STATE_BADGE[state]}`}
             >
@@ -251,6 +277,30 @@ export default function TaskCard({ task }: TaskCardProps) {
                     className={`h-3.5 w-3.5 ${regenMutation.isPending ? 'animate-spin' : ''}`}
                   />
                   {regenMutation.isPending ? '提交中…' : '重新生成'}
+                </button>
+              )}
+              {isTerminal && (
+                <button
+                  type="button"
+                  onClick={() => draftMutation.mutate()}
+                  disabled={draftMutation.isPending}
+                  title={isDraft ? '移出草稿区（回到成品区）' : '移入草稿区（暂缓归档）'}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    isDraft
+                      ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                      : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                  }`}
+                >
+                  {isDraft ? (
+                    <ArchiveRestore className="h-3.5 w-3.5" />
+                  ) : (
+                    <Archive className="h-3.5 w-3.5" />
+                  )}
+                  {draftMutation.isPending
+                    ? '切换中…'
+                    : isDraft
+                      ? '移出草稿'
+                      : '标记草稿'}
                 </button>
               )}
               <button

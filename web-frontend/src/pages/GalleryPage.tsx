@@ -12,7 +12,12 @@ import {
 import { useState } from 'react';
 import { listTasks } from '../api/tasks';
 import TaskCard from '../components/TaskCard';
-import { GEN_TYPE_FILTERS, type GenType } from '../types/task';
+import {
+  GEN_TYPE_FILTERS,
+  DRAFT_FILTERS,
+  type GenType,
+  type DraftFilter,
+} from '../types/task';
 
 /** 每页条数：卡片较高，画廊用 6 比较合适 */
 const PAGE_SIZE = 6;
@@ -24,10 +29,11 @@ const PAGE_SIZE = 6;
 export default function GalleryPage() {
   const [page, setPage] = useState(1);
   const [genType, setGenType] = useState<GenType | ''>('');
+  const [draft, setDraft] = useState<DraftFilter>('');
 
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ['tasks', page, genType],
-    queryFn: () => listTasks({ page, size: PAGE_SIZE, genType }),
+    queryKey: ['tasks', page, genType, draft],
+    queryFn: () => listTasks({ page, size: PAGE_SIZE, genType, draft }),
     // 有排队/进行中的任务时每 5s 轮询刷新；全为终态则停止轮询
     refetchInterval: (query) => {
       const list = query.state.data?.list;
@@ -44,6 +50,11 @@ export default function GalleryPage() {
 
   const switchFilter = (key: GenType | '') => {
     setGenType(key);
+    setPage(1);
+  };
+
+  const switchDraftFilter = (key: DraftFilter) => {
+    setDraft(key);
     setPage(1);
   };
 
@@ -67,7 +78,7 @@ export default function GalleryPage() {
         </div>
       </div>
 
-      {/* 生成类型筛选 */}
+      {/* 生成类型 + 草稿/成品 二维筛选（竖线分隔两组，violet=类型 amber=阶段） */}
       <div className="mb-5 flex flex-wrap items-center gap-2">
         {GEN_TYPE_FILTERS.map((f) => {
           const active = f.key === genType;
@@ -79,6 +90,24 @@ export default function GalleryPage() {
               className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors ${
                 active
                   ? 'bg-violet-600 text-white shadow-sm'
+                  : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              {f.label}
+            </button>
+          );
+        })}
+        <span className="mx-1 h-4 w-px bg-slate-200" aria-hidden />
+        {DRAFT_FILTERS.map((f) => {
+          const active = f.key === draft;
+          return (
+            <button
+              key={f.key}
+              type="button"
+              onClick={() => switchDraftFilter(f.key)}
+              className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors ${
+                active
+                  ? 'bg-amber-500 text-white shadow-sm'
                   : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
               }`}
             >
@@ -118,12 +147,12 @@ export default function GalleryPage() {
             <Film className="h-8 w-8 text-slate-400" />
           </div>
           <p className="text-sm font-medium text-slate-700">
-            {genType === '' ? '还没有历史作品' : '该分类下暂无作品'}
+            {genType === '' && draft === '' ? '还没有历史作品' : '该筛选下暂无作品'}
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            {genType === ''
+            {genType === '' && draft === ''
               ? '去创作页提交一条需求，成果会出现在这里'
-              : '换个分类看看，或去创作页生成一条'}
+              : '换个筛选条件看看，或去创作页生成一条'}
           </p>
           <Link
             to="/"

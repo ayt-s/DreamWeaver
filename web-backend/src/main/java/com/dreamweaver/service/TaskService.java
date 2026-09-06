@@ -16,8 +16,8 @@ public interface TaskService {
     /** 查询任务状态 */
     TaskResponse getTask(Long id);
 
-    /** 任务分页列表（倒序，含 genType 筛选，供画廊页展示） */
-    TaskListResponse listTasks(int page, int size, String genType);
+    /** 任务分页列表（倒序，含 genType 分类 + draft 草稿筛选，供画廊页展示） */
+    TaskListResponse listTasks(int page, int size, String genType, Boolean draft);
 
     /**
          * 删除历史作品。
@@ -40,4 +40,7 @@ public interface TaskService {
 
     /** 查询任务的段配置 + 每段已有视频 URL（供画布段列表 UI 展示） */
     java.util.List<java.util.Map<String, Object>> getSegments(Long id);
+
+    /** 切换草稿标记：isDraft=true 移入草稿区，false 移出（成品区） */
+    TaskResponse setDraft(Long id, boolean isDraft);
 }

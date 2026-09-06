@@ -69,6 +69,8 @@ export interface TaskResponse {
   errorMessage?: string;
   /** 创作需求原文（画廊卡片标题；重新生成时复用） */
   prompt?: string;
+  /** 草稿标记：true=草稿（弱化展示，可移出回成品区） */
+  isDraft?: boolean;
 }
 
 /** 任务分页列表（对应 Java TaskListResponse dto） */
@@ -83,6 +85,19 @@ export interface TaskListResponse {
  * 画廊分类筛选（待补充生成类型在此数组追加即可；'' = 全部）。
  * key 对应后端 gen_type。
  */
+/**
+ * 草稿/成品筛选（二维，与 genType 分类正交）。
+ * '' = 全部（默认）；'final' = 只看成品；'draft' = 只看草稿。
+ * 后端 draft 参数：undefined=不筛，false=成品，true=草稿。
+ */
+export type DraftFilter = '' | 'final' | 'draft';
+
+export const DRAFT_FILTERS: Array<{ key: DraftFilter; label: string }> = [
+  { key: '', label: '全部' },
+  { key: 'final', label: '成品' },
+  { key: 'draft', label: '草稿' },
+];
+
 export const GEN_TYPE_FILTERS: Array<{ key: GenType | ''; label: string }> = [
   { key: '', label: '全部' },
   { key: 'text_image', label: '文生图' },

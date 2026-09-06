@@ -45,6 +45,12 @@ public class Task {
     /** 重生覆盖前的旧 result_json（回滚用） */
     private String prevResultJson;
 
+    /** 终态完成/失败时间；与 updated_at 区分——自动重试器刷新 updated_at 时不覆盖此字段 */
+    private LocalDateTime completedAt;
+
+    /** 草稿标记：0=成品（默认）1=草稿。用户意图标记，非状态派生 */
+    private Integer isDraft;
+
     /** Agnes 返回的异步任务 ID（用于幂等判断） */
     private String videoId;
 

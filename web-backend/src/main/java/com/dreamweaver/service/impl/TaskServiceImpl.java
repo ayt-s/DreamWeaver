@@ -52,17 +52,22 @@ public class TaskServiceImpl implements TaskService {
     }
 
     @Override
-    public TaskListResponse listTasks(int page, int size, String genType) {
+    public TaskListResponse listTasks(int page, int size, String genType, Boolean draft) {
         int safePage = Math.max(page, 1);
         int safeSize = Math.min(Math.max(size, 1), 50);
-        boolean hasFilter = genType != null && !genType.isBlank();
+        boolean hasTypeFilter = genType != null && !genType.isBlank();
+        // draft 为 null = 不按草稿筛选；true/false = 只取草稿/只取成品
+        boolean hasDraftFilter = draft != null;
+        int draftFlag = draft != null && draft ? 1 : 0;
         long total = taskMapper.selectCount(
                 new LambdaQueryWrapper<Task>()
-                        .eq(hasFilter, Task::getGenType, genType)
+                        .eq(hasTypeFilter, Task::getGenType, genType)
+                        .eq(hasDraftFilter, Task::getIsDraft, draftFlag)
         );
         List<TaskResponse> list = taskMapper.selectList(
                 new LambdaQueryWrapper<Task>()
-                        .eq(hasFilter, Task::getGenType, genType)
+                        .eq(hasTypeFilter, Task::getGenType, genType)
+                        .eq(hasDraftFilter, Task::getIsDraft, draftFlag)
                         .orderByDesc(Task::getId)
                         .last("LIMIT " + safeSize + " OFFSET " + ((long) (safePage - 1) * safeSize))
         ).stream().map(this::toResponse).toList();
@@ -129,6 +134,7 @@ public class TaskServiceImpl implements TaskService {
                 .set(com.dreamweaver.entity.Task::getResultJson, null)
                 .set(com.dreamweaver.entity.Task::getImageUrls, null)
                 .set(com.dreamweaver.entity.Task::getErrorMessage, null)
+                .set(com.dreamweaver.entity.Task::getCompletedAt, null)
                 // 全量重生成 → 旧产物存 prev_result_json 供回滚，段配置失效一并清空
                 .set(com.dreamweaver.entity.Task::getPrevResultJson, original.getResultJson())
                 .set(com.dreamweaver.entity.Task::getSegmentsJson, null)
@@ -338,6 +344,7 @@ public class TaskServiceImpl implements TaskService {
                 .set(com.dreamweaver.entity.Task::getSessionId, null)
                 .set(com.dreamweaver.entity.Task::getResultJson, null)
                 .set(com.dreamweaver.entity.Task::getErrorMessage, null)
+                .set(com.dreamweaver.entity.Task::getCompletedAt, null)
                 .set(com.dreamweaver.entity.Task::getPrevResultJson, original.getResultJson())
                 .set(com.dreamweaver.entity.Task::getSegmentsJson, newSegmentsJson)
                 .set(com.dreamweaver.entity.Task::getUpdatedAt, LocalDateTime.now()));
@@ -391,7 +398,13 @@ public class TaskServiceImpl implements TaskService {
         }
     }
 
-    /** 解析 result_json：[final.mp4, seg0, seg1, ...] → 去掉首位成片，返回各段视频 URL */
+    /** 解析 result_json 为各分段视频 URL。
+     *
+     * 格式有两种：
+     * - 拼接成功：[final.mp4, seg0, seg1, ...]（首元素是本地成片 /v1/files/**，丢弃）
+     * - 拼接失败：[seg0, seg1, ...]（synthesizer 兜底透传，无成片，全部保留）
+     * 判定依据与前端 finalVideoUrl 一致：仅本地静态目录路径才算成片。
+     */
     private List<String> parseResultUrls(String json) {
         if (json == null || json.isBlank()) {
             return new java.util.ArrayList<>();
@@ -399,7 +412,15 @@ public class TaskServiceImpl implements TaskService {
         try {
             List<String> urls = objectMapper.readValue(json,
                     new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {});
-            return urls.size() > 1 ? urls.subList(1, urls.size()) : new java.util.ArrayList<>();
+            if (urls.isEmpty()) {
+                return new java.util.ArrayList<>();
+            }
+            String first = urls.get(0) == null ? "" : urls.get(0).trim();
+            if (first.startsWith("/v1/files/") || first.endsWith("/final.mp4")) {
+                return urls.size() > 1 ? new java.util.ArrayList<>(urls.subList(1, urls.size()))
+                        : new java.util.ArrayList<>();
+            }
+            return new java.util.ArrayList<>(urls);
         } catch (Exception e) {
             log.warn("解析 result_json 失败: {}", e.getMessage());
             return new java.util.ArrayList<>();
@@ -416,6 +437,22 @@ public class TaskServiceImpl implements TaskService {
         }
     }
 
+    @Override
+    @Transactional
+    public TaskResponse setDraft(Long id, boolean isDraft) {
+        Task task = taskMapper.selectById(id);
+        if (task == null) {
+            throw new IllegalArgumentException("任务不存在（id=" + id + "）");
+        }
+        // 运行中任务不应进草稿区（生成还在进行，标记无意义）
+        if (!TERMINAL_STATUSES.contains(task.getStatus())) {
+            throw new IllegalArgumentException("仅已终态的任务可标记草稿（当前=" + task.getStatus() + "）");
+        }
+        task.setIsDraft(isDraft ? 1 : 0);
+        taskMapper.updateById(task);
+        return toResponse(task);
+    }
+
     private TaskResponse toResponse(Task task) {
         TaskResponse resp = new TaskResponse();
         resp.setId(task.getId());
@@ -427,6 +464,8 @@ public class TaskServiceImpl implements TaskService {
         resp.setSegmentsJson(task.getSegmentsJson());
         resp.setErrorMessage(task.getErrorMessage());
         resp.setPrompt(task.getPrompt());
+        // Lombok 对 primitive boolean isDraft 生成 setDraft()（非 setIsDraft），javap 已验证
+        resp.setDraft(task.getIsDraft() != null && task.getIsDraft() == 1);
         return resp;
     }
 }
