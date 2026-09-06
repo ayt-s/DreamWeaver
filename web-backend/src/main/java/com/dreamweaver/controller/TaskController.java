@@ -51,4 +51,20 @@ public class TaskController {
     public CommonResult<TaskResponse> regenerateTask(@PathVariable Long id) {
         return CommonResult.ok(taskService.regenerateTask(id));
     }
+
+    /** 查询任务段配置 + 每段已有视频 URL（画布段列表 UI） */
+    @GetMapping("/{id}/segments")
+    public CommonResult<java.util.List<java.util.Map<String, Object>>> getSegments(
+            @PathVariable Long id) {
+        return CommonResult.ok(taskService.getSegments(id));
+    }
+
+    /** 穿帮段重新生成：勾选段重生（可改提示词）+ 其余段复用 + 重新拼接成片 */
+    @PostMapping("/{id}/rework")
+    public CommonResult<TaskResponse> reworkTask(
+            @PathVariable Long id,
+            @Valid @RequestBody com.dreamweaver.dto.ReworkTaskRequest request) {
+        return CommonResult.ok(taskService.reworkTask(
+                id, request.getReworkIndices(), request.getEditedPrompts()));
+    }
 }

@@ -1,17 +1,19 @@
 import { motion } from 'framer-motion';
-import { Video, Image as ImageIcon, Trash2, Hourglass, RefreshCw } from 'lucide-react';
+import { Video, Image as ImageIcon, Trash2, Hourglass, RefreshCw, ListVideo } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { GenType, TaskResponse, TaskStatus } from '../types/task';
 import {
-  parseResultUrls,
   parseImageUrls,
+  finalVideoUrl,
+  segmentVideoUrls,
   GEN_TYPE_LABEL,
   shortSessionId,
   cachedImageUrl,
 } from '../types/task';
 import { deleteTask, regenerateTask } from '../api/tasks';
+import SegmentManager from './SegmentManager';
 
 interface TaskCardProps {
   task: TaskResponse;
@@ -69,11 +71,11 @@ function headlineIcon(genType?: GenType): ReactNode {
  */
 export default function TaskCard({ task }: TaskCardProps) {
   const state = stateOf(task.status);
-  const videoUrls = parseResultUrls(task.resultJson);
   const imageUrls = parseImageUrls(task.imageUrls);
   const genType = task.genType ?? 'text_video';
   const queryClient = useQueryClient();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [segmentPanelOpen, setSegmentPanelOpen] = useState(false);
 
   /** 卡片标题：优先展示创作需求原文，缺失时才用「任务 #id」兜底 */
   const displayTitle = task.prompt?.trim() ? task.prompt.trim() : `任务 #${task.id}`;
@@ -164,22 +166,68 @@ export default function TaskCard({ task }: TaskCardProps) {
         </div>
       )}
 
-      {/* 视频产物 */}
-      {videoUrls.length > 0 ? (
-        <div className="grid grid-cols-1 gap-3 border-t border-slate-100 p-5 sm:grid-cols-2">
-          {videoUrls.map((url, i) => (
-            <div
-              key={`${task.id}-${i}-${url}`}
-              className="overflow-hidden rounded-xl border border-slate-200 bg-black"
-            >
-              <video
-                src={url}
-                controls
-                preload="metadata"
-                className="aspect-video w-full"
-              />
-            </div>
-          ))}
+      {/* 视频产物：画布模式成片优先单列，分段收起；标准模式平铺 */}
+      {segmentVideoUrls(task.resultJson).length > 0 || finalVideoUrl(task.resultJson) ? (
+        <div className="border-t border-slate-100 p-5">
+          {(() => {
+            const finalUrl = finalVideoUrl(task.resultJson);
+            const segs = segmentVideoUrls(task.resultJson);
+            // 标准模式（无拼接成片）：沿用平铺布局
+            if (!finalUrl) {
+              return (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {segs.map((url, i) => (
+                    <div
+                      key={`${task.id}-${i}-${url}`}
+                      className="overflow-hidden rounded-xl border border-slate-200 bg-black"
+                    >
+                      <video src={url} controls preload="metadata" className="aspect-video w-full" />
+                    </div>
+                  ))}
+                </div>
+              );
+            }
+            // 画布模式：成片大居中 + 分段缩略图一排
+            return (
+              <div className="space-y-3">
+                <div className="overflow-hidden rounded-xl border border-violet-300 bg-black">
+                  <video src={finalUrl} controls preload="metadata" className="aspect-video w-full" />
+                </div>
+                <div className="flex items-center justify-between">
+                  <p className="text-[11px] text-slate-400">
+                    已拼接 {segs.length} 段
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setSegmentPanelOpen(true)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[11px] font-medium text-violet-600 transition-colors hover:bg-violet-50"
+                  >
+                    <ListVideo className="h-3.5 w-3.5" />
+                    穿帮段重生
+                  </button>
+                </div>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {segs.map((url, i) => (
+                    <div
+                      key={`${task.id}-seg-${i}-${url}`}
+                      className="w-28 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-black"
+                    >
+                      <video
+                        src={url}
+                        preload="metadata"
+                        muted
+                        className="aspect-video w-full"
+                        onClick={(e) => (e.currentTarget as HTMLVideoElement).play()}
+                      />
+                      <div className="bg-slate-900 px-1.5 py-0.5 text-center text-[9px] text-slate-300">
+                        第 {i + 1} 段
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       ) : imageUrls.length === 0 && state === 'running' ? (
         <div className="flex items-center gap-2 border-t border-slate-100 px-5 py-4 text-xs text-slate-400">
@@ -223,6 +271,15 @@ export default function TaskCard({ task }: TaskCardProps) {
                     : '删除'}
               </button>
             </div>
+
+          {/* 穿帮段重生面板（画布多段任务才可用） */}
+          {segmentPanelOpen && (
+            <SegmentManager
+              taskId={task.id}
+              onClose={() => setSegmentPanelOpen(false)}
+              onChanged={refreshList}
+            />
+          )}
           </motion.article>
         );
       }

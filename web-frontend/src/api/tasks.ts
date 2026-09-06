@@ -39,6 +39,32 @@ export async function regenerateTask(id: number): Promise<TaskResponse> {
   return unwrap(client.post(`/tasks/${id}/regenerate`));
 }
 
+// 查询任务的段配置 + 每段已有视频 URL（供穿帮段重生 UI 展示）
+export interface TaskSegment {
+  index: number;
+  prompt: string;
+  image_url?: string;
+  reference_images?: string[];
+  seconds?: number;
+  aspect_ratio?: string;
+  /** 该段当前视频 URL（重生成后会被替换） */
+  existing_video_url?: string;
+  /** 段首张参考图，用作缩略图 */
+  thumbnail?: string;
+}
+
+export async function getTaskSegments(id: number): Promise<TaskSegment[]> {
+  return unwrap(client.get(`/tasks/${id}/segments`));
+}
+
+// 穿帮段重新生成：勾选段重生（可改提示词）+ 未勾选段复用已有视频 + 重新拼接成片
+export async function reworkTask(
+  id: number,
+  req: { reworkIndices: number[]; editedPrompts?: Record<string, string> },
+): Promise<TaskResponse> {
+  return unwrap(client.post(`/tasks/${id}/rework`, req));
+}
+
 // 本地上传参考图（无限画布用；产物经 /api/uploads/** 静态提供）
 // ⚠️ agnes 生成要求公网 URL，本地上传图仅用于画布预览
 export async function uploadImage(file: File): Promise<{ url: string; name: string }> {

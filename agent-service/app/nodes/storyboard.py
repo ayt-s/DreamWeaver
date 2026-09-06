@@ -91,6 +91,8 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
             "aspect_ratio": ratio,
             "reference_images": ref_images,
             "cn_description": cn,
+            # 重生模式：已有视频 URL → 直接复用，跳过 agnes 重新生成
+            "existing_video_url": str(seg.get("existing_video_url") or "").strip(),
         })
 
     await events.emit(state["session_id"], "node_completed",

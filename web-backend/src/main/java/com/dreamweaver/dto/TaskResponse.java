@@ -23,6 +23,9 @@ public class TaskResponse {
     /** 文生图产出的图片 URL 数组（JSON 格式） */
     private String imageUrls;
 
+    /** 提交时的段配置数组 JSON；非空说明是画布多段任务，前端可开启「穿帮段重生」 */
+    private String segmentsJson;
+
     private String errorMessage;
 
     /** 创作需求原文（画廊卡片标题展示；重新生成时复用） */

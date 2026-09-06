@@ -117,6 +117,31 @@ export function parseResultUrls(resultJson?: string | null): string[] {
   }
 }
 
+/**
+ * resultJson 格式说明：画布模式为 [拼接成片, 分段0, 分段1, ...]（成片在最前）；
+ * 标准模式为 [视频0, 视频1, ...]（无拼接成片）。
+ * 因此「成片」= 画布模式首项（仅当 >1 个且是本地 /v1/files 产物）；
+ * 「分段」= 其余项。标准模式无成片，所有项都是独立视频。
+ */
+export function finalVideoUrl(resultJson?: string | null): string | null {
+  const urls = parseResultUrls(resultJson);
+  if (urls.length > 1) {
+    const first = urls[0];
+    // 本地拼接产物路径（agent /v1/files/**）才认定为成片；agnes 直链不算
+    if (first.startsWith('/v1/files/') || first.includes('/final.mp4')) {
+      return first;
+    }
+  }
+  return null;
+}
+
+/** 分段视频 URL（去掉拼接成片），用于段列表 UI 与成片区分 */
+export function segmentVideoUrls(resultJson?: string | null): string[] {
+  const urls = parseResultUrls(resultJson);
+  const final = finalVideoUrl(resultJson);
+  return final ? urls.filter((u) => u !== final) : urls;
+}
+
 /** 解析 imageUrls JSON 为图片 URL 列表（容错同 parseResultUrls） */
 export function parseImageUrls(imageUrls?: string | null): string[] {
   if (!imageUrls) return [];

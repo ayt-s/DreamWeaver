@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS creative_task (
     status        VARCHAR(32)  NOT NULL DEFAULT 'pending' COMMENT 'pending/queued/.../completed/failed',
     prompt        TEXT         COMMENT '用户原始需求',
     result_json   TEXT         COMMENT '模型侧产物（视频 URL 数组等）',
+    segments_json LONGTEXT     COMMENT '提交时的段配置数组 JSON（重生输入源）',
+    prev_result_json LONGTEXT  COMMENT '重生覆盖前的旧 result_json（回滚用）',
     video_id      VARCHAR(64)  DEFAULT NULL COMMENT 'Agnes 异步任务 ID（用于幂等判断）',
     shot_index    INT          DEFAULT 0 COMMENT '当前分镜索引',
     error_message VARCHAR(512) DEFAULT NULL,

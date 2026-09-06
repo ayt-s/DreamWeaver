@@ -34,6 +34,7 @@ public class TaskServiceImpl implements TaskService {
     private final AgentServiceProperties agentServiceProperties;
     private final WebClient.Builder webClientBuilder;
     private final StuckTaskWatchdog stuckTaskWatchdog;
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     /** 终态集合：可直接删除 / 可重新生成 */
     private static final Set<String> TERMINAL_STATUSES = Set.of("completed", "failed", "expired");
@@ -128,6 +129,9 @@ public class TaskServiceImpl implements TaskService {
                 .set(com.dreamweaver.entity.Task::getResultJson, null)
                 .set(com.dreamweaver.entity.Task::getImageUrls, null)
                 .set(com.dreamweaver.entity.Task::getErrorMessage, null)
+                // 全量重生成 → 旧产物存 prev_result_json 供回滚，段配置失效一并清空
+                .set(com.dreamweaver.entity.Task::getPrevResultJson, original.getResultJson())
+                .set(com.dreamweaver.entity.Task::getSegmentsJson, null)
                 .set(com.dreamweaver.entity.Task::getUpdatedAt, LocalDateTime.now()));
 
         CreateTaskRequest request = new CreateTaskRequest();
@@ -182,6 +186,8 @@ public class TaskServiceImpl implements TaskService {
         task.setUserId(request.getUserId() == null ? null : Long.valueOf(request.getUserId()));
         task.setStatus("pending");
         task.setGenType(request.getGenType() != null ? request.getGenType() : "text_video");
+        // 段配置落库：重生时取此作为输入源（未勾选段复用已有视频、勾选段重新生成）
+        task.setSegmentsJson(request.getSegments());
         task.setCreatedAt(LocalDateTime.now());
         task.setUpdatedAt(LocalDateTime.now());
         taskMapper.insert(task);
@@ -277,6 +283,139 @@ public class TaskServiceImpl implements TaskService {
         return "Agent 服务处理失败，请稍后重试";
     }
 
+    @Override
+    @Transactional
+    public TaskResponse reworkTask(Long id, List<Integer> reworkIndices,
+            Map<String, String> editedPrompts) {
+        Task original = taskMapper.selectById(id);
+        if (original == null) {
+            throw new IllegalArgumentException("任务不存在（id=" + id + "）");
+        }
+        if (!"completed".equals(original.getStatus())) {
+            throw new IllegalArgumentException(
+                    "任务未完成（status=" + original.getStatus() + "），无法重新生成指定段");
+        }
+        if (original.getSegmentsJson() == null || original.getSegmentsJson().isBlank()) {
+            throw new IllegalArgumentException("该任务未保存段配置，无法重新生成指定段");
+        }
+        if (reworkIndices == null || reworkIndices.isEmpty()) {
+            throw new IllegalArgumentException("未选择需要重新生成的段");
+        }
+
+        // 1. 解析段配置 + 已有视频 URL（result_json 格式：[final.mp4, seg0, seg1, ...]）
+        List<Map<String, Object>> segs = parseSegments(original.getSegmentsJson());
+        List<String> existingUrls = parseResultUrls(original.getResultJson());
+        if (existingUrls.size() != segs.size()) {
+            throw new IllegalArgumentException(
+                    "历史结果与段数不匹配（段数=" + segs.size()
+                            + "，已有视频=" + existingUrls.size()
+                            + "），存在历史段生成失败导致序号错位，无法按段重生，请全量重新生成");
+        }
+
+        // 2. 组装混合模式段：未勾选复用 existing_video_url，勾选段更新 prompt 后重新生成
+        Set<Integer> reworkSet = new java.util.HashSet<>(reworkIndices);
+        List<Map<String, Object>> out = new java.util.ArrayList<>();
+        for (int i = 0; i < segs.size(); i++) {
+            Map<String, Object> seg = new java.util.HashMap<>(segs.get(i));
+            if (reworkSet.contains(i)) {
+                String edited = (editedPrompts != null)
+                        ? editedPrompts.get(String.valueOf(i)) : null;
+                if (edited != null && !edited.isBlank()) {
+                    seg.put("prompt", edited);
+                }
+                seg.remove("existing_video_url");
+            } else {
+                seg.put("existing_video_url", existingUrls.get(i));
+            }
+            out.add(seg);
+        }
+        String newSegmentsJson = toJsonString(out);
+
+        // 3. 重置任务为 pending（旧产物存 prev_result_json 供回滚），段配置更新为最新版
+        taskMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<com.dreamweaver.entity.Task>()
+                .eq(com.dreamweaver.entity.Task::getId, id)
+                .set(com.dreamweaver.entity.Task::getStatus, "pending")
+                .set(com.dreamweaver.entity.Task::getSessionId, null)
+                .set(com.dreamweaver.entity.Task::getResultJson, null)
+                .set(com.dreamweaver.entity.Task::getErrorMessage, null)
+                .set(com.dreamweaver.entity.Task::getPrevResultJson, original.getResultJson())
+                .set(com.dreamweaver.entity.Task::getSegmentsJson, newSegmentsJson)
+                .set(com.dreamweaver.entity.Task::getUpdatedAt, LocalDateTime.now()));
+
+        CreateTaskRequest request = new CreateTaskRequest();
+        request.setPrompt(original.getPrompt());
+        request.setGenType(original.getGenType());
+        request.setUserId(original.getUserId() == null ? null : String.valueOf(original.getUserId()));
+        request.setSegments(newSegmentsJson);
+        log.info("重生成段: id={} 重生成段={} 复用段={}", id, reworkIndices, segs.size() - reworkSet.size());
+        return dispatchToAgent(taskMapper.selectById(id), request);
+    }
+
+    @Override
+    public List<Map<String, Object>> getSegments(Long id) {
+        Task task = taskMapper.selectById(id);
+        if (task == null || task.getSegmentsJson() == null || task.getSegmentsJson().isBlank()) {
+            return new java.util.ArrayList<>();
+        }
+        List<Map<String, Object>> segs = parseSegments(task.getSegmentsJson());
+        List<String> urls = parseResultUrls(task.getResultJson());
+        List<Map<String, Object>> out = new java.util.ArrayList<>();
+        for (int i = 0; i < segs.size(); i++) {
+            Map<String, Object> seg = new java.util.HashMap<>(segs.get(i));
+            seg.put("index", i);
+            seg.put("existing_video_url", i < urls.size() ? urls.get(i) : "");
+            // 段列表 UI 用：参考图缩略图取首张（reference_images 为 List<String>）
+            List<String> refs = null;
+            Object refsRaw = seg.get("reference_images");
+            if (refsRaw instanceof List) {
+                List<?> rawList = (List<?>) refsRaw;
+                refs = rawList.stream()
+                        .filter(java.util.Objects::nonNull)
+                        .map(String::valueOf)
+                        .collect(java.util.stream.Collectors.toList());
+            }
+            seg.put("thumbnail", (refs != null && !refs.isEmpty()) ? refs.get(0) : seg.get("image_url"));
+            out.add(seg);
+        }
+        return out;
+    }
+
+    /** 解析提交时落库的段配置 JSON 数组 */
+    private List<Map<String, Object>> parseSegments(String json) {
+        try {
+            return objectMapper.readValue(json,
+                    new com.fasterxml.jackson.core.type.TypeReference<List<Map<String, Object>>>() {});
+        } catch (Exception e) {
+            log.warn("解析 segments_json 失败: {}", e.getMessage());
+            return new java.util.ArrayList<>();
+        }
+    }
+
+    /** 解析 result_json：[final.mp4, seg0, seg1, ...] → 去掉首位成片，返回各段视频 URL */
+    private List<String> parseResultUrls(String json) {
+        if (json == null || json.isBlank()) {
+            return new java.util.ArrayList<>();
+        }
+        try {
+            List<String> urls = objectMapper.readValue(json,
+                    new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {});
+            return urls.size() > 1 ? urls.subList(1, urls.size()) : new java.util.ArrayList<>();
+        } catch (Exception e) {
+            log.warn("解析 result_json 失败: {}", e.getMessage());
+            return new java.util.ArrayList<>();
+        }
+    }
+
+    /** JSON 序列化（段配置数组落库用）；失败返回空数组字符串，避免阻断提交 */
+    private String toJsonString(java.util.List<?> list) {
+        try {
+            return objectMapper.writeValueAsString(list);
+        } catch (Exception e) {
+            log.error("序列化段配置失败", e);
+            return "[]";
+        }
+    }
+
     private TaskResponse toResponse(Task task) {
         TaskResponse resp = new TaskResponse();
         resp.setId(task.getId());
@@ -285,6 +424,7 @@ public class TaskServiceImpl implements TaskService {
         resp.setGenType(task.getGenType());
         resp.setResultJson(task.getResultJson());
         resp.setImageUrls(task.getImageUrls());
+        resp.setSegmentsJson(task.getSegmentsJson());
         resp.setErrorMessage(task.getErrorMessage());
         resp.setPrompt(task.getPrompt());
         return resp;

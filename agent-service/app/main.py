@@ -139,6 +139,8 @@ def _parse_segments(raw: str | None) -> list:
                 "prompt": str(s.get("prompt", "")).strip(),
                 "seconds": seconds,
                 "aspect_ratio": str(s.get("aspect_ratio") or "16:9").strip(),
+                # 重生混合模式：该段已有视频 URL → 直接复用，跳过重新生成
+                "existing_video_url": str(s.get("existing_video_url") or "").strip(),
             })
         return segments
     except json.JSONDecodeError:

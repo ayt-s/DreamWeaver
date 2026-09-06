@@ -33,6 +33,22 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
     pending_shots: list[tuple[int, str, asyncio.Future]] = []
 
     for idx, shot in enumerate(state["storyboard"][done:], start=done):
+        # 重生混合模式：该段已有视频 URL → 直接复用，不提交 agnes（不消耗额度）
+        existing = str(shot.get("existing_video_url") or "").strip()
+        if existing:
+            video_urls.append(existing)
+            video_ids.append(f"reused-{idx}")
+            trace.append({
+                "tool_name": "reuse_video",
+                "params": {"shot_index": idx},
+                "result": {"video_url": existing, "video_id": f"reused-{idx}"},
+                "latency_ms": 0,
+                "timestamp": int(time.time()),
+                "retry_count": 0,
+            })
+            await events.emit(state["session_id"], "progress",
+                              {"phase": f"复用第 {idx + 1} 段（跳过重生）"})
+            continue
         await events.emit(state["session_id"], "tool_called",
                           {"tool_name": "generate_video", "shot_index": idx})
         result = await generate_video_tool(

@@ -39,6 +39,12 @@ public class Task {
     /** 文生图产出的图片 URL 数组（JSON 格式） */
     private String imageUrls;
 
+    /** 提交时的段配置数组 JSON（重生输入源：{prompt,image_url,reference_images,seconds,aspect_ratio}） */
+    private String segmentsJson;
+
+    /** 重生覆盖前的旧 result_json（回滚用） */
+    private String prevResultJson;
+
     /** Agnes 返回的异步任务 ID（用于幂等判断） */
     private String videoId;
 
