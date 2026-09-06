@@ -39,4 +39,7 @@ public class NotifyRequest {
 
     /** 文生图产出的图片 URL 数组（text_image / 图生视频首帧） */
     private List<String> image_urls;
+
+    /** agent 生成的 storyboard JSON（分镜/段配置），Java 保存为 segments_json 供段重生用 */
+    private String storyboard;
 }

@@ -32,11 +32,15 @@ public interface TaskService {
     TaskResponse regenerateTask(Long id);
 
     /**
-     * 穿帮段重新生成：勾选段重新生成（可改提示词）、未勾选段复用已有视频，
-     * 全部段由 agent 重新拼接成片。仅允许 completed 且有段配置的任务。
-     */
-    TaskResponse reworkTask(Long id, java.util.List<Integer> reworkIndices,
-            java.util.Map<String, String> editedPrompts);
+     /** 穿帮段重新生成：勾选段重新生成（可改提示词）、未勾选段复用已有视频，
+      * 全部段由 agent 重新拼接成片。仅允许 completed 且有段配置的任务。
+      */
+     TaskResponse reworkTask(Long id, java.util.List<Integer> reworkIndices,
+             java.util.Map<String, String> editedPrompts);
+
+     /** 批量穿帮段重新生成：一次提交多个任务的段重生，每个任务独立执行。 */
+     com.dreamweaver.dto.BatchReworkResult batchRework(
+             com.dreamweaver.dto.BatchReworkRequest request);
 
     /** 查询任务的段配置 + 每段已有视频 URL（供画布段列表 UI 展示） */
     java.util.List<java.util.Map<String, Object>> getSegments(Long id);

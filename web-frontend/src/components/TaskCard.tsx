@@ -7,7 +7,9 @@ import {
   RefreshCw,
   ListVideo,
   Archive,
-  ArchiveRestore,
+  Clock,
+  CheckCircle2,
+  Film,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
@@ -20,9 +22,11 @@ import {
   GEN_TYPE_LABEL,
   shortSessionId,
   cachedImageUrl,
+  formatDuration,
 } from '../types/task';
 import { deleteTask, regenerateTask, setTaskDraft } from '../api/tasks';
 import SegmentManager from './SegmentManager';
+import SlideshowPanel from './SlideshowPanel';
 
 interface TaskCardProps {
   task: TaskResponse;
@@ -85,6 +89,7 @@ export default function TaskCard({ task }: TaskCardProps) {
   const queryClient = useQueryClient();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [segmentPanelOpen, setSegmentPanelOpen] = useState(false);
+  const [slideshowOpen, setSlideshowOpen] = useState(false);
 
   /** 卡片标题：优先展示创作需求原文，缺失时才用「任务 #id」兜底 */
   const displayTitle = task.prompt?.trim() ? task.prompt.trim() : `任务 #${task.id}`;
@@ -159,8 +164,20 @@ export default function TaskCard({ task }: TaskCardProps) {
               {STATE_LABEL[state]}
             </span>
           </div>
-          <p className="mt-1 truncate text-xs text-slate-500" title={task.sessionId}>
-            会话 {shortSessionId(task.sessionId)}
+          <p className="mt-1 flex items-center gap-2 truncate text-xs text-slate-500" title={task.sessionId}>
+            <span>会话 {shortSessionId(task.sessionId)}</span>
+            {(() => {
+              const d = formatDuration(task.completedAt, task.createdAt);
+              return d ? (
+                <span
+                  title="从提交到生成完成的耗时（不含内容时长）"
+                  className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600"
+                >
+                  <Clock className="h-2.5 w-2.5" />
+                  耗时 {d}
+                </span>
+              ) : null;
+            })()}
           </p>
           {task.errorMessage && (
             <p className="mt-2 line-clamp-2 text-xs text-red-600">
@@ -170,25 +187,53 @@ export default function TaskCard({ task }: TaskCardProps) {
         </div>
       </div>
 
-      {/* 图片产物（text_image / image_video 首帧） */}
+      {/* 图片产物（text_image / comic_video / image_video 首帧） */}
       {imageUrls.length > 0 && (
-        <div className="grid grid-cols-2 gap-3 border-t border-slate-100 p-5 sm:grid-cols-3">
-          {imageUrls.map((url, i) => (
-            <div
-              key={`${task.id}-img-${i}-${url}`}
-              className="group relative overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
-            >
-              <img
-                src={cachedImageUrl(url)}
-                alt={`任务 ${task.id} 图片 ${i + 1}`}
-                loading="lazy"
-                className="aspect-video w-full object-cover transition-transform group-hover:scale-105"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).style.display = 'none';
-                }}
-              />
+        <div className="border-t border-slate-100 p-5">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {imageUrls.map((url, i) => (
+              <div
+                key={`${task.id}-img-${i}-${url}`}
+                className="group relative overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
+              >
+                <img
+                  src={cachedImageUrl(url)}
+                  alt={`任务 ${task.id} 图片 ${i + 1}`}
+                  loading="lazy"
+                  className="aspect-video w-full object-cover transition-transform group-hover:scale-105"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = 'none';
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+          {/* 图片任务（文生图/漫剧）且有段配置：显示段重生按钮 */}
+          {isTerminal && !!task.segmentsJson && (
+            <div className="mt-3 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setSegmentPanelOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[11px] font-medium text-violet-600 transition-colors hover:bg-violet-50"
+              >
+                <ListVideo className="h-3.5 w-3.5" />
+                段重生
+              </button>
             </div>
-          ))}
+          )}
+          {/* 至少 2 张图才能拼成片 */}
+          {isTerminal && imageUrls.length >= 2 && (
+            <div className="mt-3 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setSlideshowOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 px-2.5 py-1.5 text-[11px] font-medium text-emerald-600 transition-colors hover:bg-emerald-50"
+              >
+                <Film className="h-3.5 w-3.5" />
+                合成视频
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -266,7 +311,7 @@ export default function TaskCard({ task }: TaskCardProps) {
 
       {/* 管理操作：删任何任务（运行中会顺带取消 Agent 排期）；重新生成仅终态 */}
             <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">
-              {isTerminal && (
+              {isTerminal && !task.segmentsJson && (
                 <button
                   type="button"
                   onClick={() => regenMutation.mutate()}
@@ -279,28 +324,51 @@ export default function TaskCard({ task }: TaskCardProps) {
                   {regenMutation.isPending ? '提交中…' : '重新生成'}
                 </button>
               )}
+              {isTerminal && !!task.segmentsJson && (
+                <button
+                  type="button"
+                  onClick={() => setSegmentPanelOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-3 py-1.5 text-xs font-medium text-violet-600 transition-colors hover:bg-violet-50"
+                >
+                  <ListVideo className="h-3.5 w-3.5" />
+                  穿帮段重生
+                </button>
+              )}
+              {isTerminal && !!task.segmentsJson && (
+                <button
+                  type="button"
+                  onClick={() => regenMutation.mutate()}
+                  disabled={regenMutation.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${regenMutation.isPending ? 'animate-spin' : ''}`}
+                  />
+                  {regenMutation.isPending ? '提交中…' : '全量重生'}
+                </button>
+              )}
               {isTerminal && (
                 <button
                   type="button"
                   onClick={() => draftMutation.mutate()}
                   disabled={draftMutation.isPending}
-                  title={isDraft ? '移出草稿区（回到成品区）' : '移入草稿区（暂缓归档）'}
+                  title={isDraft ? '确认成品（移到成品区）' : '退回草稿（回到草稿区）'}
                   className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                     isDraft
-                      ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
-                      : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                      ? 'border-green-300 bg-green-50 text-green-700 hover:bg-green-100'
+                      : 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
                   }`}
                 >
                   {isDraft ? (
-                    <ArchiveRestore className="h-3.5 w-3.5" />
+                    <CheckCircle2 className="h-3.5 w-3.5" />
                   ) : (
                     <Archive className="h-3.5 w-3.5" />
                   )}
                   {draftMutation.isPending
                     ? '切换中…'
                     : isDraft
-                      ? '移出草稿'
-                      : '标记草稿'}
+                      ? '确认成品'
+                      : '退回草稿'}
                 </button>
               )}
               <button
@@ -322,14 +390,23 @@ export default function TaskCard({ task }: TaskCardProps) {
               </button>
             </div>
 
-          {/* 穿帮段重生面板（画布多段任务才可用） */}
-          {segmentPanelOpen && (
-            <SegmentManager
-              taskId={task.id}
-              onClose={() => setSegmentPanelOpen(false)}
-              onChanged={refreshList}
-            />
-          )}
+            {/* 穿帮段重生面板（画布多段任务才可用） */}
+            {segmentPanelOpen && (
+              <SegmentManager
+                taskId={task.id}
+                onClose={() => setSegmentPanelOpen(false)}
+                onChanged={refreshList}
+              />
+            )}
+
+            {/* 图片合成视频面板（至少 2 张图） */}
+            {slideshowOpen && (
+              <SlideshowPanel
+                task={task}
+                onClose={() => setSlideshowOpen(false)}
+                onChanged={refreshList}
+              />
+            )}
           </motion.article>
         );
       }

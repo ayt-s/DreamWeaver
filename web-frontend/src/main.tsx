@@ -7,6 +7,7 @@ import GalleryPage from './pages/GalleryPage';
 import ImageVideoPage from './pages/ImageVideoPage';
 import NovelPage from './pages/NovelPage';
 import './index.css';
+import NavBar from './components/NavBar';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -21,6 +22,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
+        <NavBar />
         <Routes>
           <Route path="/" element={<CreatePage />} />
           <Route path="/gallery" element={<GalleryPage />} />

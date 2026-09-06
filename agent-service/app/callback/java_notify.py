@@ -32,6 +32,7 @@ async def notify_java_completion(
     video_urls: list[str] | None = None,
     error_message: str | None = None,
     image_urls: list[str] | None = None,
+    storyboard: str | None = None,
 ) -> None:
     """通知 Java 视频生成结果。
 
@@ -61,6 +62,8 @@ async def notify_java_completion(
         payload["error_message"] = error_message
     if image_urls is not None:
         payload["image_urls"] = image_urls
+    if storyboard is not None:
+        payload["storyboard"] = storyboard
 
     last_err: Exception | None = None
     for i, delay in enumerate(_RETRY_DELAYS):

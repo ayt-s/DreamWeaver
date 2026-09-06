@@ -79,7 +79,10 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
         # 描述为空时给默认动作，避免空提示词
         if not cn:
             cn = "对参考图内容做缓慢推进的动态运镜"
-        en_prompt = await translate_to_en(cn)
+        # 段重生时 storyboard 已带 prompt_en，直接复用（跳过 LLM 翻译，省额度）
+        en_prompt = str(seg.get("prompt_en", "")).strip()
+        if not en_prompt:
+            en_prompt = await translate_to_en(cn)
         raw_seconds = int(seg.get("seconds", 5) or 5)
         seconds = max(MIN_SECONDS, min(raw_seconds, MAX_SECONDS))
         ratio = str(seg.get("aspect_ratio") or "16:9").strip() or "16:9"

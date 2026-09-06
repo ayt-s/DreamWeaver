@@ -40,6 +40,10 @@ class CreativeSessionState(TypedDict):
     # 无限画布图生视频：用户自定片段列表 [{image_url, prompt, seconds}]，
     # 每段一镜生成几秒小视频，最后由 synthesizer 拼接成一条长视频
     segments: NotRequired[list]
+    # 图片合成视频：从已有图片直接拼成片（ffmpeg 幻灯片，不消耗 agnes 额度）
+    slideshow: NotRequired[bool]
+    slideshow_images: NotRequired[list]
+    slide_seconds: NotRequired[float]
 
     # === 各节点产出（全部落 State → Checkpoint 序列化，断点恢复用）===
     brief: NotRequired[dict]

@@ -117,15 +117,20 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
     # 画布模式（segments 非空）不回这里发完成通知——synthesizer 拼接出长视频后统一回调，
     # 避免 Java 任务先被 completed 落定、后续拼接 URL 无法再更新。
     canvas_mode = bool(state.get("segments"))
+    # 序列化 storyboard 为 JSON（Java 侧保存为 segments_json，供段重生用）
+    import json as _json
+    sb_json = _json.dumps(state.get("storyboard") or [], ensure_ascii=False)
     if not canvas_mode:
         if video_urls:
             _notify_unified(
-                state["session_id"], TaskStatus.COMPLETED, video_urls=video_urls
+                state["session_id"], TaskStatus.COMPLETED,
+                video_urls=video_urls, storyboard=sb_json,
             )
         else:
             _notify_unified(
                 state["session_id"], TaskStatus.FAILED,
                 error_message=_format_error_msgs(error_msgs) or "所有镜次视频生成失败",
+                storyboard=sb_json,
             )
     else:
         # 画布模式全镜失败 → 也补发失败态（否则 Java 任务永远 pending）
@@ -167,7 +172,8 @@ def _format_error_msgs(msgs: list[str]) -> str:
 
 def _notify_unified(session_id: str, status: str,
                     video_urls: list[str] | None = None,
-                    error_message: str | None = None) -> None:
+                    error_message: str | None = None,
+                    storyboard: str | None = None) -> None:
     """fire-and-forget 通知 Java（不阻塞节点返回）。"""
     from app.callback.java_notify import notify_java_completion
     asyncio.create_task(
@@ -179,5 +185,6 @@ def _notify_unified(session_id: str, status: str,
             video_url=" ".join(video_urls or []),  # 兼容单值字段；主载荷走 video_urls
             video_urls=video_urls or [],
             error_message=error_message,
+            storyboard=storyboard,
         )
     )

@@ -248,6 +248,6 @@ async def test_canvas_segments_pipeline(monkeypatch):
     # 3. 两段小视频都已生成
     assert len(result["video_urls"]) == 2
 
-    # 4. 状态到 SYNTHESIZING（synthesizer 节点产物）；final_video_url 已产出
-    assert result["status"] == TaskStatus.SYNTHESIZING
+    # 4. 状态到 COMPLETED（synthesizer 节点产物）；final_video_url 已产出
+    assert result["status"] == TaskStatus.COMPLETED
     assert result.get("final_video_url", "").startswith("/v1/files/test-canvas/")

@@ -1,6 +1,7 @@
 package com.dreamweaver.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
@@ -15,6 +16,8 @@ public class CreateTaskRequest {
     @Size(max = 2000, message = "prompt 过长（≤2000）")
     private String prompt;
 
+    /** 用户 ID（数字字符串；空 = 游客）。@Pattern 防止非数字字符串导致 Long.valueOf NFE */
+    @Pattern(regexp = "(?:\\d+)?", message = "userId 必须为数字")
     private String userId;
 
     /** 生成类型：text_video(纯文本视频)/image_video(图生视频)/text_image(文生图) */
@@ -31,4 +34,13 @@ public class CreateTaskRequest {
 
     /** 可选视频模型（空 = agent 配置默认 agnes-video-2.5-flash），如 agnes-video-2.5 */
     private String videoModel;
+
+    /**
+     * 图片合成视频：图片 URL 数组 JSON 字符串。
+     * 非空时 agent 走 image_slideshow 节点（ffmpeg 幻灯片拼接），不消耗 agnes 额度。
+     */
+    private String slideshowImages;
+
+    /** 图片合成视频：单张停留秒数（1~10，默认 3） */
+    private Double slideSeconds;
 }

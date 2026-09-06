@@ -86,6 +86,9 @@ class CreateVideoTaskRequest(BaseModel):
     # 无限画布图生视频：片段数组 JSON 字符串 [{image_url, prompt, seconds}]；
     # 每段一张参考图 + 一段视频内容描述，生成几秒小视频后由 synthesizer 拼接成长视频
     segments: Optional[str] = None
+    # 图片合成视频：从已有图片直接拼成片（ffmpeg 幻灯片，不消耗 agnes 额度）
+    slideshow_images: Optional[str] = None
+    slide_seconds: Optional[float] = None
 
 
 class CreateVideoTaskResponse(BaseModel):
@@ -107,12 +110,15 @@ def _parse_json_list(raw: str | None, name: str) -> list:
 
 
 def _parse_segments(raw: str | None) -> list:
-    """解析无限画布片段 JSON：[] -> [{image_url, prompt, seconds, reference_images}]。
+    """解析无限画布片段 JSON：[] -> [{image_url, prompt, seconds, reference_images, existing_video_url, prompt_en}]。
 
     保留两类 segment：
     1. 带 image_url 的（用户单张图）
     2. 带 reference_images 数组的（用户多图/锚定图）
     两者都无则丢弃。
+
+    prompt_en 是预翻译的英文提示词（段重生时 storyboard 已带），有则跳过 LLM 翻译。
+    cn_description 是中文描述，storyboard 格式用此字段代替 prompt。
     """
     if not raw:
         return []
@@ -133,14 +139,20 @@ def _parse_segments(raw: str | None) -> list:
                 seconds = int(s.get("seconds", 5) or 5)
             except (TypeError, ValueError):
                 seconds = 5
+            # prompt 来源优先级：prompt > cn_description（storyboard 格式）
+            prompt = str(s.get("prompt", "")).strip()
+            if not prompt:
+                prompt = str(s.get("cn_description", "")).strip()
             segments.append({
                 "image_url": image_url,
                 "reference_images": list(ref_images),
-                "prompt": str(s.get("prompt", "")).strip(),
+                "prompt": prompt,
                 "seconds": seconds,
                 "aspect_ratio": str(s.get("aspect_ratio") or "16:9").strip(),
                 # 重生混合模式：该段已有视频 URL → 直接复用，跳过重新生成
                 "existing_video_url": str(s.get("existing_video_url") or "").strip(),
+                # 预翻译英文提示词（段重生时 storyboard 已带，跳过 LLM 翻译）
+                "prompt_en": str(s.get("prompt_en", "")).strip(),
             })
         return segments
     except json.JSONDecodeError:
@@ -152,7 +164,27 @@ async def _run_session(state: CreativeSessionState) -> None:
     """后台执行 LangGraph。由 SessionScheduler 调用（有界并发）。"""
     config = {"configurable": {"thread_id": state["session_id"]}}
     try:
-        result = await compiled_graph.ainvoke(state, config=config)
+        # 用 astream 替代 ainvoke：每个 checkpoint 实时同步 state，
+        # 让 /v1/tasks/{sid} 能反映执行进度（video_generating/synthesizing 等），
+        # 而不是等会话结束后才一次性更新——修复「提交后状态永远 queued、用户以为没执行」的问题。
+        # 最后一个 checkpoint 等价于 ainvoke 的返回值，语义不变。
+        result = None
+        async for new_state in compiled_graph.astream(state, config=config):
+            if new_state:
+                result = new_state
+                sid = new_state.get("session_id") or state.get("session_id")
+                if sid:
+                    prev_status = state.get("status")
+                    state["status"] = new_state.get("status")
+                    state["updated_at"] = int(time.time())
+                    # 新 state 是不同对象时，把 _sessions 键指向最新 state，
+                    # 否则后续查询仍拿到旧的（未更新 status 的）对象
+                    if _sessions.get(sid) is not state:
+                        _sessions[sid] = state
+                    if prev_status != new_state.get("status"):
+                        logger.info("会话 %s 状态 %s → %s", sid, prev_status, new_state.get("status"))
+        if result is None:
+            result = state
         _sessions[state["session_id"]] = result
         # 轨迹完成事件 + 清理总线（节点可能已发过 completed，重复无害）
         await events.emit(state["session_id"], "completed", {})
@@ -201,6 +233,7 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
 
     ref_images = _parse_json_list(req.reference_images, "reference_images")
     segments = _parse_segments(req.segments)
+    slideshow_images = _parse_json_list(req.slideshow_images, "slideshow_images")
     state: CreativeSessionState = {
         "session_id": session_id,
         "user_id": req.user_id or "demo-user",
@@ -208,6 +241,9 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
         "gen_type": req.gen_type or "text_video",
         "reference_images": ref_images,
         "segments": segments,
+        "slideshow": bool(slideshow_images),
+        "slideshow_images": slideshow_images,
+        "slide_seconds": req.slide_seconds or 3.0,
         "status": TaskStatus.QUEUED,
         "fix_round": 0,
         "max_fix_rounds": 3,

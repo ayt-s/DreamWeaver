@@ -31,6 +31,14 @@ public class TaskResponse {
     /** 创作需求原文（画廊卡片标题展示；重新生成时复用） */
     private String prompt;
 
-    /** 草稿标记：false=成品（默认）true=草稿 */
-    private boolean isDraft;
+    /** 草稿标记：false=成品 true=草稿（默认，新生成物进草稿区）。
+     *  用 Boolean 而非 boolean：Lombok @Data 对 boolean isDraft 生成 isDraft() getter，
+     *  Jackson 序列化为 "draft"；Boolean isDraft 生成 getIsDraft()，序列化为 "isDraft"，与前端对齐 */
+    private Boolean isDraft;
+
+    /** 终态完成/失败时间（ISO 格式）；前端展示任务耗时 */
+    private String completedAt;
+
+    /** 任务创建时间（ISO 格式）；前端计算耗时 */
+    private String createdAt;
 }

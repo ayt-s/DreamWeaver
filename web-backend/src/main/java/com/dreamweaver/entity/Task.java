@@ -1,6 +1,8 @@
 package com.dreamweaver.entity;
 
+import com.baomidou.mybatisplus.annotation.FieldFill;
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.annotation.Version;
@@ -48,7 +50,8 @@ public class Task {
     /** 终态完成/失败时间；与 updated_at 区分——自动重试器刷新 updated_at 时不覆盖此字段 */
     private LocalDateTime completedAt;
 
-    /** 草稿标记：0=成品（默认）1=草稿。用户意图标记，非状态派生 */
+    /** 草稿标记：0=成品，1=草稿（默认）。新生成物默认进草稿区，人工确认后转成品 */
+    @TableField(fill = FieldFill.INSERT)
     private Integer isDraft;
 
     /** Agnes 返回的异步任务 ID（用于幂等判断） */
@@ -68,7 +71,9 @@ public class Task {
      * MyBatis-Plus @Version 注解自动处理：
      * - 更新时自动加 1
      * - WHERE 条件带 version 匹配，不匹配则影响行数为 0
+     * @TableField(fill=INSERT) 确保 insert 时自动填 0（列 NOT NULL）
      */
     @Version
+    @TableField(fill = FieldFill.INSERT)
     private Integer version;
 }

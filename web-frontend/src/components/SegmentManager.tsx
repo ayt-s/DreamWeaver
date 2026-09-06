@@ -3,12 +3,17 @@ import { motion } from 'framer-motion';
 import { X, Wand2, Loader2, AlertCircle, ListVideo, RefreshCw } from 'lucide-react';
 import { getTaskSegments, reworkTask, type TaskSegment } from '../api/tasks';
 import { cachedImageUrl } from '../types/task';
+import type { GenType } from '../types/task';
 
 interface SegmentManagerProps {
   taskId: number;
   onClose: () => void;
   /** 重生提交后回调（父组件刷新任务列表） */
   onChanged: () => void;
+  /** 预加载的段配置（TaskCard 已加载时传入，避免重复请求） */
+  segments?: TaskSegment[] | null;
+  /** 生成类型：决定 UI 是图片重生还是视频重生 */
+  genType?: GenType;
 }
 
 /**
@@ -18,8 +23,8 @@ interface SegmentManagerProps {
  * 提交后 agent 只重生勾选段、复用其余段、重新拼接成片。
  * 后端校验：段数必须与历史视频数一致（有历史段失败导致错位时拒绝重生）。
  */
-export default function SegmentManager({ taskId, onClose, onChanged }: SegmentManagerProps) {
-  const [segments, setSegments] = useState<TaskSegment[] | null>(null);
+export default function SegmentManager({ taskId, onClose, onChanged, segments: segmentsProp }: SegmentManagerProps) {
+  const [segments, setSegments] = useState<TaskSegment[] | null>(segmentsProp ?? null);
   const [loadError, setLoadError] = useState('');
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [editedPrompts, setEditedPrompts] = useState<Record<string, string>>({});
@@ -68,6 +73,11 @@ export default function SegmentManager({ taskId, onClose, onChanged }: SegmentMa
   };
 
   useEffect(() => {
+    // 如果父组件已传入 segments，直接使用（避免重复请求）
+    if (segmentsProp && segmentsProp.length > 0) {
+      setSegments(segmentsProp);
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -80,7 +90,7 @@ export default function SegmentManager({ taskId, onClose, onChanged }: SegmentMa
     return () => {
       cancelled = true;
     };
-  }, [taskId]);
+  }, [taskId, segmentsProp]);
 
   return (
     <motion.div

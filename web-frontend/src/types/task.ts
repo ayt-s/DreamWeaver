@@ -21,12 +21,13 @@ export type TaskStatus =
   | 'expired';
 
 // 生成类型（与 Java/模型侧 gen_type 对齐）
-export type GenType = 'text_video' | 'image_video' | 'text_image';
+export type GenType = 'text_video' | 'image_video' | 'text_image' | 'comic_video';
 
 export const GEN_TYPE_LABEL: Record<GenType, string> = {
   text_video: '文生视频',
   image_video: '图生视频',
   text_image: '文生图',
+  comic_video: '漫剧',
 };
 
 /** 任务状态中文文案（展示用，避免把英文状态码直接抛给用户） */
@@ -44,6 +45,28 @@ export const STATUS_LABELS: Record<string, string> = {
   failed: '已失败',
   expired: '已过期',
 };
+
+/**
+ * 格式化任务耗时（completedAt - createdAt）。
+ * completedAt 为 ISO 字符串（如 "2026-09-06T12:04:14"），created 为毫秒时间戳。
+ * 返回如 "5 分 23 秒"；参数缺失或异常返回 null。
+ */
+export function formatDuration(completedAt: string | undefined, createdAt: string | undefined): string | null {
+  if (!completedAt || !createdAt) return null;
+  const end = new Date(completedAt).getTime();
+  const start = new Date(createdAt).getTime();
+  if (!end || !start || isNaN(end) || isNaN(start)) return null;
+  const ms = end - start;
+  if (ms < 0) return null;
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${totalSec} 秒`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min < 60) return `${min} 分 ${sec} 秒`;
+  const hr = Math.floor(min / 60);
+  const m = min % 60;
+  return `${hr} 时 ${m} 分`;
+}
 
 export function statusLabel(status: string): string {
   return STATUS_LABELS[status] ?? status.replace(/_/g, ' ');
@@ -69,8 +92,14 @@ export interface TaskResponse {
   errorMessage?: string;
   /** 创作需求原文（画廊卡片标题；重新生成时复用） */
   prompt?: string;
-  /** 草稿标记：true=草稿（弱化展示，可移出回成品区） */
+  /** 草稿标记：true=草稿（默认，新生成物进草稿区）false=成品 */
   isDraft?: boolean;
+  /** 段配置 JSON 字符串（有值时支持穿帮段重生） */
+  segmentsJson?: string;
+  /** 终态完成/失败时间（ISO 格式） */
+  completedAt?: string;
+  /** 任务创建时间（ISO 格式） */
+  createdAt?: string;
 }
 
 /** 任务分页列表（对应 Java TaskListResponse dto） */
@@ -101,6 +130,7 @@ export const DRAFT_FILTERS: Array<{ key: DraftFilter; label: string }> = [
 export const GEN_TYPE_FILTERS: Array<{ key: GenType | ''; label: string }> = [
   { key: '', label: '全部' },
   { key: 'text_image', label: '文生图' },
+  { key: 'comic_video', label: '漫剧' },
   { key: 'text_video', label: '文生视频' },
   { key: 'image_video', label: '图生视频' },
 ];

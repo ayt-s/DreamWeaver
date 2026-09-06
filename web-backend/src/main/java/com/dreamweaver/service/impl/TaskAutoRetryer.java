@@ -54,8 +54,12 @@ public class TaskAutoRetryer {
     private boolean enabled;
     @Value("${app.retry.min-age-seconds:180}")
     private long minAgeSeconds;
-    @Value("${app.retry.max-attempts:3}")
-    private int maxAttempts;
+    /** 视频任务最多重试次数（视频贵且慢，默认 1 次） */
+    @Value("${app.retry.max-video-attempts:1}")
+    private int maxVideoAttempts;
+    /** 图片任务最多重试次数（图片便宜且快，默认 3 次） */
+    @Value("${app.retry.max-image-attempts:3}")
+    private int maxImageAttempts;
     @Value("${app.retry.video-spacing-seconds:90}")
     private long videoSpacingSeconds;
     @Value("${app.retry.image-spacing-seconds:30}")
@@ -104,7 +108,8 @@ public class TaskAutoRetryer {
                 } catch (NumberFormatException ignore) {
                 }
             }
-            if (attempts >= maxAttempts) {
+            int maxAttemptsForType = isVideo ? maxVideoAttempts : maxImageAttempts;
+            if (attempts >= maxAttemptsForType) {
                 continue;
             }
 

@@ -116,12 +116,21 @@ public class NotifyServiceImpl implements NotifyService {
             task.setImageUrls(toJsonString(imageUrls));
         }
 
+        // 4.2 保存 storyboard 为 segments_json（标准模式分镜 / 文生图分镜，供段重生用）
+        if (request.getStoryboard() != null && !request.getStoryboard().isBlank()
+                && (task.getSegmentsJson() == null || task.getSegmentsJson().isBlank())) {
+            task.setSegmentsJson(request.getStoryboard());
+            log.info("notify 任务 {} 保存 storyboard 为 segments_json（长度={}）",
+                    task.getId(), request.getStoryboard().length());
+        }
+
         // 5. 更新状态（通过 updateById 触发乐观锁 version+1）
         task.setStatus(toStatus);
         task.setUpdatedAt(LocalDateTime.now());
         int updated;
         if ("failed".equals(toStatus)) {
             task.setErrorMessage(request.getError_message());
+            task.setCompletedAt(LocalDateTime.now());
             updated = taskMapper.updateById(task);
         } else {
             // completed：显式清空 errorMessage（updateById 忽略 null，走 wrapper 直写 + version+1）
@@ -131,7 +140,9 @@ public class NotifyServiceImpl implements NotifyService {
                     .set(com.dreamweaver.entity.Task::getStatus, "completed")
                     .set(com.dreamweaver.entity.Task::getResultJson, task.getResultJson())
                     .set(com.dreamweaver.entity.Task::getImageUrls, task.getImageUrls())
+                    .set(com.dreamweaver.entity.Task::getSegmentsJson, task.getSegmentsJson())
                     .set(com.dreamweaver.entity.Task::getErrorMessage, null)
+                    .set(com.dreamweaver.entity.Task::getCompletedAt, LocalDateTime.now())
                     .set(com.dreamweaver.entity.Task::getUpdatedAt, LocalDateTime.now())
                     .setSql("version = version + 1"));
         }

@@ -62,6 +62,8 @@ export interface TaskSegment {
   aspect_ratio?: string;
   /** 该段当前视频 URL（重生成后会被替换） */
   existing_video_url?: string;
+  /** 该段当前图片 URL（图片任务段重生用） */
+  existing_image_url?: string;
   /** 段首张参考图，用作缩略图 */
   thumbnail?: string;
 }
@@ -76,6 +78,50 @@ export async function reworkTask(
   req: { reworkIndices: number[]; editedPrompts?: Record<string, string> },
 ): Promise<TaskResponse> {
   return unwrap(client.post(`/tasks/${id}/rework`, req));
+}
+
+// 批量穿帮段重新生成：一次提交多个任务的段重生
+export interface BatchReworkItemReq {
+  taskId: number;
+  reworkIndices: number[];
+  editedPrompts?: Record<string, string>;
+}
+export interface BatchReworkItemRes {
+  taskId: number;
+  success: boolean;
+  message: string;
+  task?: TaskResponse;
+}
+export interface BatchReworkResult {
+  total: number;
+  success: number;
+  failed: number;
+  results: BatchReworkItemRes[];
+}
+export async function batchReworkTasks(
+  items: BatchReworkItemReq[],
+): Promise<BatchReworkResult> {
+  return unwrap(client.post('/tasks/batch-rework', { items }));
+}
+
+// 图片合成视频：挑选已有图片 → ffmpeg 幻灯片拼成片（不消耗 agnes 额度）
+export interface SlideshowRequest {
+  /** 图片 URL 数组（至少 2 张，必须公网可访问） */
+  slideshowImages: string[];
+  /** 单张停留秒数，1~10 */
+  slideSeconds?: number;
+  /** 展示用标题 */
+  prompt?: string;
+}
+export async function createSlideshowTask(req: SlideshowRequest): Promise<TaskResponse> {
+  return unwrap<TaskResponse>(
+    client.post('/tasks/video', {
+      prompt: req.prompt || `图片合成视频（${req.slideshowImages.length} 张）`,
+      genType: 'image_video',
+      slideshowImages: JSON.stringify(req.slideshowImages),
+      slideSeconds: req.slideSeconds ?? 3,
+    }),
+  );
 }
 
 // 本地上传参考图（无限画布用；产物经 /api/uploads/** 静态提供）

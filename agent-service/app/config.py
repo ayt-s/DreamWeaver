@@ -5,6 +5,11 @@
 """
 import os
 
+from dotenv import load_dotenv
+
+# 必须在 Settings() 实例化之前加载 .env，否则模块导入时读到的全是空值
+load_dotenv()
+
 
 def _env(key: str, default: str = "") -> str:
     return os.getenv(key, default)

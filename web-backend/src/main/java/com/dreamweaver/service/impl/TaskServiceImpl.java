@@ -189,7 +189,7 @@ public class TaskServiceImpl implements TaskService {
         // 1. 落库（pending）
         Task task = new Task();
         task.setPrompt(request.getPrompt());
-        task.setUserId(request.getUserId() == null ? null : Long.valueOf(request.getUserId()));
+        task.setUserId(request.getUserId() == null || request.getUserId().isBlank() ? null : Long.valueOf(request.getUserId()));
         task.setStatus("pending");
         task.setGenType(request.getGenType() != null ? request.getGenType() : "text_video");
         // 段配置落库：重生时取此作为输入源（未勾选段复用已有视频、勾选段重新生成）
@@ -222,6 +222,12 @@ public class TaskServiceImpl implements TaskService {
         }
         if (request.getVideoModel() != null && !request.getVideoModel().isBlank()) {
             body.put("video_model", request.getVideoModel());
+        }
+        if (request.getSlideshowImages() != null && !request.getSlideshowImages().isBlank()) {
+            body.put("slideshow_images", request.getSlideshowImages());
+        }
+        if (request.getSlideSeconds() != null) {
+            body.put("slide_seconds", request.getSlideSeconds());
         }
 
         CommonResult<Map<String, Object>> agentResp = null;
@@ -293,6 +299,47 @@ public class TaskServiceImpl implements TaskService {
     @Transactional
     public TaskResponse reworkTask(Long id, List<Integer> reworkIndices,
             Map<String, String> editedPrompts) {
+        return doReworkCore(id, reworkIndices, editedPrompts);
+    }
+
+    @Override
+    public com.dreamweaver.dto.BatchReworkResult batchRework(
+            com.dreamweaver.dto.BatchReworkRequest request) {
+        List<com.dreamweaver.dto.BatchReworkItem> items = request.getItems();
+        List<com.dreamweaver.dto.BatchReworkItemResult> results = new java.util.ArrayList<>();
+        int successCount = 0, failedCount = 0;
+        for (com.dreamweaver.dto.BatchReworkItem item : items) {
+            com.dreamweaver.dto.BatchReworkItemResult r =
+                    new com.dreamweaver.dto.BatchReworkItemResult();
+            r.setTaskId(item.getTaskId());
+            try {
+                TaskResponse resp = doReworkCore(item.getTaskId(),
+                        item.getReworkIndices(), item.getEditedPrompts());
+                r.setSuccess(true);
+                r.setMessage("OK");
+                r.setTask(resp);
+                successCount++;
+            } catch (Exception e) {
+                r.setSuccess(false);
+                r.setMessage(e.getMessage() != null ? e.getMessage() : "未知错误");
+                failedCount++;
+                log.warn("批量重生任务 {} 失败: {}", item.getTaskId(), e.getMessage());
+            }
+            results.add(r);
+        }
+        com.dreamweaver.dto.BatchReworkResult result =
+                new com.dreamweaver.dto.BatchReworkResult();
+        result.setTotal(items.size());
+        result.setSuccess(successCount);
+        result.setFailed(failedCount);
+        result.setResults(results);
+        log.info("批量重生完成: total={} success={} failed={}", items.size(), successCount, failedCount);
+        return result;
+    }
+
+    /** 穿帮段重生核心逻辑（单个任务），供 reworkTask 和 batchRework 共用。 */
+    private TaskResponse doReworkCore(Long id, List<Integer> reworkIndices,
+            Map<String, String> editedPrompts) {
         Task original = taskMapper.selectById(id);
         if (original == null) {
             throw new IllegalArgumentException("任务不存在（id=" + id + "）");
@@ -308,17 +355,22 @@ public class TaskServiceImpl implements TaskService {
             throw new IllegalArgumentException("未选择需要重新生成的段");
         }
 
-        // 1. 解析段配置 + 已有视频 URL（result_json 格式：[final.mp4, seg0, seg1, ...]）
+        // 1. 解析段配置 + 已有产物 URL
         List<Map<String, Object>> segs = parseSegments(original.getSegmentsJson());
-        List<String> existingUrls = parseResultUrls(original.getResultJson());
+        boolean isImageTask = "text_image".equals(original.getGenType())
+                || "comic_video".equals(original.getGenType());
+        List<String> existingUrls = isImageTask
+                ? parseImageUrls(original.getImageUrls())
+                : parseResultUrls(original.getResultJson());
         if (existingUrls.size() != segs.size()) {
             throw new IllegalArgumentException(
                     "历史结果与段数不匹配（段数=" + segs.size()
-                            + "，已有视频=" + existingUrls.size()
+                            + "，已有" + (isImageTask ? "图片" : "视频") + "=" + existingUrls.size()
                             + "），存在历史段生成失败导致序号错位，无法按段重生，请全量重新生成");
         }
 
-        // 2. 组装混合模式段：未勾选复用 existing_video_url，勾选段更新 prompt 后重新生成
+        // 2. 组装混合模式段：未勾选复用 existing_video_url（视频）/ existing_image_url（图片），勾选段更新 prompt 后重新生成
+        List<String> existingImageUrls = parseImageUrls(original.getImageUrls());
         Set<Integer> reworkSet = new java.util.HashSet<>(reworkIndices);
         List<Map<String, Object>> out = new java.util.ArrayList<>();
         for (int i = 0; i < segs.size(); i++) {
@@ -329,7 +381,12 @@ public class TaskServiceImpl implements TaskService {
                 if (edited != null && !edited.isBlank()) {
                     seg.put("prompt", edited);
                 }
+                // 重活段必须重新翻译（旧 prompt_en 对应用户修改前的中文描述）
+                seg.remove("prompt_en");
                 seg.remove("existing_video_url");
+                seg.remove("existing_image_url");
+            } else if (isImageTask && i < existingImageUrls.size()) {
+                seg.put("existing_image_url", existingImageUrls.get(i));
             } else {
                 seg.put("existing_video_url", existingUrls.get(i));
             }
@@ -371,6 +428,11 @@ public class TaskServiceImpl implements TaskService {
             Map<String, Object> seg = new java.util.HashMap<>(segs.get(i));
             seg.put("index", i);
             seg.put("existing_video_url", i < urls.size() ? urls.get(i) : "");
+            // 图片任务（文生图/漫剧）：existing_image_url 来自 image_urls 字段
+            if ("text_image".equals(task.getGenType()) || "comic_video".equals(task.getGenType())) {
+                List<String> imageUrls = parseImageUrls(task.getImageUrls());
+                seg.put("existing_image_url", i < imageUrls.size() ? imageUrls.get(i) : "");
+            }
             // 段列表 UI 用：参考图缩略图取首张（reference_images 为 List<String>）
             List<String> refs = null;
             Object refsRaw = seg.get("reference_images");
@@ -416,13 +478,30 @@ public class TaskServiceImpl implements TaskService {
                 return new java.util.ArrayList<>();
             }
             String first = urls.get(0) == null ? "" : urls.get(0).trim();
-            if (first.startsWith("/v1/files/") || first.endsWith("/final.mp4")) {
-                return urls.size() > 1 ? new java.util.ArrayList<>(urls.subList(1, urls.size()))
-                        : new java.util.ArrayList<>();
+            boolean hasFinalVideo = first.startsWith("/v1/files/") || first.endsWith("/final.mp4");
+            if (hasFinalVideo && urls.size() > 1) {
+                // 有拼接成片：首元素是成片，丢弃它，只返回分段视频
+                return new java.util.ArrayList<>(urls.subList(1, urls.size()));
             }
+            // 拼接失败：首元素也是分段视频，全部返回
             return new java.util.ArrayList<>(urls);
         } catch (Exception e) {
             log.warn("解析 result_json 失败: {}", e.getMessage());
+            return new java.util.ArrayList<>();
+        }
+    }
+
+    /** 解析 image_urls JSON 为图片 URL 列表（容错同 parseResultUrls） */
+    private List<String> parseImageUrls(String json) {
+        if (json == null || json.isBlank()) {
+            return new java.util.ArrayList<>();
+        }
+        try {
+            List<String> urls = objectMapper.readValue(json,
+                    new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {});
+            return new java.util.ArrayList<>(urls);
+        } catch (Exception e) {
+            log.warn("解析 image_urls 失败: {}", e.getMessage());
             return new java.util.ArrayList<>();
         }
     }
@@ -464,8 +543,14 @@ public class TaskServiceImpl implements TaskService {
         resp.setSegmentsJson(task.getSegmentsJson());
         resp.setErrorMessage(task.getErrorMessage());
         resp.setPrompt(task.getPrompt());
-        // Lombok 对 primitive boolean isDraft 生成 setDraft()（非 setIsDraft），javap 已验证
-        resp.setDraft(task.getIsDraft() != null && task.getIsDraft() == 1);
+        // Lombok @Data 对 Boolean isDraft 生成 getIsDraft()/setIsDraft()
+        resp.setIsDraft(task.getIsDraft() != null && task.getIsDraft() == 1);
+        if (task.getCompletedAt() != null) {
+            resp.setCompletedAt(task.getCompletedAt().toString());
+        }
+        if (task.getCreatedAt() != null) {
+            resp.setCreatedAt(task.getCreatedAt().toString());
+        }
         return resp;
     }
 }

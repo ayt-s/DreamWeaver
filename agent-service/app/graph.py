@@ -19,6 +19,7 @@ from app.nodes.storyboard import storyboarder_node, canvas_storyboarder_node
 from app.nodes.image import image_generator_node
 from app.nodes.video import video_generator_node
 from app.nodes.synthesizer import synthesizer_node
+from app.nodes.image_slideshow import image_slideshow_node
 from app.nodes.qc import qc_checker_node
 
 
@@ -28,8 +29,17 @@ def _fix_looping_node(state: CreativeSessionState) -> dict:
 
 
 def _entry_route(state: CreativeSessionState) -> str:
-    """入口路由：画布模式（segments 非空）跳过需求解析/剧本/分镜 LLM 环节。"""
+    """入口路由：画布模式（segments 非空）跳过需求解析/剧本/分镜 LLM 环节。
+
+    图片重生特殊处理：文生图/漫剧任务带 segments 时，直接跳到 image_generator
+    （跳过 canvas_storyboarder），因为图片任务不需要 storyboard 翻译环节。
+    图片合成视频：slideshow 非空且带图片列表时直达 slideshow 节点（不消耗 agnes 额度）。
+    """
+    if state.get("slideshow") and state.get("slideshow_images"):
+        return "slideshow"
     if state.get("segments"):
+        if state.get("gen_type") in ("text_image", "comic_video"):
+            return "image_rework"
         return "canvas"
     return "standard"
 
@@ -43,8 +53,10 @@ def _qc_route(state: CreativeSessionState) -> str:
 
 
 def _image_route(state: CreativeSessionState) -> str:
-    """image_generator 之后的路线：文生图只出图不出视频，其余继续视频链路。"""
-    if state.get("gen_type") == "text_image":
+    """image_generator 之后的路线：合成视频 → slideshow；文生图/漫剧只出图；其余继续视频链路。"""
+    if state.get("slideshow"):
+        return "slideshow"
+    if state.get("gen_type") in ("text_image", "comic_video"):
         return "text_done"
     return "to_video"
 
@@ -66,12 +78,14 @@ graph.add_node("image_generator", image_generator_node)
 graph.add_node("video_generator", video_generator_node)
 graph.add_node("qc_checker", qc_checker_node)
 graph.add_node("synthesizer", synthesizer_node)
+graph.add_node("image_slideshow", image_slideshow_node)
 graph.add_node("fix_looping", _fix_looping_node)  # Phase 2 stub
 
 # === 入口路由 ===
 graph.set_conditional_entry_point(
     _entry_route,
-    {"canvas": "canvas_storyboarder", "standard": "requirement_parser"},
+    {"canvas": "canvas_storyboarder", "standard": "requirement_parser",
+     "image_rework": "image_generator", "slideshow": "image_slideshow"},
 )
 
 # === 标准链路 ===
@@ -97,6 +111,7 @@ graph.add_conditional_edges(
     {"synthesize": "synthesizer", "qc": "qc_checker"},
 )
 graph.add_edge("synthesizer", END)
+graph.add_edge("image_slideshow", END)
 
 # === 标准链路：video_generator → qc_checker ===
 # （上面已由 _video_route 接入；此处仅为可读性保留注释）

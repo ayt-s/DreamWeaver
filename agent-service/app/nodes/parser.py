@@ -3,10 +3,15 @@
 输入 raw_prompt → 输出结构化 brief（JSON）。
 Phase 1 先做「尽力解析」，interrupt 多轮澄清留 Phase 2。
 """
+import asyncio
+import json
+import logging
 from app.config import settings
 from app.gateway.agnes import gateway
 from app.state import CreativeSessionState, TaskStatus
 from app.utils.json_utils import parse_llm_json
+
+logger = logging.getLogger(__name__)
 
 BRIEF_TEMPLATE = """
 用户需求：{prompt}
@@ -32,12 +37,37 @@ def validate_brief(raw: str) -> dict:
     return data
 
 
+async def _llm_json_with_retry(prompt: str, *, session_id: str | None = None,
+                                model: str | None = None,
+                                temperature: float = 0.1,
+                                max_retries: int = 2) -> str:
+    """调用 LLM 获取 JSON 响应，解析失败时重试。
+
+    重试策略：3 次尝试，间隔 3s。每次重新调用 LLM（不是只重试解析，
+    因为 LLM 可能每次都输出相同格式错误的文本）。
+    """
+    last_err: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            raw = await gateway.chat(prompt, model=model or settings.text_model,
+                                      temperature=temperature, session_id=session_id)
+            parse_llm_json(raw)  # 验证是合法 JSON
+            return raw
+        except (ValueError, json.JSONDecodeError) as e:
+            last_err = e
+            logger.warning("LLM JSON 解析失败 (尝试 %d/%d): %s", attempt + 1,
+                           max_retries + 1, str(e)[:100])
+            if attempt < max_retries:
+                await asyncio.sleep(3)
+    raise ValueError(f"LLM 输出 {max_retries + 1} 次均非合法 JSON: {last_err}")
+
+
 async def requirement_parser_node(state: CreativeSessionState) -> dict:
     from app import events
     await events.emit(state["session_id"], "node_entered",
                       {"node_id": "requirement_parser", "node_name": "需求解析"})
     prompt = BRIEF_TEMPLATE.format(prompt=state["raw_prompt"])
-    raw = await gateway.chat(prompt, model=settings.text_model, temperature=0.1)
+    raw = await _llm_json_with_retry(prompt, session_id=state["session_id"])
     brief = validate_brief(raw)
     await events.emit(state["session_id"], "node_completed",
                       {"node_id": "requirement_parser", "summary": f"主题: {brief.get('theme', '')}"})

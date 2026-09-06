@@ -39,6 +39,7 @@ const PLACEHOLDER: Record<GenType, string> = {
   text_video: '描述你想创作的视频内容...',
   image_video: '在画布中添加片段（图片 + 视频内容描述），模型会自动拼接成长视频...',
   text_image: '描述你想生成的画面，如：赛博朋克城市夜景，霓虹灯牌...',
+  comic_video: '描述你想生成的漫画剧画面，如：少女在樱花树下回头一笑...',
 };
 
 export default function CreatePanel() {

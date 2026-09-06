@@ -227,7 +227,7 @@ async def synthesizer_node(state: CreativeSessionState) -> dict:
         logger.warning("synthesizer: 无视频可拼接")
         await events.emit(session_id, "node_completed",
                           {"node_id": "synthesizer", "summary": "无视频，跳过拼接"})
-        return {"status": TaskStatus.SYNTHESIZING, "final_video_url": ""}
+        return {"status": TaskStatus.COMPLETED, "final_video_url": ""}
 
     shot_dir = OUTPUT_ROOT / session_id
     shot_dir.mkdir(parents=True, exist_ok=True)
@@ -258,7 +258,7 @@ async def synthesizer_node(state: CreativeSessionState) -> dict:
         await events.emit(session_id, "completed", {})
         return {
             "final_video_url": final_url,
-            "status": TaskStatus.SYNTHESIZING,
+            "status": TaskStatus.COMPLETED,
         }
     except Exception as exc:
         # 拼接失败不阻断任务：原 video_urls 已由 synthesizer 兜底回调，前端仍可见各分段
@@ -272,5 +272,5 @@ async def synthesizer_node(state: CreativeSessionState) -> dict:
         await events.emit(session_id, "completed", {})
         return {
             "final_video_url": "",
-            "status": TaskStatus.SYNTHESIZING,
+            "status": TaskStatus.COMPLETED,
         }

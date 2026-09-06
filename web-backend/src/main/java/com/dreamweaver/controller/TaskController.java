@@ -76,4 +76,11 @@ public class TaskController {
         return CommonResult.ok(taskService.reworkTask(
                 id, request.getReworkIndices(), request.getEditedPrompts()));
     }
+
+    /** 批量穿帮段重新生成：一次提交多个任务的段重生，每个任务独立执行 */
+    @PostMapping("/batch-rework")
+    public CommonResult<com.dreamweaver.dto.BatchReworkResult> batchRework(
+            @Valid @RequestBody com.dreamweaver.dto.BatchReworkRequest request) {
+        return CommonResult.ok(taskService.batchRework(request));
+    }
 }
