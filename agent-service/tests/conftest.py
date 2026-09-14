@@ -23,8 +23,12 @@ def _disable_session_store():
 
 
 @pytest.fixture(autouse=True)
-def _quiet_heartbeat(monkeypatch):
-    """心跳间隔调到 1 小时，避免后台任务在测试里真的去 POST 8080。"""
+def _quiet_side_effects(monkeypatch):
+    """关掉对 Java 的副作用：不回调 8080、心跳不会真的发出去。
+
+    单测不该依赖 Java 服务，也不该因为它在跑而对真实端口发请求。
+    """
     from app.config import settings
 
+    monkeypatch.setattr(settings, "java_notify_url", "", raising=False)
     monkeypatch.setattr(settings, "heartbeat_interval_s", 3600, raising=False)

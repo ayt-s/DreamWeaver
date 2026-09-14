@@ -373,6 +373,9 @@ async def cancel_task(session_id: str) -> ApiResponse:
     if scheduler.cancel(session_id):
         _sessions[session_id]["status"] = TaskStatus.FAILED
         _sessions[session_id]["error_message"] = "用户取消排队"
+        # 已取消 = 永远不会执行，清掉 Redis 快照与活跃索引，
+        # 否则下次启动恢复会把这个用户已经取消的任务重新捡起来跑
+        await session_store.delete_session(session_id)
         return ApiResponse(
             code=0,
             message="ok",

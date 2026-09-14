@@ -59,10 +59,14 @@ class SessionStore:
             try:
                 from app.config import settings
 
+                # protocol=2 是硬要求：本机是 Redis 3.2.100（微软 Windows 移植版），
+                # 不支持 HELLO 命令；redis-py 8.x 默认走 RESP3 握手会直接报
+                # `URL unknown command 'HELLO'`。锁 RESP2 才能连上。
                 self._client = _aioredis.from_url(
                     settings.redis_url,
                     encoding="utf-8",
                     decode_responses=True,
+                    protocol=2,
                 )
             except Exception as exc:  # 配置非法等
                 logger.debug("创建 Redis 客户端失败（持久化降级）: %s", exc)
@@ -249,8 +253,12 @@ class SessionStore:
     async def acquire_lock(self, sid: str) -> bool:
         """抢恢复互斥锁（SETNX + TTL 5min）。抢不到返回 False。
 
-        锁**不主动释放**：TTL 自然过期即可。恢复成功后立刻释放反而危险——
-        `--reload` 下新旧进程可能重叠，旧进程会二次恢复同一会话。
+        成功的恢复**不主动释放锁**，让 TTL 自然过期：`--reload` 下新旧进程可能重叠，
+        旧进程若二次恢复同一会话 → 同一任务重复提交 agnes（正是本方案要避免的浪费）。
+        ⚠️ 代价（已知，接受）：进程若在成功恢复后 5 分钟内**再崩一次**并重启，
+        这次恢复会被自己的残留锁挡住。此时靠 Java 看门狗 + TaskAutoRetryer 兜底，
+        比「牺牲额度换即时性」划算。
+        "什么都没恢复" 的路径（快照丢失/已是终态）会显式 release_lock，不占用锁窗口。
         """
         client = self._get_client()
         if client is None or not sid:
@@ -264,6 +272,16 @@ class SessionStore:
         except Exception as exc:
             logger.debug("acquire_lock 失败（降级放行）: %s", exc)
             return True
+
+    async def release_lock(self, sid: str) -> None:
+        """释放恢复锁（仅用于「没有实际恢复」的路径）。失败静默。"""
+        client = self._get_client()
+        if client is None or not sid:
+            return
+        try:
+            await client.delete(LOCK_KEY.format(sid=sid))
+        except Exception as exc:
+            logger.debug("release_lock 失败（已降级）: %s", exc)
 
     # ------------------------------------------------------------------ 收尾
 
@@ -334,6 +352,10 @@ async def mark_done(sid: str, shot_index: int, url: str, video_id: str = "") -> 
 
 async def acquire_lock(sid: str) -> bool:
     return await store.acquire_lock(sid)
+
+
+async def release_lock(sid: str) -> None:
+    await store.release_lock(sid)
 
 
 async def close() -> None:

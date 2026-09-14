@@ -152,7 +152,8 @@ async def resolve_submitted(sid: str, state: dict, progress: dict) -> int:
         return 0
     model_name = _model_name(state)
     resolved = 0
-    for key, video_id in submitted.items():
+    # 迭代副本：循环内会从 submitted 摘除失败/已完成的项
+    for key, video_id in list(submitted.items()):
         idx = _to_index(key)
         vid = str(video_id or "").strip()
         if idx is None or not vid:
@@ -199,7 +200,8 @@ async def recover_session(sid: str) -> bool:
     if sid in _recovered:
         return False
     if not await session_store.acquire_lock(sid):
-        logger.info("会话 %s 的恢复锁被其它进程持有，跳过", sid)
+        # 锁被占 = 另一个进程正在恢复/正在跑这个会话（5 分钟窗口，见 session_store 注释）
+        logger.warning("会话 %s 的恢复锁被其它进程持有，跳过本轮恢复", sid)
         return False
     _recovered.add(sid)
 
@@ -208,12 +210,14 @@ async def recover_session(sid: str) -> bool:
         # 快照过期/丢失 → 清掉活跃索引，交给 Java 看门狗与重试器兜底
         logger.info("会话 %s 无可用快照，清除活跃索引", sid)
         await session_store.remove_active(sid)
+        await session_store.release_lock(sid)  # 没实际恢复，不占用锁窗口
         return False
 
     status = str(state.get("status") or "")
     if status in ("completed", "failed", "expired"):
         logger.info("会话 %s 已是终态(%s)，清理快照不做恢复", sid, status)
         await session_store.delete_session(sid)
+        await session_store.release_lock(sid)  # 没实际恢复，不占用锁窗口
         return False
 
     progress = await session_store.load_progress(sid)
