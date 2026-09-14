@@ -8,6 +8,11 @@ import { enrichPrompt } from '../api/enrich';
 import { useTaskStore } from '../store/taskStore';
 import type { GenType } from '../types/task';
 import {
+  SHOT_SIZE_OPTIONS,
+  CAMERA_ANGLE_OPTIONS,
+  CAMERA_MOVE_OPTIONS,
+} from '../types/task';
+import {
   Sparkles,
   Loader2,
   Zap,
@@ -17,6 +22,7 @@ import {
   Wand2,
   Settings2,
   ChevronDown,
+  Video,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -27,6 +33,9 @@ interface CreateForm {
   negativePrompt: string;
   totalSeconds: string;
   shotCount: string;
+  shotSize: string;
+  cameraAngle: string;
+  cameraMove: string;
 }
 
 const FORM_DEFAULTS: CreateForm = {
@@ -36,6 +45,9 @@ const FORM_DEFAULTS: CreateForm = {
   negativePrompt: '',
   totalSeconds: '',
   shotCount: '',
+  shotSize: '',
+  cameraAngle: '',
+  cameraMove: '',
 };
 
 const SUGGESTIONS = [
@@ -112,6 +124,11 @@ export default function CreatePanel() {
     // 时间轴：空串 → undefined（不传，让 LLM 自由决定）；非法数字同理
     const totalSeconds = Number.parseInt(values.totalSeconds, 10);
     const shotCount = Number.parseInt(values.shotCount, 10);
+    // 全局运镜倾向：三项全空 → undefined（保持 LLM 自由分镜）
+    const shotLanguage: Record<string, string> = {};
+    if (values.shotSize) shotLanguage.shot_size = values.shotSize;
+    if (values.cameraAngle) shotLanguage.angle = values.cameraAngle;
+    if (values.cameraMove) shotLanguage.movement = values.cameraMove;
     mutation.mutate({
       prompt,
       genType: values.genType,
@@ -119,6 +136,9 @@ export default function CreatePanel() {
       negativePrompt: values.negativePrompt.trim() || undefined,
       totalSeconds: Number.isFinite(totalSeconds) && totalSeconds > 0 ? totalSeconds : undefined,
       shotCount: Number.isFinite(shotCount) && shotCount > 0 ? shotCount : undefined,
+      shotLanguage: Object.keys(shotLanguage).length > 0
+        ? JSON.stringify(shotLanguage)
+        : undefined,
     });
   };
 
@@ -354,6 +374,48 @@ export default function CreatePanel() {
                 <p className="text-[11px] text-red-600">
                   {errors.totalSeconds?.message || errors.shotCount?.message}
                 </p>
+              )}
+
+              {/* ③ 全局运镜倾向：仅标准文生视频（LLM 自由分镜）适用 */}
+              {genType === 'text_video' && (
+                <div>
+                  <label className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
+                    <Video className="h-3 w-3" />
+                    运镜倾向
+                    <span className="font-normal text-slate-400">
+                      留空 = 由模型按内容自由分镜；选定后覆盖每一镜
+                    </span>
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <select
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/10"
+                      {...register('shotSize')}
+                    >
+                      <option value="">景别：自动</option>
+                      {SHOT_SIZE_OPTIONS.map((v) => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                    <select
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/10"
+                      {...register('cameraAngle')}
+                    >
+                      <option value="">机位：自动</option>
+                      {CAMERA_ANGLE_OPTIONS.map((v) => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                    <select
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/10"
+                      {...register('cameraMove')}
+                    >
+                      <option value="">运镜：自动</option>
+                      {CAMERA_MOVE_OPTIONS.map((v) => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
               )}
             </div>
           )}

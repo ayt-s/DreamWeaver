@@ -49,10 +49,20 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
     # 用户上传的参考图（图生视频模式）：有则作为每镜参考图，空则后续 image_generator 自动生图回填
     user_ref_images = list(state.get("reference_images", []))
     style_prompt, negative_prompt, role_clauses, keep_clauses = _control_context(state)
+    # 全局运镜倾向（③-1）：用户指定后覆盖 LLM 每镜自由发挥的 camera，
+    # 保证「同等控制力」——不给则保持 LLM 自由分镜（行为不变）。
+    global_camera_spec = normalize_camera_spec(state.get("shot_language") or {})
+    global_camera_en = camera_phrase(global_camera_spec)
     storyboard = []
     for shot in state["script"]:
+        # 有全局运镜时用它替换 LLM 的 camera，避免两种运镜指令互相冲突
+        # （中文描述用中文原值，确定性英文片段在翻译后拼接）
+        camera_text = (
+            "、".join(v for v in global_camera_spec.values() if v)
+            if global_camera_en else shot.get("camera", "")
+        )
         cn_description = build_cn_description(
-            [shot.get("visual", ""), shot.get("camera", ""), shot.get("style_note", "")],
+            [shot.get("visual", ""), camera_text, shot.get("style_note", "")],
             style_prompt=style_prompt,
             negative_prompt=negative_prompt,
         )
@@ -62,6 +72,9 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
             en_prompt = f"{role_clauses[0]} {en_prompt}"
         if keep_clauses:
             en_prompt = f"{en_prompt} {keep_clauses[0]}"
+        # 确定性英文运镜片段（翻译之后再拼，保证术语精确）
+        if global_camera_en:
+            en_prompt = f"{en_prompt}, {global_camera_en}"
         # 时长钳制到 [4, 12]：分镜可能给 2-3s 短镜，但 Agnes 下限是 4s
         raw_seconds = _coerce_int(shot.get("duration")) or 5
         seconds = max(MIN_SECONDS, min(raw_seconds, MAX_SECONDS))
@@ -77,6 +90,7 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
             "reference_images": list(user_ref_images),
             "cn_description": cn_description,
             # 精细控制参数随段落库（段重生时原样复用）
+            "camera_spec": global_camera_spec,
             "style_prompt": style_prompt,
             "negative_prompt": negative_prompt,
         })

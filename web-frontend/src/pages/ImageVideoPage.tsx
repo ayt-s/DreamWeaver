@@ -37,6 +37,7 @@ import {
   Plus,
   X,
   RefreshCw,
+  Tags,
 } from 'lucide-react';
 import {
   createVideoTask,
@@ -445,6 +446,9 @@ export default function CanvasPage() {
   const [stylePrompt, setStylePrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
   const [controlPanelOpen, setControlPanelOpen] = useState(false);
+  // 元素语义绑定：名词 → 参考图编号（<Picture N>），key = 锚定图标识，value = 剧本中的名词
+  const [bindingNames, setBindingNames] = useState<Record<string, string>>({});
+  const [bindingPanelOpen, setBindingPanelOpen] = useState(false);
   // 背景偏好持久化：localStorage 即时保存，另随项目画布数据一起保存（跨设备）
   // 默认白底（light）；用户手动切过再按 localStorage 走
   const [dark, setDark] = useState<boolean>(
@@ -483,6 +487,33 @@ export default function CanvasPage() {
   const [sceneRefUrl, setSceneRefUrl] = useState('');
   const [regenerating, setRegenerating] = useState<{ kind: 'char' | 'scene'; name: string } | null>(null);
   const anchorRefBox = useRef<HTMLDivElement>(null);
+
+  // 元素语义绑定（④）：参考图编号必须与提交时的组装顺序严格一致，
+  // 否则会绑错对象。组装规则（见 mutation）：
+  //   每段 reference_images = [本段图, ...角色锚定图, ...场景锚定图]，截断 5 张
+  // 因此 Picture 1 = 每段自己的图（逐段不同，不可全局绑定），Picture 2 起才是锚定图。
+  // 锚定图来源与提交保持一致：优先画布 state，URL anchorRefs 兜底。
+  const effectiveCharRefs =
+    Object.keys(anchorCharRefs).length > 0 ? anchorCharRefs : (anchorRefs?.characters ?? {});
+  const effectiveSceneRefs =
+    Object.keys(anchorSceneRefs).length > 0 ? anchorSceneRefs : (anchorRefs?.scenes ?? {});
+  // agnes reference 模式硬限制 5 张图（与 canvas_storyboarder_node 的截断一致）
+  const MAX_REF_PICTURES = 5;
+  const bindingRows = useMemo(() => {
+    const rows: { key: string; label: string; url: string; pictureIndex: number }[] = [];
+    let idx = 2; // Picture 1 是每段自己的图，锚定图从 2 开始
+    for (const [name, url] of Object.entries(effectiveCharRefs)) {
+      rows.push({ key: `char:${name}`, label: name, url, pictureIndex: idx++ });
+    }
+    for (const [name, url] of Object.entries(effectiveSceneRefs)) {
+      rows.push({ key: `scene:${name}`, label: name, url, pictureIndex: idx++ });
+    }
+    return rows;
+  }, [effectiveCharRefs, effectiveSceneRefs]);
+  // 生效的绑定行（未超出 5 张上限 + 名词非空）
+  const activeBindingRows = bindingRows.filter(
+    (r) => r.pictureIndex <= MAX_REF_PICTURES && (bindingNames[r.key] ?? r.label).trim(),
+  );
 
   // 切换项目时，从项目数据同步锚定图 state
   useEffect(() => {
@@ -960,17 +991,28 @@ export default function CanvasPage() {
       let segmentsJson: string | undefined;
       if (plan.segments.length > 0) {
         // 优先用画布 state（用户手动管理/从 URL 合并过），URL anchorRefs 作兜底
-        const charRefsMap = Object.keys(anchorCharRefs).length > 0 ? anchorCharRefs : (anchorRefs?.characters ?? {});
-        const sceneRefsMap = Object.keys(anchorSceneRefs).length > 0 ? anchorSceneRefs : (anchorRefs?.scenes ?? {});
+        // （与 bindingRows 用同一来源，保证 <Picture N> 编号对齐）
+        const charRefsMap = effectiveCharRefs;
+        const sceneRefsMap = effectiveSceneRefs;
         const enriched = plan.segments.map((seg) => {
           const extraRefs: string[] = [];
           for (const url of Object.values(charRefsMap)) extraRefs.push(url);
           for (const url of Object.values(sceneRefsMap)) extraRefs.push(url);
           const merged = [seg.image_url, ...extraRefs].filter((u): u is string => !!u);
-          return { ...seg, reference_images: merged.slice(0, 5) };
+          return { ...seg, reference_images: merged.slice(0, MAX_REF_PICTURES) };
         });
         segmentsJson = JSON.stringify(enriched);
       }
+      // ④ 元素语义绑定：名词 → <Picture N>（agent 转成占位符，保证角色/道具跨镜一致）
+      const referenceBindings =
+        activeBindingRows.length > 0
+          ? JSON.stringify(
+              activeBindingRows.map((r) => ({
+                name: (bindingNames[r.key] ?? r.label).trim(),
+                imageIndex: r.pictureIndex,
+              })),
+            )
+          : undefined;
       return createVideoTask({
         prompt:
           plan.texts.join('；') ||
@@ -981,6 +1023,8 @@ export default function CanvasPage() {
         // 可灵式精细控制：全局风格 + 负面词（折进每镜提示词正文）
         stylePrompt: stylePrompt.trim() || undefined,
         negativePrompt: negativePrompt.trim() || undefined,
+        // ④ 元素语义绑定：名词 → <Picture N>
+        referenceBindings,
       });
     },
     onSuccess: async () => {
@@ -1410,6 +1454,63 @@ export default function CanvasPage() {
                 </div>
               )}
 
+              {/* 元素绑定面板：名词 → 参考图编号（可灵式 <Picture N>，保证角色/道具跨镜一致） */}
+              {bindingPanelOpen && (
+                <div className={`pointer-events-auto w-[520px] max-w-[90vw] rounded-2xl border ${theme.bar} p-4 shadow-lg backdrop-blur`}>
+                  <div className={`mb-2 flex items-center gap-1.5 text-[11px] font-semibold ${theme.headText}`}>
+                    <Tags className="h-3.5 w-3.5" />
+                    元素绑定
+                    <span className={`font-normal ${theme.hint}`}>
+                      把参考图绑到剧本名词，跨镜保持一致（对所有片段生效）
+                    </span>
+                  </div>
+                  {bindingRows.length === 0 ? (
+                    <p className={`text-[11px] leading-relaxed ${theme.hint}`}>
+                      暂无锚定图。先在左侧「锚定图」面板添加角色 / 场景参考图，再回来绑定名词。
+                    </p>
+                  ) : (
+                    <div className="max-h-[220px] space-y-2 overflow-y-auto">
+                      {bindingRows.map((row) => {
+                        const overLimit = row.pictureIndex > MAX_REF_PICTURES;
+                        return (
+                          <div key={row.key} className="flex items-center gap-2">
+                            <img
+                              src={cachedImageUrl(row.url)}
+                              alt={row.label}
+                              className="h-9 w-9 shrink-0 rounded-md border border-slate-600 object-cover"
+                            />
+                            <span
+                              className={`shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold ${
+                                overLimit ? 'bg-amber-500/20 text-amber-500' : 'bg-indigo-500/20 text-indigo-400'
+                              }`}
+                              title={overLimit ? `超出 ${MAX_REF_PICTURES} 张上限，不会随段发给模型` : '对应的 <Picture N> 编号'}
+                            >
+                              图片 {row.pictureIndex}
+                            </span>
+                            <input
+                              type="text"
+                              value={bindingNames[row.key] ?? row.label}
+                              onChange={(e) =>
+                                setBindingNames((prev) => ({ ...prev, [row.key]: e.target.value }))
+                              }
+                              placeholder="剧本中的名词，如：我 / 破旧摩托车"
+                              disabled={overLimit}
+                              className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-[11px] outline-none disabled:opacity-40 ${theme.input}`}
+                            />
+                            {overLimit && (
+                              <span className="shrink-0 text-[10px] text-amber-500">超限</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                      <p className={`pt-1 text-[10px] leading-relaxed ${theme.hint}`}>
+                        图片 1 是每个片段自己的画面，逐段不同，因此不参与绑定；锚定图从图片 2 起编号。
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className={`pointer-events-auto flex items-center gap-3 rounded-2xl border ${theme.bar} px-4 py-2.5 shadow-lg backdrop-blur`}>
               <div>
                 <div className={`mb-0.5 text-[10px] ${theme.hint}`}>视频模型</div>
@@ -1427,12 +1528,29 @@ export default function CanvasPage() {
               </div>
               <button
                 type="button"
-                onClick={() => setControlPanelOpen((v) => !v)}
+                onClick={() => {
+                  setControlPanelOpen((v) => !v);
+                  setBindingPanelOpen(false);
+                }}
                 title="精细控制：风格提示词 / 负面提示词"
                 className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${theme.btn} ${controlPanelOpen ? 'ring-1 ring-indigo-400' : ''}`}
               >
                 <Wand2 className="h-3.5 w-3.5" /> 精细控制
                 {(stylePrompt.trim() || negativePrompt.trim()) && (
+                  <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-indigo-500" />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setBindingPanelOpen((v) => !v);
+                  setControlPanelOpen(false);
+                }}
+                title="元素绑定：把锚定图绑到剧本名词（<Picture N>）"
+                className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${theme.btn} ${bindingPanelOpen ? 'ring-1 ring-indigo-400' : ''}`}
+              >
+                <Tags className="h-3.5 w-3.5" /> 元素绑定
+                {activeBindingRows.length > 0 && (
                   <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-indigo-500" />
                 )}
               </button>

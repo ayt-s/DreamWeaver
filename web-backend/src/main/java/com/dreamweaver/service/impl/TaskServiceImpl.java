@@ -246,6 +246,9 @@ public class TaskServiceImpl implements TaskService {
         if (request.getShotCount() != null) {
             body.put("shot_count", request.getShotCount());
         }
+        if (request.getShotLanguage() != null && !request.getShotLanguage().isBlank()) {
+            body.put("shot_language", request.getShotLanguage());
+        }
         if (request.getReferenceBindings() != null && !request.getReferenceBindings().isBlank()) {
             body.put("reference_bindings", request.getReferenceBindings());
         }
@@ -491,6 +494,7 @@ public class TaskServiceImpl implements TaskService {
                 && (request.getNegativePrompt() == null || request.getNegativePrompt().isBlank())
                 && request.getTotalSeconds() == null
                 && request.getShotCount() == null
+                && (request.getShotLanguage() == null || request.getShotLanguage().isBlank())
                 && (request.getReferenceBindings() == null || request.getReferenceBindings().isBlank());
         if (empty) {
             return null;
@@ -500,6 +504,7 @@ public class TaskServiceImpl implements TaskService {
         params.put("negativePrompt", request.getNegativePrompt());
         params.put("totalSeconds", request.getTotalSeconds());
         params.put("shotCount", request.getShotCount());
+        params.put("shotLanguage", request.getShotLanguage());
         params.put("referenceBindings", request.getReferenceBindings());
         try {
             return objectMapper.writeValueAsString(params);
@@ -521,6 +526,7 @@ public class TaskServiceImpl implements TaskService {
             request.setNegativePrompt(asText(params.get("negativePrompt")));
             request.setTotalSeconds(asInt(params.get("totalSeconds")));
             request.setShotCount(asInt(params.get("shotCount")));
+            request.setShotLanguage(asText(params.get("shotLanguage")));
             request.setReferenceBindings(asText(params.get("referenceBindings")));
         } catch (Exception e) {
             log.warn("解析 gen_params_json 失败: {}", e.getMessage());

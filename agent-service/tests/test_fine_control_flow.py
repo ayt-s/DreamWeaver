@@ -140,3 +140,126 @@ async def test_canvas_storyboard_camera_ignored_when_empty(monkeypatch):
     shot = out["storyboard"][0]
     assert shot["prompt_en"] == "Plain prompt."
     assert shot["camera_spec"] == {}
+
+
+def test_create_task_carries_shot_language(client, mock_graph):
+    """③-1 全局运镜倾向：JSON 对象字符串 → state 清洗后的 dict。"""
+    resp = client.post("/v1/tasks/video", json={
+        "prompt": "雪原骑手",
+        "shot_language": '{"shot_size":"远景","angle":"俯拍","movement":"跟拍"}',
+    })
+    assert resp.status_code == 202
+    session_id = resp.json()["data"]["session_id"]
+    from app import main as main_mod
+    state = main_mod._sessions[session_id]
+    assert state["shot_language"] == {"shot_size": "远景", "angle": "俯拍", "movement": "跟拍"}
+
+
+def test_create_task_shot_language_whitelist_filters_dirty_values(client, mock_graph):
+    """白名单外的脏值必须被丢弃，防止注入进提示词。"""
+    resp = client.post("/v1/tasks/video", json={
+        "prompt": "雪原骑手",
+        "shot_language": '{"shot_size":"超超远景","movement":"环绕","evil":"<script>"}',
+    })
+    session_id = resp.json()["data"]["session_id"]
+    from app import main as main_mod
+    state = main_mod._sessions[session_id]
+    assert state["shot_language"] == {"movement": "环绕"}
+
+
+def test_create_task_shot_language_defaults_empty(client, mock_graph):
+    """不传时为 {}（非 None），storyboarder 无需额外判空。"""
+    resp = client.post("/v1/tasks/video", json={"prompt": "普通任务"})
+    session_id = resp.json()["data"]["session_id"]
+    from app import main as main_mod
+    state = main_mod._sessions[session_id]
+    assert state["shot_language"] == {}
+
+
+@pytest.mark.asyncio
+async def test_canvas_storyboard_injects_reference_bindings(monkeypatch):
+    """④ 画布模式：元素绑定同样注入 <Picture N>，保证锚定图跨镜一致。"""
+    async def fake_chat(prompt, model=None, temperature=None, session_id=None):
+        return "The rider gallops across the snowfield."
+
+    monkeypatch.setattr(sb_mod.gateway, "chat", fake_chat)
+
+    state = {
+        "session_id": "s6",
+        "segments": [{
+            "image_url": "https://example.com/seg1.png",
+            "reference_images": [
+                "https://example.com/seg1.png",
+                "https://example.com/char.png",
+                "https://example.com/bike.png",
+            ],
+            "prompt": "骑手冲过雪原",
+            "seconds": 5,
+        }],
+        "reference_bindings": [
+            {"name": "我", "imageIndex": 2},
+            {"name": "破旧摩托车", "imageIndex": 3},
+        ],
+    }
+    out = await sb_mod.canvas_storyboarder_node(state)
+    prompt_en = out["storyboard"][0]["prompt_en"]
+
+    assert '"我" refers to <Picture 2>' in prompt_en
+    assert '"破旧摩托车" refers to <Picture 3>' in prompt_en
+    assert "Keep the appearance of 我, 破旧摩托车" in prompt_en
+
+
+@pytest.mark.asyncio
+async def test_standard_storyboard_injects_global_shot_language(monkeypatch):
+    """③-1：全局运镜覆盖 LLM 每镜 camera，并追加确定性英文运镜片段。"""
+    captured: list[str] = []
+
+    async def fake_chat(prompt, model=None, temperature=None, session_id=None):
+        captured.append(prompt)
+        return "A rider on a snowy plain."
+
+    monkeypatch.setattr(sb_mod.gateway, "chat", fake_chat)
+
+    state = {
+        "session_id": "s4",
+        "script": [
+            {"shot_id": 0, "visual": "骑手在雪原", "camera": "特写", "style_note": "冷色调", "duration": 6},
+            {"shot_id": 1, "visual": "远景山峦", "camera": "近景", "style_note": "暖色调", "duration": 5},
+        ],
+        "shot_language": {"shot_size": "远景", "angle": "俯拍", "movement": "跟拍"},
+    }
+    out = await sb_mod.storyboarder_node(state)
+    shots = out["storyboard"]
+
+    # 两镜的 LLM camera（特写/近景）都被全局运镜替换为中文原值
+    assert "远景、俯拍、跟拍" in captured[0]
+    assert "特写" not in captured[0]
+    assert "远景、俯拍、跟拍" in captured[1]
+    assert "近景" not in captured[1]
+    # 英文确定性片段追加到提示词尾部（每镜一致）
+    for shot in shots:
+        assert shot["prompt_en"].endswith("wide shot, high-angle shot, follow shot")
+        assert shot["camera_spec"] == {"shot_size": "远景", "angle": "俯拍", "movement": "跟拍"}
+
+
+@pytest.mark.asyncio
+async def test_standard_storyboard_keeps_llm_camera_without_shot_language(monkeypatch):
+    """③-1 回归：不给运镜倾向时保持原行为（LLM 的 camera 参与翻译，不追加英文片段）。"""
+    captured: list[str] = []
+
+    async def fake_chat(prompt, model=None, temperature=None, session_id=None):
+        captured.append(prompt)
+        return "A rider on a snowy plain."
+
+    monkeypatch.setattr(sb_mod.gateway, "chat", fake_chat)
+
+    state = {
+        "session_id": "s5",
+        "script": [{"shot_id": 0, "visual": "骑手在雪原", "camera": "特写", "style_note": "冷色调", "duration": 6}],
+    }
+    out = await sb_mod.storyboarder_node(state)
+    shot = out["storyboard"][0]
+
+    assert "特写" in captured[0]
+    assert shot["prompt_en"] == "A rider on a snowy plain."
+    assert shot["camera_spec"] == {}

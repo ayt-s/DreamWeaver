@@ -222,6 +222,11 @@ export interface CreateTaskRequest {
   totalSeconds?: number;
   /** 时间轴：期望镜头数 */
   shotCount?: number;
+  /**
+   * 全局运镜倾向 JSON 字符串：{shot_size, angle, movement}（标准模式用）。
+   * agent 翻译成确定性英文运镜片段注入每镜提示词。
+   */
+  shotLanguage?: string;
   /** 元素语义绑定 JSON 字符串：[{name, imageIndex}]，imageIndex 1-based */
   referenceBindings?: string;
 }

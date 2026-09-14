@@ -59,6 +59,12 @@ public class CreateTaskRequest {
     private Integer shotCount;
 
     /**
+     * 全局运镜倾向 JSON 字符串：{shot_size, angle, movement}（标准模式用）。
+     * agent 翻译成确定性英文运镜片段注入每镜提示词；画布模式用段级 cameraSpec，不受此影响。
+     */
+    private String shotLanguage;
+
+    /**
      * 元素语义绑定 JSON 字符串：[{name, imageIndex}]，imageIndex 为 1-based。
      * agent 转成 agnes reference 模式的 &lt;Picture N&gt; 占位符，保证角色/道具跨镜一致。
      */

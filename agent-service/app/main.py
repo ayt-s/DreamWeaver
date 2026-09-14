@@ -98,6 +98,9 @@ class CreateVideoTaskRequest(BaseModel):
     # 时间轴：总时长（秒）/ 镜头数
     total_seconds: Optional[int] = None
     shot_count: Optional[int] = None
+    # 全局运镜倾向（标准模式 LLM 自由分镜时用；画布模式用段级 camera_spec，不受此影响）
+    # JSON 字符串：{"shot_size": "远景", "angle": "平视", "movement": "推近"}
+    shot_language: Optional[str] = None
     # 元素语义绑定 JSON：[{name, image_index}]，image_index 1-based（<Picture N>）
     reference_bindings: Optional[str] = None
 
@@ -118,6 +121,19 @@ def _parse_json_list(raw: str | None, name: str) -> list:
     except json.JSONDecodeError:
         logger.warning("%s 不是合法 JSON 数组: %s", name, raw[:100])
     return []
+
+
+def _parse_json_obj(raw: str | None, name: str) -> dict:
+    """解析 Java 侧透传的 JSON 对象字符串；非法则返回空 dict。"""
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        logger.warning("%s 不是合法 JSON 对象: %s", name, raw[:100])
+    return {}
 
 
 def _parse_segments(raw: str | None) -> list:
@@ -266,6 +282,8 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
         "negative_prompt": (req.negative_prompt or "").strip(),
         "total_seconds": req.total_seconds,
         "shot_count": req.shot_count,
+        # 全局运镜倾向：白名单清洗（防脏值进提示词）
+        "shot_language": normalize_camera_spec(_parse_json_obj(req.shot_language, "shot_language")),
         "reference_bindings": _parse_json_list(req.reference_bindings, "reference_bindings"),
         "status": TaskStatus.QUEUED,
         "fix_round": 0,
