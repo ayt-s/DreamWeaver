@@ -10,7 +10,7 @@ import asyncio
 import logging
 import time
 
-from app import session_store
+from app import abort, session_store
 from app.state import CreativeSessionState, TaskStatus
 from app.tools.video import generate_video_tool
 from app.poller import poller
@@ -39,6 +39,12 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
     pending_shots: list[tuple[int, str, asyncio.Future]] = []
 
     for idx, shot in enumerate(state["storyboard"][done:], start=done):
+        # Java 侧已无人认领该会话（任务被重新生成/删除）→ 立刻停止后续提交，
+        # 否则每一段都是一次白烧的 agnes 调用（回调会被 Java 按 session_id 丢弃）
+        if abort.is_aborted(state["session_id"]):
+            logger.warning("会话 %s 已中止，停止后续段提交（已处理到第 %d 段）",
+                           state["session_id"], idx)
+            break
         # 重生混合模式：该段已有视频 URL → 直接复用，不提交 agnes（不消耗额度）
         existing = str(shot.get("existing_video_url") or "").strip()
         if existing:

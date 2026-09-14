@@ -112,6 +112,29 @@ public class TaskServiceImpl implements TaskService {
         }
     }
 
+    /**
+     * 「重新生成」前先取消 Agent 侧的旧会话（P1-3）。
+     *
+     * <p>不取消的话，旧会话（尤其 Agent 重启后自动恢复的那些）会继续跑到结束：
+     * 回调按 session_id 查任务时，因 session_id 已被新会话覆盖而查不到，结果被丢弃
+     * —— 纯属白烧 agnes 额度。
+     *
+     * <p>注意 Agent 侧只能取消「排队中」的会话；已在运行的由 Agent 的心跳探测
+     * （/internal/heartbeat 回 tracked=false）自行中止，两者互补。
+     * 终态任务的旧会话必然已结束，直接跳过。
+     */
+    private void cancelOldAgentSession(Task task) {
+        if (task == null || task.getSessionId() == null || task.getSessionId().isBlank()) {
+            return;
+        }
+        if (TERMINAL_STATUSES.contains(task.getStatus())) {
+            return;
+        }
+        cancelAgentSession(task.getSessionId());
+        log.info("重新提交前取消旧 Agent 会话: taskId={}, sessionId={}",
+                task.getId(), task.getSessionId());
+    }
+
     @Override
     @Transactional
     public TaskResponse regenerateTask(Long id) {
@@ -133,6 +156,10 @@ public class TaskServiceImpl implements TaskService {
             throw new IllegalArgumentException(
                     "任务正在生成中（status=" + original.getStatus() + "），无法重新生成");
         }
+
+        // 先取消 Agent 侧的旧会话（P1-3）：interrupted 任务可能已被 Agent 自动恢复、
+        // 正在后台继续生成，不取消就会白跑一遍且回调因 session_id 被覆盖而丢弃
+        cancelOldAgentSession(original);
 
         CreateTaskRequest request = new CreateTaskRequest();
         request.setPrompt(original.getPrompt());

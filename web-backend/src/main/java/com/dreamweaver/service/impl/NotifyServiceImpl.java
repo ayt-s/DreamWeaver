@@ -213,10 +213,10 @@ public class NotifyServiceImpl implements NotifyService {
      * 非事务：只做一次查询 + 一次 Redis 写。
      */
     @Override
-    public void handleHeartbeat(HeartbeatRequest request) {
+    public Map<String, Object> handleHeartbeat(HeartbeatRequest request) {
         String sessionId = (request == null) ? null : request.getSession_id();
         if (sessionId == null || sessionId.isBlank()) {
-            return;
+            return Map.of("tracked", false);
         }
         // 与 handleCompletion 同一关联键查法（Java 侧无 video_id 列）
         List<Task> tasks = taskMapper.selectList(
@@ -224,18 +224,25 @@ public class NotifyServiceImpl implements NotifyService {
                 .eq(Task::getSessionId, sessionId)
         );
         if (tasks.isEmpty()) {
-            log.debug("heartbeat 未知 session_id={}，忽略", sessionId);
-            return;
+            // 任务查不到 = 已被删除，或已被「全量重生」换了新 session_id
+            // → Agent 侧那个旧会话已无人认领，应中止，别再烧额度
+            log.debug("heartbeat 未知 session_id={}，按无人认领答复", sessionId);
+            return Map.of("tracked", false);
         }
         Task task = tasks.get(0);
-        // 终态任务无需续期（迟到的 completed/failed 之后也会被终态检查丢掉，这里只是省一次 Redis 写）
-        if ("completed".equals(task.getStatus()) || "failed".equals(task.getStatus())) {
-            log.debug("heartbeat 任务 {} 已终态 (status={})，忽略", task.getId(), task.getStatus());
-            return;
+        // 终态任务无需续期（迟到的 completed/failed 之后也会被终态检查丢掉），
+        // 同时告知 Agent「已无人认领」——它跑完的回调同样会被丢弃
+        if ("completed".equals(task.getStatus())
+                || "failed".equals(task.getStatus())
+                || "expired".equals(task.getStatus())) {
+            log.debug("heartbeat 任务 {} 已终态 (status={})，按无人认领答复",
+                    task.getId(), task.getStatus());
+            return Map.of("tracked", false);
         }
         stuckTaskWatchdog.watch(task.getId(), task.getGenType());
         log.debug("heartbeat 任务 {} 看门狗续期 (status={}, genType={})",
                 task.getId(), task.getStatus(), task.getGenType());
+        return Map.of("tracked", true);
     }
 
     private String toJsonString(List<String> list) {

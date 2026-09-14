@@ -33,7 +33,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import events, session_store
+from app import abort, events, session_store
 from app.errors import AppError, friendly_error_message, register_exception_handlers
 from app.graph import compiled_graph
 from app.state import CreativeSessionState, TaskStatus
@@ -272,6 +272,7 @@ async def _run_session(state: CreativeSessionState) -> None:
         #    所以「取消」与「失败」必须靠 settled 区分：scheduler.stop() → w.cancel()
         #    正是 Ctrl+C 优雅停止的路径。若无条件清快照，就会变成「优雅停止丢会话、
         #    硬杀反而能恢复」（硬杀不执行 finally），与设计意图正好相反。
+        abort.clear(state["session_id"])
         if settled:
             await session_store.delete_session(state["session_id"])
 
@@ -299,7 +300,21 @@ async def _heartbeat_loop(session_id: str) -> None:
             while True:
                 await asyncio.sleep(interval)
                 try:
-                    await client.post(url, json={"session_id": session_id})
+                    resp = await client.post(url, json={"session_id": session_id})
+                    # Java 明确回 tracked=false = 该会话已无人认领
+                    # （任务被「全量重生」换了 session_id，或已被删除/已终态）
+                    # → 置中止位，各节点在花钱的提交点前会检查，避免白烧额度。
+                    # 老版本 Java 返回空体 / 服务不可达 → 解析失败 → 不置位（保守）。
+                    if resp.status_code == 200:
+                        try:
+                            data = (resp.json() or {}).get("data") or {}
+                        except Exception:
+                            data = {}
+                        if data.get("tracked") is False:
+                            logger.warning(
+                                "会话 %s 在 Java 侧已无人认领（任务被重新生成/删除），标记中止",
+                                session_id)
+                            abort.mark(session_id)
                 except Exception as exc:  # 静默降级：接口不存在/网络抖动都无所谓
                     logger.debug("心跳发送失败（忽略）session=%s: %s", session_id, exc)
     except asyncio.CancelledError:

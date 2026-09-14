@@ -1,10 +1,13 @@
 package com.dreamweaver.controller;
 
+import com.dreamweaver.common.CommonResult;
 import com.dreamweaver.dto.HeartbeatRequest;
 import com.dreamweaver.dto.NotifyRequest;
 import com.dreamweaver.service.NotifyService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
 
 /**
  * FastAPI 回调接收 Controller。
@@ -28,11 +31,12 @@ public class NotifyController {
 
     /**
      * Agent 心跳续期入口（长任务不被固定 TTL 误杀）。
-     * 按 session_id 重置看门狗；找不到任务或已终态也返回 200，
-     * Agent 侧不关心结果，心跳异常不能影响其生成流程。
+     * 按 session_id 重置看门狗，并回 {"tracked": bool} 告知该会话是否仍被认领
+     * ——Agent 据此中止已被用户「全量重生 / 删除」的旧会话，避免白烧 agnes 额度。
+     * 找不到任务或已终态也返回 200，心跳异常不能影响 Agent 的生成流程。
      */
     @PostMapping("/heartbeat")
-    public void handleHeartbeat(@RequestBody HeartbeatRequest request) {
-        notifyService.handleHeartbeat(request);
+    public CommonResult<Map<String, Object>> handleHeartbeat(@RequestBody HeartbeatRequest request) {
+        return CommonResult.ok(notifyService.handleHeartbeat(request));
     }
 }

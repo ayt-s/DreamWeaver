@@ -13,6 +13,7 @@ import time
 
 from app.config import settings
 from app.gateway.agnes import gateway
+from app import abort
 from app.state import CreativeSessionState, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -179,6 +180,11 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
                                   {"phase": f"复用第 {i + 1} 张（跳过重生）"})
                 continue
 
+            # Java 侧已无人认领该会话 → 不再花钱生成
+            if abort.is_aborted(session_id):
+                logger.warning("会话 %s 已中止，跳过第 %d 张生成", session_id, i)
+                continue
+
             # 需要新生成
             await events.emit(session_id, "tool_called",
                               {"tool_name": "generate_image", "segment_index": i})
@@ -259,6 +265,12 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
         prompt_en = shot.get("prompt_en", "")
         if not prompt_en:
             image_urls.append("")  # 占位，保持索引对齐
+            continue
+
+        # Java 侧已无人认领该会话 → 不再花钱生成（占位保持索引对齐）
+        if abort.is_aborted(session_id):
+            logger.warning("会话 %s 已中止，跳过第 %d 张生成", session_id, idx)
+            image_urls.append("")
             continue
 
         await events.emit(session_id, "tool_called",

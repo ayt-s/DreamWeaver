@@ -205,6 +205,23 @@ async def recover_session(sid: str) -> bool:
         return False
     _recovered.add(sid)
 
+    # 先问 Java：这个会话是否还属于一个非终态任务？
+    # 用户可能已「全量重生」（换新 session_id）或删除该任务——此时恢复原会话纯属
+    # 白烧 agnes 额度，且结果回调会因 session_id 不匹配被丢弃（P1-3）。
+    # 只有 Java 明确回答 tracked=false 才跳过；不可达/响应非法一律照常恢复（保守）。
+    try:
+        from app.callback.java_notify import probe_session_tracked
+
+        tracked = await probe_session_tracked(sid)
+    except Exception as exc:  # 探测本身绝不阻断恢复
+        logger.debug("会话 %s 的认领探测失败（照常恢复）: %s", sid, exc)
+        tracked = None
+    if tracked is False:
+        logger.warning("会话 %s 在 Java 侧已无人认领（任务被重新生成或删除），跳过恢复", sid)
+        await session_store.delete_session(sid)
+        await session_store.release_lock(sid)  # 没实际恢复，不占用锁窗口
+        return False
+
     state = await session_store.load_state(sid)
     if not state:
         # 快照过期/丢失 → 清掉活跃索引，交给 Java 看门狗与重试器兜底
