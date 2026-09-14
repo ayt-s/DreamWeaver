@@ -133,7 +133,11 @@ public class NotifyServiceImpl implements NotifyService {
             task.setCompletedAt(LocalDateTime.now());
             updated = taskMapper.updateById(task);
         } else {
-            // completed：显式清空 errorMessage（updateById 忽略 null，走 wrapper 直写 + version+1）
+            // completed：正常情况下显式清空 errorMessage（避免历史错误残留）；
+            // 但 Agent 显式带回的警告（如「多镜拼接失败，分段仍可下载」）必须保留并展示，
+            // 否则任务显示 completed 却没有成片，用户无从判断（实测故障：静默降级）。
+            String warn = request.getError_message();
+            String errorToStore = (warn != null && !warn.isBlank()) ? warn : null;
             updated = taskMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<com.dreamweaver.entity.Task>()
                     .eq(com.dreamweaver.entity.Task::getId, task.getId())
                     .eq(com.dreamweaver.entity.Task::getVersion, task.getVersion())
@@ -141,7 +145,7 @@ public class NotifyServiceImpl implements NotifyService {
                     .set(com.dreamweaver.entity.Task::getResultJson, task.getResultJson())
                     .set(com.dreamweaver.entity.Task::getImageUrls, task.getImageUrls())
                     .set(com.dreamweaver.entity.Task::getSegmentsJson, task.getSegmentsJson())
-                    .set(com.dreamweaver.entity.Task::getErrorMessage, null)
+                    .set(com.dreamweaver.entity.Task::getErrorMessage, errorToStore)
                     .set(com.dreamweaver.entity.Task::getCompletedAt, LocalDateTime.now())
                     .set(com.dreamweaver.entity.Task::getUpdatedAt, LocalDateTime.now())
                     .setSql("version = version + 1"));

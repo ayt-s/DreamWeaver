@@ -202,7 +202,7 @@ async def _run_session(state: CreativeSessionState) -> None:
         # 而不是等会话结束后才一次性更新——修复「提交后状态永远 queued、用户以为没执行」的问题。
         # 最后一个 checkpoint 等价于 ainvoke 的返回值，语义不变。
         result = None
-        async for new_state in compiled_graph.astream(state, config=config):
+        async for new_state in compiled_graph.astream(state, config=config, stream_mode="values"):
             if new_state:
                 result = new_state
                 sid = new_state.get("session_id") or state.get("session_id")
@@ -210,10 +210,9 @@ async def _run_session(state: CreativeSessionState) -> None:
                     prev_status = state.get("status")
                     state["status"] = new_state.get("status")
                     state["updated_at"] = int(time.time())
-                    # 新 state 是不同对象时，把 _sessions 键指向最新 state，
-                    # 否则后续查询仍拿到旧的（未更新 status 的）对象
-                    if _sessions.get(sid) is not state:
-                        _sessions[sid] = state
+                    # 会话视图指向最新累积态（stream_mode="values"），
+                    # 查询接口才能看到 brief/script/storyboard/视频产物与实时状态
+                    _sessions[sid] = new_state
                     if prev_status != new_state.get("status"):
                         logger.info("会话 %s 状态 %s → %s", sid, prev_status, new_state.get("status"))
         if result is None:

@@ -21,6 +21,7 @@ from app.nodes.synthesizer import (
     _probe_duration,
 )
 from app.state import CreativeSessionState, TaskStatus
+from app.utils.proc import run_command
 
 logger = logging.getLogger(__name__)
 
@@ -53,16 +54,12 @@ async def _image_to_clip(img_path: Path, dest: Path, seconds: float) -> bool:
         "-r", "30",
         str(dest),
     ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
-    except asyncio.TimeoutError:
-        proc.kill()
+    res = await run_command(cmd, timeout=180)
+    if res.timed_out:
+        logger.warning("图片转片段超时 %s", img_path.name)
         return False
     if not dest.exists() or dest.stat().st_size <= 0:
-        logger.warning("图片转片段失败 %s: %s", img_path.name, stderr.decode("utf-8", "replace")[-300:])
+        logger.warning("图片转片段失败 %s rc=%s: %s", img_path.name, res.returncode, res.stderr[-300:])
         return False
     return True
 

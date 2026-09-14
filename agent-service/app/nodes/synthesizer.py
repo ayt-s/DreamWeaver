@@ -11,6 +11,7 @@
 import asyncio
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import imageio_ffmpeg
 
 from app.config import settings
 from app.state import CreativeSessionState, TaskStatus
+from app.utils.proc import run_command
 from app.utils.retry import with_retry
 
 logger = logging.getLogger(__name__)
@@ -43,21 +45,13 @@ async def _download(url: str, dest: Path, timeout: float = 300.0) -> None:
 
 async def _probe_duration(path: Path) -> float:
     """用 ffprobe 探测视频时长（秒）。失败返回 -1。"""
-    cmd = [
-        FFMPEG_EXE, "-i", str(path),
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-    except asyncio.TimeoutError:
-        proc.kill()
+    # 不用 asyncio.create_subprocess_exec：Windows + SelectorEventLoop（uvicorn --reload）
+    # 下该 API 不可用，详见 app/utils/proc.py
+    res = await run_command([FFMPEG_EXE, "-i", str(path)], timeout=30)
+    if res.timed_out:
         return -1.0
     # ffmpeg -i 会把时长写到 stderr
-    text = stderr.decode("utf-8", errors="replace")
-    import re
-    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", res.stderr)
     if not m:
         return -1.0
     h, mn, s = m.groups()
@@ -134,17 +128,12 @@ async def _concat_with_xfade(inputs: list[Path], output: Path) -> bool:
         str(output),
     ]
     logger.info("xfade cmd: %s", " ".join(cmd[:5]) + " ... filter_complex=" + filter_complex[:200])
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=1200)
-    except asyncio.TimeoutError:
-        proc.kill()
+    res = await run_command(cmd, timeout=1200)
+    if res.timed_out:
         logger.error("xfade 超时")
         return False
-    if proc.returncode != 0:
-        logger.warning("xfade 失败 rc=%s stderr=%s", proc.returncode, stderr.decode("utf-8", errors="replace")[-300:])
+    if res.returncode != 0:
+        logger.warning("xfade 失败 rc=%s stderr=%s", res.returncode, res.stderr[-300:])
         return False
     return output.exists() and output.stat().st_size > 0
 
@@ -164,17 +153,12 @@ async def _concat_videos_plain(inputs: list[Path], output: Path) -> bool:
         "-c", "copy",
         str(output),
     ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-    )
-    try:
-        rc = await asyncio.wait_for(proc.wait(), timeout=600)
-    except asyncio.TimeoutError:
-        proc.kill()
+    res = await run_command(cmd, timeout=600)
+    if res.timed_out:
         logger.error("ffmpeg concat 超时")
         return False
-    if rc != 0 or not output.exists() or output.stat().st_size == 0:
-        logger.warning("ffmpeg concat 失败 rc=%s，转码重试", rc)
+    if res.returncode != 0 or not output.exists() or output.stat().st_size == 0:
+        logger.warning("ffmpeg concat 失败 rc=%s，转码重试", res.returncode)
         # -c copy 失败（编码/参数不一致）→ 用 libx264 统一转码重试
         cmd2 = [
             FFMPEG_EXE, "-y", "-f", "concat", "-safe", "0",
@@ -183,21 +167,22 @@ async def _concat_videos_plain(inputs: list[Path], output: Path) -> bool:
             "-c:a", "aac", "-movflags", "+faststart",
             str(output),
         ]
-        proc2 = await asyncio.create_subprocess_exec(
-            *cmd2, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-        )
-        try:
-            rc2 = await asyncio.wait_for(proc2.wait(), timeout=900)
-        except asyncio.TimeoutError:
-            proc2.kill()
+        res2 = await run_command(cmd2, timeout=900)
+        if res2.timed_out:
             return False
-        return rc2 == 0 and output.exists() and output.stat().st_size > 0
+        return res2.returncode == 0 and output.exists() and output.stat().st_size > 0
     return True
 
 
 def _local_url(session_id: str) -> str:
     """生成对外可访问的本地产物 URL（经 /v1/files 静态目录，前端经 vite 代理直连）。"""
     return f"/v1/files/{session_id}/final.mp4"
+
+
+def _error_text(exc: BaseException) -> str:
+    """异常描述兜底：部分异常 str() 为空（如 SelectorEventLoop 下的 NotImplementedError），
+    直接用类型名，避免错误消息退化成空串而被上层静默丢弃。"""
+    return str(exc).strip() or type(exc).__name__
 
 
 async def _notify_final(session_id: str, status: str, video_urls: list[str],
@@ -261,14 +246,15 @@ async def synthesizer_node(state: CreativeSessionState) -> dict:
             "status": TaskStatus.COMPLETED,
         }
     except Exception as exc:
-        # 拼接失败不阻断任务：原 video_urls 已由 synthesizer 兜底回调，前端仍可见各分段
-        logger.error("synthesizer 失败: %s", exc, exc_info=True)
-        await events.emit(session_id, "error",
-                          {"error": f"多镜拼接失败: {exc}"})
+        # 拼接失败不阻断任务：分段视频仍可用，透传给用户；但原因必须显式带回 Java，
+        # 否则 error_message 为空 → 任务显示 completed 却没有成片，用户无从判断（实测故障）
+        reason = _error_text(exc)
+        logger.error("synthesizer 失败: %s", reason, exc_info=True)
+        msg = f"多镜拼接失败（分段视频仍可下载）：{reason}"
+        await events.emit(session_id, "error", {"error": msg})
         await events.emit(session_id, "node_completed",
                           {"node_id": "synthesizer", "summary": f"拼接失败，透传 {len(video_urls)} 段"})
-        await _notify_final(session_id, "completed", video_urls,
-                            error_message=f"多镜拼接失败: {exc}")
+        await _notify_final(session_id, "completed", video_urls, error_message=msg)
         await events.emit(session_id, "completed", {})
         return {
             "final_video_url": "",
