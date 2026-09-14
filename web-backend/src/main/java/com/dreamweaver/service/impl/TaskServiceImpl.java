@@ -115,14 +115,35 @@ public class TaskServiceImpl implements TaskService {
     @Override
     @Transactional
     public TaskResponse regenerateTask(Long id) {
+        // 单参重载保留给 TaskAutoRetryer 等旧调用方：不覆盖任何精细控制参数
+        return regenerateTask(id, null);
+    }
+
+    @Override
+    @Transactional
+    public TaskResponse regenerateTask(Long id, CreateTaskRequest override) {
         Task original = taskMapper.selectById(id);
         if (original == null) {
             throw new IllegalArgumentException("任务不存在（id=" + id + "）");
         }
-        if (!TERMINAL_STATUSES.contains(original.getStatus())) {
+        // interrupted = 看门狗兜底出的非终态（Agent 可能已失联/恢复失败）：
+        // 不在终态集合里，但仍必须允许用户「重新生成」原地重跑，否则该状态无恢复出口
+        if (!TERMINAL_STATUSES.contains(original.getStatus())
+                && !"interrupted".equals(original.getStatus())) {
             throw new IllegalArgumentException(
                     "任务正在生成中（status=" + original.getStatus() + "），无法重新生成");
         }
+
+        CreateTaskRequest request = new CreateTaskRequest();
+        request.setPrompt(original.getPrompt());
+        request.setGenType(original.getGenType());
+        request.setUserId(original.getUserId() == null ? null : String.valueOf(original.getUserId()));
+        // 还原精细控制参数（风格/负面词/时间轴/元素绑定），否则重生成会丢设定
+        applyGenParamsJson(original.getGenParamsJson(), request);
+        // 用户在画廊「编辑参数」里改过的值覆盖历史值（非空字段才覆盖）
+        int overridden = applyOverride(override, request);
+        // 覆盖后重新序列化：落库让下一次重生成（无论走哪个入口）都带上新值
+        String genParamsJson = buildGenParamsJson(request);
 
         // 同一任务原地重新生成：清空旧产物与错误，保留 id/prompt/genType/userId，
         // 重新走 提交→排队→生成→回调 链路（不再创建新任务 id）
@@ -138,16 +159,55 @@ public class TaskServiceImpl implements TaskService {
                 // 全量重生成 → 旧产物存 prev_result_json 供回滚，段配置失效一并清空
                 .set(com.dreamweaver.entity.Task::getPrevResultJson, original.getResultJson())
                 .set(com.dreamweaver.entity.Task::getSegmentsJson, null)
+                // 本次编辑后的参数落库（全空时 buildGenParamsJson 返回 null，同样清掉旧值）
+                .set(com.dreamweaver.entity.Task::getGenParamsJson, genParamsJson)
                 .set(com.dreamweaver.entity.Task::getUpdatedAt, LocalDateTime.now()));
+        // 内存态同步：dispatchToAgent 里的 updateById(original) 会把 entity 上的
+        // gen_params_json 一并写回库，不刷新这里就会用旧值覆盖刚写入的新参数
+        original.setGenParamsJson(genParamsJson);
 
-        CreateTaskRequest request = new CreateTaskRequest();
-        request.setPrompt(original.getPrompt());
-        request.setGenType(original.getGenType());
-        request.setUserId(original.getUserId() == null ? null : String.valueOf(original.getUserId()));
-        // 还原精细控制参数（风格/负面词/时间轴/元素绑定），否则重生成会丢设定
-        applyGenParamsJson(original.getGenParamsJson(), request);
-        log.info("重新生成任务: id={} 原地重跑 prompt={}", id, original.getPrompt());
+        log.info("重新生成任务: id={} 原地重跑 prompt={} 覆盖字段数={} genParamsJson={}",
+                id, original.getPrompt(), overridden, genParamsJson);
         return dispatchToAgent(original, request);
+    }
+
+    /**
+     * 把画廊「编辑参数」提交的 override 覆盖到重建出的请求上。
+     * 只覆盖非空字段（null / 空白 / 非正数视为「未填」，保留历史设定）；
+     * 不改 prompt/genType/userId——那些由 entity 决定。
+     *
+     * @return 实际覆盖的字段个数（仅用于日志）
+     */
+    private int applyOverride(CreateTaskRequest override, CreateTaskRequest request) {
+        if (override == null) {
+            return 0;
+        }
+        int count = 0;
+        if (override.getStylePrompt() != null && !override.getStylePrompt().isBlank()) {
+            request.setStylePrompt(override.getStylePrompt());
+            count++;
+        }
+        if (override.getNegativePrompt() != null && !override.getNegativePrompt().isBlank()) {
+            request.setNegativePrompt(override.getNegativePrompt());
+            count++;
+        }
+        if (override.getTotalSeconds() != null && override.getTotalSeconds() > 0) {
+            request.setTotalSeconds(override.getTotalSeconds());
+            count++;
+        }
+        if (override.getShotCount() != null && override.getShotCount() > 0) {
+            request.setShotCount(override.getShotCount());
+            count++;
+        }
+        if (override.getShotLanguage() != null && !override.getShotLanguage().isBlank()) {
+            request.setShotLanguage(override.getShotLanguage());
+            count++;
+        }
+        if (override.getReferenceBindings() != null && !override.getReferenceBindings().isBlank()) {
+            request.setReferenceBindings(override.getReferenceBindings());
+            count++;
+        }
+        return count;
     }
 
     /**
@@ -649,6 +709,8 @@ public class TaskServiceImpl implements TaskService {
         resp.setResultJson(task.getResultJson());
         resp.setImageUrls(task.getImageUrls());
         resp.setSegmentsJson(task.getSegmentsJson());
+        // 画廊「编辑参数」入口需要它反序列化预填历史参数
+        resp.setGenParamsJson(task.getGenParamsJson());
         resp.setErrorMessage(task.getErrorMessage());
         resp.setPrompt(task.getPrompt());
         // Lombok @Data 对 Boolean isDraft 生成 getIsDraft()/setIsDraft()

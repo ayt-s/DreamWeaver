@@ -10,6 +10,7 @@ import asyncio
 import logging
 import time
 
+from app import session_store
 from app.state import CreativeSessionState, TaskStatus
 from app.tools.video import generate_video_tool
 from app.poller import poller
@@ -54,6 +55,16 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
             await events.emit(state["session_id"], "progress",
                               {"phase": f"复用第 {idx + 1} 段（跳过重生）"})
             continue
+        pending_id = str(shot.get("pending_video_id") or "").strip()
+        if pending_id:
+            # 断点恢复：该段进程重启前已提交 agnes 且仍在生成 → 复用原 video_id 继续等，
+            # 绝不重新提交（重新提交 = 已花掉的额度白花两遍）
+            pending_future = poller.get_future(pending_id)
+            if pending_future is not None:
+                pending_shots.append((idx, pending_id, pending_future))
+                await events.emit(state["session_id"], "progress",
+                                  {"phase": f"恢复第 {idx + 1} 段（复用已提交任务）"})
+                continue
         await events.emit(state["session_id"], "tool_called",
                           {"tool_name": "generate_video", "shot_index": idx})
         result = await generate_video_tool(
@@ -67,6 +78,10 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
             model=state.get("video_model"),
         )
         video_id = result["video_id"]
+        # 会话持久化（全方案最关键的一行）：提交成功**立刻**落盘 video_id。
+        # 进程此后被杀，恢复时用 query_video(video_id) 就能零成本取回结果，
+        # 不需要重新提交 —— 这是 checkpointer 方案救不到的地方。
+        await session_store.mark_submitted(state["session_id"], idx, video_id)
         future = poller.get_future(video_id)
         if future is None:
             logger.error("poller 未找到 future for video_id=%s", video_id)
@@ -102,6 +117,9 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
             else:
                 url_by_index[idx] = result["video_url"]
                 id_by_index[idx] = result["video_id"]
+                # 会话持久化：该段确认完成 → 落 progress.done（恢复时按索引复用）
+                await session_store.mark_done(
+                    state["session_id"], idx, result["video_url"], result["video_id"])
                 trace.append({
                     "tool_name": "generate_video",
                     "params": {

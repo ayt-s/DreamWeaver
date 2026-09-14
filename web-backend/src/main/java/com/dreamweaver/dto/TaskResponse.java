@@ -26,6 +26,12 @@ public class TaskResponse {
     /** 提交时的段配置数组 JSON；非空说明是画布多段任务，前端可开启「穿帮段重生」 */
     private String segmentsJson;
 
+    /**
+     * 保存的精细控制参数 JSON（风格提示词/负面提示词/总时长/镜头数/运镜倾向/元素绑定）。
+     * 画廊「编辑参数」入口用它反序列化预填；null = 从未配置过。
+     */
+    private String genParamsJson;
+
     private String errorMessage;
 
     /** 创作需求原文（画廊卡片标题展示；重新生成时复用） */

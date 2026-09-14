@@ -104,3 +104,13 @@ describe('CreatePanel 生成类型入口', () => {
     expect(screen.getByPlaceholderText(/描述你想生成的画面/)).toBeInTheDocument();
   });
 });
+
+describe('TaskCard interrupted 状态（前端按终态处理）', () => {
+  it('中断任务显示「已中断」中文文案，且仍提供重新生成/删除操作', () => {
+    render(wrapTaskCard({ ...baseTask, status: 'interrupted' }));
+    expect(screen.getByText('已中断')).toBeInTheDocument();
+    expect(screen.queryByText('interrupted')).not.toBeInTheDocument();
+    expect(screen.getByText('重新生成')).toBeInTheDocument();
+    expect(screen.getByText('删除')).toBeInTheDocument();
+  });
+});

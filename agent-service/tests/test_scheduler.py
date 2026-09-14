@@ -88,3 +88,120 @@ async def test_cancel_queued():
     snap = sched.snapshot()
     assert "s-now" not in snap["queued"]
     assert "s-now" not in snap["running"]
+
+
+# ---- 软取消（不访问 asyncio.Queue 私有属性）专项测试 ----
+
+async def _register_sessions(*session_ids: str) -> None:
+    """把 session 注册进 app.main._sessions（_run_one 取不到 state 会直接跳过）。"""
+    from app.main import _sessions
+
+    for sid in session_ids:
+        _sessions[sid] = {"session_id": sid, "status": "queued", "error_message": None}
+
+
+def _drop_sessions(*session_ids: str) -> None:
+    from app.main import _sessions
+
+    for sid in session_ids:
+        _sessions.pop(sid, None)
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_never_executes_runner():
+    """取消排队中的会话：cancel 返回 True，worker 即使取到该 id 也绝不执行 runner。"""
+    executed: list[str] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def recording_runner(state: dict) -> None:
+        executed.append(state["session_id"])
+        started.set()
+        await release.wait()
+
+    sched = SessionScheduler(max_concurrent=1, maxsize=100, runner=recording_runner)
+    await _register_sessions("s-run", "s-drop")
+    await sched.start()
+    try:
+        sched.submit("s-run")
+        await asyncio.wait_for(started.wait(), timeout=2.0)  # 占满唯一 worker
+        sched.submit("s-drop")
+        assert "s-drop" in sched.snapshot()["queued"]
+
+        assert sched.cancel("s-drop") is True          # 排队中 → 可取消
+        assert sched.cancel("s-drop") is False         # 已取消，不再是排队项
+
+        release.set()
+        await asyncio.sleep(0.2)  # 让 worker 从队列取走被取消的 s-drop
+        assert executed == ["s-run"]                   # 被取消的会话没有被执行
+        assert sched.snapshot()["queued"] == []
+    finally:
+        release.set()
+        await sched.stop()
+        _drop_sessions("s-run", "s-drop")
+
+
+@pytest.mark.asyncio
+async def test_cancel_running_returns_false():
+    """取消正在运行的会话：cancel 返回 False，且不影响其继续执行。"""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished: list[str] = []
+
+    async def gated_runner(state: dict) -> None:
+        started.set()
+        await release.wait()
+        finished.append(state["session_id"])
+
+    sched = SessionScheduler(max_concurrent=1, maxsize=100, runner=gated_runner)
+    await _register_sessions("s-live")
+    await sched.start()
+    try:
+        sched.submit("s-live")
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        assert sched.snapshot()["running"] == ["s-live"]
+
+        assert sched.cancel("s-live") is False         # 运行中不可取消
+        assert sched.snapshot()["running"] == ["s-live"]
+
+        release.set()
+        await asyncio.sleep(0.1)
+        assert finished == ["s-live"]                  # 未被软取消打断
+    finally:
+        release.set()
+        await sched.stop()
+        _drop_sessions("s-live")
+
+
+@pytest.mark.asyncio
+async def test_snapshot_queued_excludes_cancelled():
+    """snapshot().queued 不含已取消项，其余排队项保持 FIFO 顺序与计数。"""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_runner(state: dict) -> None:
+        started.set()
+        await release.wait()
+
+    sched = SessionScheduler(max_concurrent=1, maxsize=100, runner=blocked_runner)
+    await _register_sessions("s-busy", "s-q1", "s-q2")
+    await sched.start()
+    try:
+        sched.submit("s-busy")
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        sched.submit("s-q1")
+        sched.submit("s-q2")
+        assert sched.snapshot()["queued"] == ["s-q1", "s-q2"]
+
+        assert sched.cancel("s-q1") is True
+        snap = sched.snapshot()
+        assert snap["queued"] == ["s-q2"]
+        assert snap["queued_count"] == 1
+        assert snap["running"] == ["s-busy"]
+
+        release.set()
+        await asyncio.sleep(0.2)
+    finally:
+        release.set()
+        await sched.stop()
+        _drop_sessions("s-busy", "s-q1", "s-q2")

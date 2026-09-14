@@ -60,6 +60,11 @@ async def _llm_json_with_retry(prompt: str, *, session_id: str | None = None,
 
 
 async def script_writer_node(state: CreativeSessionState) -> dict:
+    # 幂等守卫（断点恢复）：已有非空 script → 跳过 LLM 创作，不重复花钱与耗时
+    if state.get("script"):
+        logger.info("script_writer 幂等跳过：已有 %d 镜剧本",
+                    len(state.get("script") or []))
+        return {}
     brief = state["brief"]
     total_seconds = state.get("total_seconds")
     shot_count = state.get("shot_count")

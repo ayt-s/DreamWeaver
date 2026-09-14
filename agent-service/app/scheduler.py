@@ -15,6 +15,7 @@
 - snapshot()          → 执行中 + 排队中的 session_id 列表（画廊排期展示用）
 """
 import asyncio
+import collections
 import logging
 from typing import Awaitable, Callable, Optional
 
@@ -32,6 +33,11 @@ class SessionScheduler:
     ) -> None:
         self._max_concurrent = max(1, max_concurrent)
         self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=maxsize)
+        # 排期镜像：_pending 与 _queue 中的 session_id 一一对应（FIFO 同序），
+        # 供 subscribe/cancel/snapshot 用公开状态判断，避免访问 asyncio.Queue 私有 deque。
+        self._pending: collections.deque[str] = collections.deque()
+        # 软取消标记：排队期间被 cancel 的 session，worker 取到时跳过执行。
+        self._cancelled: set[str] = set()
         self._running: set[str] = set()
         self._workers: list[asyncio.Task] = []
         self._running_flag = False
@@ -72,21 +78,28 @@ class SessionScheduler:
     def submit(self, session_id: str) -> int:
         """入队，返回即将执行编号（排队位置+当前执行数，1 起）。"""
         self._queue.put_nowait(session_id)
-        return self._queue.qsize() + len(self._running)
+        self._pending.append(session_id)
+        # 只数「仍会执行」的排队项：已标记取消、worker 尚未取走的项不计入
+        pending_live = sum(1 for s in self._pending if s not in self._cancelled)
+        return pending_live + len(self._running)
 
     def cancel(self, session_id: str) -> bool:
-        """取消排队中的会话（尚未开始执行）。已在执行的返回 False。"""
+        """取消排队中的会话（尚未开始执行）。已在执行的返回 False。
+
+        软取消：只在调度器自己的状态里打标记，不触碰 asyncio.Queue 内部结构；
+        worker 取到被标记的 session 时直接跳过（绝不执行 runner）。
+        """
         if session_id in self._running:
             return False
-        try:
-            self._queue._queue.remove(session_id)  # noqa: SLF001 asyncio.Queue 底层 deque
+        if session_id in self._pending:
+            self._cancelled.add(session_id)
+            self._pending.remove(session_id)
             return True
-        except (ValueError, AttributeError):
-            return False
+        return False
 
     def snapshot(self) -> dict:
         """调度器当前状态快照（画廊排期展示）。"""
-        queued = list(self._queue._queue)  # noqa: SLF001
+        queued = [s for s in self._pending if s not in self._cancelled]
         return {
             "running": list(self._running),
             "queued": queued,
@@ -107,13 +120,22 @@ class SessionScheduler:
         """单个 worker 循环：取任务 → 标记运行 → 执行 → 清理。"""
         while self._running_flag:
             session_id: str = await self._queue.get()
+            # 出队即从排期镜像移除（无论后续执行还是跳过）
+            if session_id in self._pending:
+                self._pending.remove(session_id)
+            if session_id in self._cancelled:
+                # 排队期间已被 cancel：回收标记与队列计数，绝不执行
+                self._cancelled.discard(session_id)
+                self._queue.task_done()
+                continue
             self._running.add(session_id)
             try:
                 await self._run_one(session_id)
             finally:
                 self._running.discard(session_id)
                 self._queue.task_done()
-        # 退出时把队列里残留任务丢弃，避免 worker 泄漏
+        # 退出时把队列里残留任务丢弃，避免 worker 泄漏（排期镜像同步清空）
+        self._pending.clear()
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()

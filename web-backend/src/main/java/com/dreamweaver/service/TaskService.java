@@ -32,6 +32,14 @@ public interface TaskService {
     TaskResponse regenerateTask(Long id);
 
     /**
+     * 重新生成（带参数覆盖）：画廊「编辑参数」入口调用。
+     * override 的非空字段覆盖 entity 里保存的历史精细控制参数，并写回 gen_params_json；
+     * override 为 null 时等价于单参重载（自动重试器路径）。
+     * 仅允许终态任务发起。
+     */
+    TaskResponse regenerateTask(Long id, CreateTaskRequest override);
+
+    /**
      /** 穿帮段重新生成：勾选段重新生成（可改提示词）、未勾选段复用已有视频，
       * 全部段由 agent 重新拼接成片。仅允许 completed 且有段配置的任务。
       */

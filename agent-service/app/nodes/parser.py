@@ -63,6 +63,10 @@ async def _llm_json_with_retry(prompt: str, *, session_id: str | None = None,
 
 
 async def requirement_parser_node(state: CreativeSessionState) -> dict:
+    # 幂等守卫（断点恢复）：已有非空 brief → 跳过 LLM 解析，不重复花钱与耗时
+    if state.get("brief"):
+        logger.info("requirement_parser 幂等跳过：已有 brief，不重复调用 LLM")
+        return {}
     from app import events
     await events.emit(state["session_id"], "node_entered",
                       {"node_id": "requirement_parser", "node_name": "需求解析"})

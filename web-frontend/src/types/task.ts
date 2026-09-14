@@ -18,7 +18,8 @@ export type TaskStatus =
   | 'synthesizing'
   | 'completed'
   | 'failed'
-  | 'expired';
+  | 'expired'
+  | 'interrupted';
 
 // 生成类型（与 Java/模型侧 gen_type 对齐）
 export type GenType = 'text_video' | 'image_video' | 'text_image' | 'comic_video';
@@ -44,6 +45,7 @@ export const STATUS_LABELS: Record<string, string> = {
   completed: '已完成',
   failed: '已失败',
   expired: '已过期',
+  interrupted: '已中断',
 };
 
 /**
@@ -165,15 +167,19 @@ export function parseResultUrls(resultJson?: string | null): string[] {
 /**
  * resultJson 格式说明：画布模式为 [拼接成片, 分段0, 分段1, ...]（成片在最前）；
  * 标准模式为 [视频0, 视频1, ...]（无拼接成片）。
- * 因此「成片」= 画布模式首项（仅当 >1 个且是本地 /v1/files 产物）；
+ * 因此「成片」= 画布模式首项（仅当 >1 个且首项是本地 /v1/files 产物）；
  * 「分段」= 其余项。标准模式无成片，所有项都是独立视频。
+ *
+ * 判定只认「本地产物路径」：agent 拼接成片固定落在 /v1/files/**；
+ * agnes 侧产物走 CDN（platform-outputs.agnes-ai.space），永远不含该前缀。
+ * 不再按文件名（如 /final.mp4）猜测——分段 URL 若恰好含该串会被误判为成片并从分段列表中剔除。
  */
 export function finalVideoUrl(resultJson?: string | null): string | null {
   const urls = parseResultUrls(resultJson);
   if (urls.length > 1) {
     const first = urls[0];
     // 本地拼接产物路径（agent /v1/files/**）才认定为成片；agnes 直链不算
-    if (first.startsWith('/v1/files/') || first.includes('/final.mp4')) {
+    if (first.startsWith('/v1/files/')) {
       return first;
     }
   }

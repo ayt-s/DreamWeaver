@@ -1,6 +1,7 @@
 package com.dreamweaver.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.dreamweaver.dto.HeartbeatRequest;
 import com.dreamweaver.dto.NotifyRequest;
 import com.dreamweaver.entity.Task;
 import com.dreamweaver.mapper.ApiQuotaMapper;
@@ -24,14 +25,16 @@ import java.util.HashMap;
  * <p>幂等策略：
  * 1. 按 session_id 关联任务（Java 侧无 video_id 列，2026-09 契约修复）
  * 2. 终态检查：completed/failed 直接丢弃，防止晚到的旧回调覆盖新状态
+ *    （interrupted 不是终态：Agent 重启恢复后补发的迟到回调必须能落定）
  * 3. 状态机校验：转移表语义，只有合法边才允许跳转
  * 4. 乐观锁：通过 @Version + OptimisticLockerInnerInterceptor 自动处理，updateById 时 version+1
  * 5. result_json 聚合：整会话回调携带全量 URL 数组，直接写入（不再逐镜覆盖）
  * 6. 配额累加：回调完成后，按 userId + model_name 累加 used_count 与 used_seconds
  *
  * <p>状态转移表（from → to）：
- * - queued → completed / failed（Phase 1 实际路径：FastAPI 内联轮询完成后整会话回调一次）
+ * - queued → completed / failed / interrupted（Phase 1 实际路径：FastAPI 内联轮询完成后整会话回调一次）
  * - video_generating → completed / failed（Phase 2 异步回调预留：补发生成中通知后支持三态）
+ * - interrupted → completed / failed / queued（Agent 重启恢复：迟到回调落定 或 重新报到回退排队）
  */
 @Slf4j
 @Service
@@ -56,9 +59,12 @@ public class NotifyServiceImpl implements NotifyService {
      */
     private static final Map<String, Set<String>> TRANSITION_TABLE = new HashMap<>() {{
         // FastAPI 内联轮询完成 → 直接 completed/failed（Phase 1 实际路径）
-        put("queued", Set.of("completed", "failed"));
+        // queued → interrupted：Agent 长时间未回调被看门狗兜底转中断（非终态）
+        put("queued", Set.of("completed", "failed", "interrupted"));
         // Phase 2 异步回调预留：生成中 → 完成/失败（未来支持）
         put("video_generating", Set.of("completed", "failed"));
+        // Agent 重启恢复：中断态收到补发的迟到回调 → 落定；恢复后重新报到 → 回退排队
+        put("interrupted", Set.of("completed", "failed", "queued"));
     }};
 
     @Override
@@ -82,7 +88,8 @@ public class NotifyServiceImpl implements NotifyService {
         // session_id 理论上唯一，取第一条
         Task task = tasks.get(0);
 
-        // 2. 终态检查：completed / failed 直接丢弃
+        // 2. 终态检查：completed / failed 直接丢弃（幂等，防晚到旧回调覆盖新状态）
+        //    interrupted 不算终态 → Agent 重启恢复后补发的迟到 completed 回调可以走到下面的状态机
         if ("completed".equals(task.getStatus()) || "failed".equals(task.getStatus())) {
             log.info("notify 任务 {} 已终态 (status={})，丢弃回调",
                     task.getId(), task.getStatus());
@@ -132,6 +139,18 @@ public class NotifyServiceImpl implements NotifyService {
             task.setErrorMessage(request.getError_message());
             task.setCompletedAt(LocalDateTime.now());
             updated = taskMapper.updateById(task);
+        } else if ("queued".equals(toStatus) || "interrupted".equals(toStatus)) {
+            // Agent 重启恢复后回退报到（interrupted → queued）或显式报中断：
+            // 非终态回退，不写 completed_at、不覆盖已聚合的产物字段，只回写状态与提示
+            String warn = request.getError_message();
+            String errorToStore = (warn != null && !warn.isBlank()) ? warn : null;
+            updated = taskMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<com.dreamweaver.entity.Task>()
+                    .eq(com.dreamweaver.entity.Task::getId, task.getId())
+                    .eq(com.dreamweaver.entity.Task::getVersion, task.getVersion())
+                    .set(com.dreamweaver.entity.Task::getStatus, toStatus)
+                    .set(com.dreamweaver.entity.Task::getErrorMessage, errorToStore)
+                    .set(com.dreamweaver.entity.Task::getUpdatedAt, LocalDateTime.now())
+                    .setSql("version = version + 1"));
         } else {
             // completed：正常情况下显式清空 errorMessage（避免历史错误残留）；
             // 但 Agent 显式带回的警告（如「多镜拼接失败，分段仍可下载」）必须保留并展示，
@@ -155,7 +174,12 @@ public class NotifyServiceImpl implements NotifyService {
             return;
         }
         // 已闭环：解除 Redis 看门狗
-        stuckTaskWatchdog.clear(task.getId());
+        // 但回退到 queued（Agent 恢复后重新报到）时改为重新武装，防止恢复过程中 Agent 再次挂掉无人兜底
+        if ("queued".equals(toStatus)) {
+            stuckTaskWatchdog.watch(task.getId(), task.getGenType());
+        } else {
+            stuckTaskWatchdog.clear(task.getId());
+        }
         // 预取产物图到 Redis 缓存（异步，失败静默；画廊展示不再等 agnes CDN）
         if (imageUrls != null) {
             for (String imageUrl : imageUrls) {
@@ -169,8 +193,8 @@ public class NotifyServiceImpl implements NotifyService {
         log.info("notify 任务 {} 状态 {} → {}，URLs 数量={}",
                 task.getId(), fromStatus, toStatus, videoUrls.size());
 
-        // 6. 配额累加
-        if (task.getUserId() != null) {
+        // 6. 配额累加（仅终态计费：queued/interrupted 回退报到不是新的一次生成，避免重复累加）
+        if (task.getUserId() != null && !"queued".equals(toStatus) && !"interrupted".equals(toStatus)) {
             int shotSeconds = request.getShot_seconds() != null ? request.getShot_seconds() : DEFAULT_SHOT_SECONDS;
             // model_name 暂取默认值，后续可从任务或配置中获取
             String modelName = "default";
@@ -178,6 +202,40 @@ public class NotifyServiceImpl implements NotifyService {
             log.info("notify 任务 {} 配额累加: userId={}, model={}, +count=1, +seconds={}",
                     task.getId(), task.getUserId(), modelName, shotSeconds);
         }
+    }
+
+    /**
+     * Agent 心跳续期：长任务仍在生成时 Agent 周期性报到，按 session_id 重新武装看门狗 TTL，
+     * 使任务不再被固定超时误杀（仅靠提交时武装一次，超出 TTL 会被兜底成 interrupted）。
+     *
+     * <p>刻意保持安静：session_id 缺失/任务不存在/任务已终态都直接返回，
+     * 心跳失败不能让 Agent 侧生成流程报错（Agent 不关心响应体）。
+     * 非事务：只做一次查询 + 一次 Redis 写。
+     */
+    @Override
+    public void handleHeartbeat(HeartbeatRequest request) {
+        String sessionId = (request == null) ? null : request.getSession_id();
+        if (sessionId == null || sessionId.isBlank()) {
+            return;
+        }
+        // 与 handleCompletion 同一关联键查法（Java 侧无 video_id 列）
+        List<Task> tasks = taskMapper.selectList(
+            new LambdaQueryWrapper<Task>()
+                .eq(Task::getSessionId, sessionId)
+        );
+        if (tasks.isEmpty()) {
+            log.debug("heartbeat 未知 session_id={}，忽略", sessionId);
+            return;
+        }
+        Task task = tasks.get(0);
+        // 终态任务无需续期（迟到的 completed/failed 之后也会被终态检查丢掉，这里只是省一次 Redis 写）
+        if ("completed".equals(task.getStatus()) || "failed".equals(task.getStatus())) {
+            log.debug("heartbeat 任务 {} 已终态 (status={})，忽略", task.getId(), task.getStatus());
+            return;
+        }
+        stuckTaskWatchdog.watch(task.getId(), task.getGenType());
+        log.debug("heartbeat 任务 {} 看门狗续期 (status={}, genType={})",
+                task.getId(), task.getStatus(), task.getGenType());
     }
 
     private String toJsonString(List<String> list) {

@@ -24,6 +24,8 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI
@@ -31,7 +33,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import events
+from app import events, session_store
 from app.errors import AppError, friendly_error_message, register_exception_handlers
 from app.graph import compiled_graph
 from app.state import CreativeSessionState, TaskStatus
@@ -196,6 +198,8 @@ def _parse_segments(raw: str | None) -> list:
 async def _run_session(state: CreativeSessionState) -> None:
     """后台执行 LangGraph。由 SessionScheduler 调用（有界并发）。"""
     config = {"configurable": {"thread_id": state["session_id"]}}
+    # 心跳续期：独立于节点边界——video_generator 单节点可能跑 15 分钟以上
+    hb_task = asyncio.create_task(_heartbeat_loop(state["session_id"]))
     try:
         # 用 astream 替代 ainvoke：每个 checkpoint 实时同步 state，
         # 让 /v1/tasks/{sid} 能反映执行进度（video_generating/synthesizing 等），
@@ -213,6 +217,9 @@ async def _run_session(state: CreativeSessionState) -> None:
                     # 会话视图指向最新累积态（stream_mode="values"），
                     # 查询接口才能看到 brief/script/storyboard/视频产物与实时状态
                     _sessions[sid] = new_state
+                    # 会话持久化：每个 checkpoint 覆盖写 state 快照
+                    # （Redis 挂则静默降级，绝不影响主流程）
+                    await session_store.save_state(sid, new_state)
                     if prev_status != new_state.get("status"):
                         logger.info("会话 %s 状态 %s → %s", sid, prev_status, new_state.get("status"))
         if result is None:
@@ -245,12 +252,61 @@ async def _run_session(state: CreativeSessionState) -> None:
         # 会话保留 1 小时用于查轨迹，之后释放，防止 _sessions 无限增长（内存泄漏）
         asyncio.get_running_loop().call_later(
             3600, _sessions.pop, state["session_id"], None)
+    finally:
+        # 会话结束（成功/失败都一样）：停心跳 + 清理 Redis 快照与活跃索引。
+        # 终态无需再恢复；进程被强杀时 finally 不执行，快照保留 → 下次启动恢复。
+        hb_task.cancel()
+        try:
+            await hb_task  # await 一次收尾，避免残留 pending task 告警
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:  # 心跳自身的问题绝不影响会话结果
+            logger.debug("心跳协程收尾异常（忽略）: %s", exc)
+        await session_store.delete_session(state["session_id"])
+
+
+async def _heartbeat_loop(session_id: str) -> None:
+    """心跳续期：每 heartbeat_interval_s 秒 POST 一次 /internal/heartbeat。
+
+    目的：让 Java 侧重武装看门狗 TTL，把「固定截止时间」变成「空闲超时」
+    （否则真跑超 30 分钟的长任务会被看门狗误杀）。
+
+    硬性要求：Java 接口可能还不存在（并行实现中），**失败必须静默降级**
+    （只 log.debug），绝不能让心跳把主流程搞挂。会话结束时由 _run_session cancel。
+    """
+    try:
+        from app.config import settings
+
+        base = (settings.java_notify_url or "").strip().rstrip("/")
+        if not base:
+            return
+        interval = float(settings.heartbeat_interval_s or 0)
+        if interval <= 0:  # 配 0 即关闭心跳
+            return
+        url = f"{base}/internal/heartbeat"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await client.post(url, json={"session_id": session_id})
+                except Exception as exc:  # 静默降级：接口不存在/网络抖动都无所谓
+                    logger.debug("心跳发送失败（忽略）session=%s: %s", session_id, exc)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # 兜底：心跳协程自身绝不影响会话
+        logger.debug("心跳协程异常退出（忽略）session=%s: %s", session_id, exc)
 
 
 @app.on_event("startup")
 async def _startup() -> None:
     await poller.start()
     await scheduler.start(runner=_run_session)
+    # 启动自动恢复：把上次进程被杀时未完成的会话从 Redis 快照里捡回来断点续跑。
+    # 用 create_task 异步执行——恢复流程要读 Redis、可能还要查 agnes，
+    # 绝不能阻塞服务启动；内部已整体 try/except，失败只 log。
+    from app.recovery import recover_active_sessions
+
+    asyncio.create_task(recover_active_sessions())
 
 
 @app.post("/v1/tasks/video", status_code=202, response_model=ApiResponse)
@@ -293,6 +349,10 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
         "updated_at": int(time.time()),
     }
     _sessions[session_id] = state
+    # 会话持久化：写 state 快照 + 标记活跃（进程重启后可据此恢复）
+    # Redis 不可用时静默降级，绝不影响任务提交
+    await session_store.save_state(session_id, state)
+    await session_store.add_active(session_id)
     position = scheduler.submit(session_id)
     return ApiResponse(
         code=0,
@@ -381,3 +441,4 @@ async def _shutdown() -> None:
     await ag.close()
     await poller.stop()
     await scheduler.stop()
+    await session_store.close()

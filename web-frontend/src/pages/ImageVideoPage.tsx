@@ -209,6 +209,11 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
           setStatus('生成失败：' + (cur.errorMessage || '未知原因'));
           break;
         }
+        // 已中断：任务已停下（后端可能稍后自动续跑），不要一直卡在「进行中…」
+        if (cur.status === 'interrupted') {
+          setStatus('任务已中断，Agent 将在后台自动恢复续跑，可稍后刷新查看');
+          break;
+        }
       }
     } catch (e) {
       setStatus(e instanceof Error ? e.message : '文生图失败');

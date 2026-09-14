@@ -47,9 +47,30 @@ export async function deleteTask(id: number): Promise<void> {
   return unwrap(client.delete(`/tasks/${id}`));
 }
 
+// 重新生成的精细控制参数（与后端 CreateTaskRequest 同名字段，camelCase 对齐）。
+// 只在画廊「编辑参数」弹窗里提交，用于覆盖任务已保存的历史参数。
+export interface RegenerateParams {
+  /** 全局风格提示词（折进每一镜） */
+  stylePrompt?: string;
+  /** 负面提示词（折成「避免出现：…」） */
+  negativePrompt?: string;
+  /** 时间轴：期望总时长（秒） */
+  totalSeconds?: number;
+  /** 时间轴：期望镜头数 */
+  shotCount?: number;
+  /** 全局运镜倾向 JSON 字符串：{shot_size, angle, movement} */
+  shotLanguage?: string;
+  /** 元素语义绑定 JSON 字符串：[{name, imageIndex}] */
+  referenceBindings?: string;
+}
+
 // 重新生成历史作品（仅终态任务可发起；同一任务原地重跑，不产生新 id）
-export async function regenerateTask(id: number): Promise<TaskResponse> {
-  return unwrap(client.post(`/tasks/${id}/regenerate`));
+// params 可选：不传/传空对象 = 沿用任务里保存的历史参数（旧行为不变）
+export async function regenerateTask(
+  id: number,
+  params?: RegenerateParams,
+): Promise<TaskResponse> {
+  return unwrap(client.post(`/tasks/${id}/regenerate`, params ?? {}));
 }
 
 // 查询任务的段配置 + 每段已有视频 URL（供按段重生 UI 展示）

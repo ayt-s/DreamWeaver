@@ -1,5 +1,6 @@
 package com.dreamweaver.service;
 
+import com.dreamweaver.dto.HeartbeatRequest;
 import com.dreamweaver.dto.NotifyRequest;
 
 /**
@@ -15,4 +16,12 @@ public interface NotifyService {
      * @param request 回调请求体
      */
     void handleCompletion(NotifyRequest request);
+
+    /**
+     * 处理 Agent 心跳：按 session_id 重新武装看门狗 TTL（长任务续期）。
+     * 找不到任务或任务已终态时安静返回，不抛异常（不影响 Agent 生成）。
+     *
+     * @param request 心跳请求体（{"session_id": "..."}）
+     */
+    void handleHeartbeat(HeartbeatRequest request);
 }

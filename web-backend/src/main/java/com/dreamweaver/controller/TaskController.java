@@ -47,10 +47,17 @@ public class TaskController {
         return CommonResult.ok(null);
     }
 
-    /** 重新生成：同一任务原地重跑（复用原 prompt + genType） */
+    /**
+     * 重新生成：同一任务原地重跑（复用原 prompt + genType）。
+     * body 可选（body 为 null/空对象时行为与改造前完全一致）；
+     * 传了精细控制参数则用其覆盖 entity 里保存的历史参数并写回 gen_params_json。
+     * 不加 @Valid：body 里的 prompt 对重生无意义，且空体不应触发 NotBlank 校验。
+     */
     @PostMapping("/{id}/regenerate")
-    public CommonResult<TaskResponse> regenerateTask(@PathVariable Long id) {
-        return CommonResult.ok(taskService.regenerateTask(id));
+    public CommonResult<TaskResponse> regenerateTask(
+            @PathVariable Long id,
+            @RequestBody(required = false) CreateTaskRequest body) {
+        return CommonResult.ok(taskService.regenerateTask(id, body));
     }
 
     /** 查询任务段配置 + 每段已有视频 URL（画布段列表 UI） */

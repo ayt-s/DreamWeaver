@@ -7,6 +7,8 @@
 
 Phase 4 P0：mode 和 reference_images 初始为空，由后续 image_generator 节点回填。
 """
+import logging
+
 from app.config import settings
 from app.gateway.agnes import gateway
 from app.nodes.script import _coerce_int
@@ -17,6 +19,8 @@ from app.utils.prompting import (
     camera_phrase,
     normalize_camera_spec,
 )
+
+logger = logging.getLogger(__name__)
 
 # Agnes 视频时长合法范围：4~12 秒（实测 API 返回 "seconds must be in [4, 12]"）
 MIN_SECONDS = 4
@@ -46,6 +50,12 @@ def _control_context(state: CreativeSessionState) -> tuple[str, str, list[str], 
 
 
 async def storyboarder_node(state: CreativeSessionState) -> dict:
+    # 幂等守卫（断点恢复）：storyboard 非空且每镜都有 prompt_en → 跳过 LLM 翻译，
+    # 直接沿用已有 storyboard（含 reference_images / 复用字段）
+    existing_sb = state.get("storyboard") or []
+    if existing_sb and all(str(s.get("prompt_en") or "").strip() for s in existing_sb):
+        logger.info("storyboarder 幂等跳过：已有 %d 镜 prompt_en", len(existing_sb))
+        return {}
     # 用户上传的参考图（图生视频模式）：有则作为每镜参考图，空则后续 image_generator 自动生图回填
     user_ref_images = list(state.get("reference_images", []))
     style_prompt, negative_prompt, role_clauses, keep_clauses = _control_context(state)
@@ -155,6 +165,9 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
             "cn_description": cn,
             # 重生模式：已有视频 URL → 直接复用，跳过 agnes 重新生成
             "existing_video_url": str(seg.get("existing_video_url") or "").strip(),
+            # 断点恢复：进程重启前已提交 agnes 且仍在生成的原 video_id
+            # （恢复流程写入 segments；正常链路无此字段）
+            "pending_video_id": str(seg.get("pending_video_id") or "").strip(),
             # 精细控制参数随段落库
             "camera_spec": camera_spec,
             "style_prompt": style_prompt,

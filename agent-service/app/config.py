@@ -76,6 +76,15 @@ class Settings:
     # Phase 2 回调目标（Java Spring Boot 地址）
     java_notify_url: str = _env("JAVA_NOTIFY_URL", "")
 
+    # === 会话持久化（Redis 快照 + 启动自动恢复 + 心跳续期）===
+    # agent 用 db=1，避免与 Java Redisson 的 dw:task:watchdog 混在 db0
+    redis_url: str = _env("AGENT_REDIS_URL", "redis://127.0.0.1:6379/1")
+    # state 快照 / progress TTL（秒），默认 24h
+    session_snapshot_ttl_s: int = int(_env("AGENT_SESSION_SNAPSHOT_TTL_S", "86400"))
+    # 心跳间隔（秒）：每 interval 秒 POST 一次 {java_notify_url}/internal/heartbeat，
+    # 让 Java 侧重武装看门狗 TTL（把「固定截止时间」变成「空闲超时」）
+    heartbeat_interval_s: int = int(_env("AGENT_HEARTBEAT_INTERVAL_S", "60"))
+
     @property
     def headers(self) -> dict:
         return {

@@ -17,7 +17,8 @@ import java.util.concurrent.TimeUnit;
 /**
  * Redis TTL 看门狗（RMapCache 实现）：任务进入排期时写 watchKey（TTL 10 分钟），
  * 回调完成/失败或删除任务时移除；条目过期即说明 Agent 侧失联未回调 →
- * 转 failed，前端可用「重新生成」恢复。
+ * 转 interrupted（非终态），Agent 恢复后补发的迟到回调仍可落定，
+ * 用户也可用「重新生成」恢复。
  *
  * <p>为什么用 RMapCache 而不是 RBucket + keyspace 通知：本机 Redis 3.2.100
  * （微软归档 Windows 移植版）实测不发布 {@code __keyevent@*__:expired}
@@ -43,7 +44,8 @@ public class StuckTaskWatchdog {
     private static final java.util.Set<String> VIDEO_GEN_TYPES =
             java.util.Set.of("text_video", "image_video");
     private static final Set<String> NON_TERMINAL = Set.of("pending", "queued");
-    private static final String STALE_MSG = "生成超时未回调（Agent 会话可能失联），可点击「重新生成」恢复";
+    /** 超时文案：不再断言失败——Agent 会话可能正在重启恢复，迟到回调仍会被接受 */
+    private static final String STALE_MSG = "生成超时未回调（Agent 可能正在恢复），可稍候或重新生成";
 
     private final RedissonClient redisson;
     private final TaskMapper taskMapper;
@@ -92,10 +94,13 @@ public class StuckTaskWatchdog {
         }
         Task patch = new Task();
         patch.setId(taskId);
-        patch.setStatus("failed");
+        // 不标 failed（终态不可逆，会作废 Agent 恢复后仍会补发的产物）：
+        // 标 interrupted——非终态，迟到回调仍可落定 completed/failed
+        patch.setStatus("interrupted");
         patch.setErrorMessage(STALE_MSG);
         patch.setUpdatedAt(LocalDateTime.now());
         taskMapper.updateById(patch);
-        log.warn("StuckTaskWatchdog: id={} 看门狗 TTL 过期 → failed（原 status={}）", taskId, task.getStatus());
+        log.warn("StuckTaskWatchdog: id={} 看门狗 TTL 过期 → interrupted（原 status={}，等待 Agent 恢复或用户重新生成）",
+                taskId, task.getStatus());
     }
 }

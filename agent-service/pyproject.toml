@@ -13,6 +13,8 @@ dependencies = [
     "imageio-ffmpeg>=0.5",
     "pydantic-ai-slim>=2.39",
     "openai>=1.40",
+    # 会话持久化（显式 Redis 快照 + 启动恢复，见 app/session_store.py）
+    "redis>=5",
 ]
 
 [project.optional-dependencies]

@@ -10,6 +10,8 @@ import {
   Clock,
   CheckCircle2,
   Film,
+  SlidersHorizontal,
+  AlertTriangle,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
@@ -27,18 +29,27 @@ import {
 import { deleteTask, regenerateTask, setTaskDraft } from '../api/tasks';
 import SegmentManager from './SegmentManager';
 import SlideshowPanel from './SlideshowPanel';
+import ParamEditDialog from './ParamEditDialog';
 
 interface TaskCardProps {
   task: TaskResponse;
 }
 
-type TaskState = 'completed' | 'failed' | 'running' | 'queued';
+type TaskState = 'completed' | 'failed' | 'running' | 'queued' | 'interrupted';
 
-const TERMINAL_STATUSES: TaskStatus[] = ['completed', 'failed', 'expired'];
+/**
+ * 终态状态集合：终态任务才提供「重新生成 / 按段重生 / 确认成品」等操作。
+ *
+ * interrupted（已中断）**在前端按终态处理**——后端允许迟到的 completed 回调把它复活，
+ * 但从用户视角任务已经停下来了；当成非终态会让用户盯着一个转圈的卡片却点不了任何按钮。
+ * 「前端当终态、后端当可复活」是有意的不对称。
+ */
+const TERMINAL_STATUSES: TaskStatus[] = ['completed', 'failed', 'expired', 'interrupted'];
 
 function stateOf(status: TaskStatus): TaskState {
   if (status === 'completed') return 'completed';
   if (status === 'failed') return 'failed';
+  if (status === 'interrupted') return 'interrupted';
   if (status === 'queued' || status === 'pending') return 'queued';
   return 'running';
 }
@@ -48,6 +59,7 @@ const STATE_LABEL: Record<TaskState, string> = {
   failed: '失败',
   running: '进行中',
   queued: '排队中',
+  interrupted: '已中断',
 };
 
 const STATE_BADGE: Record<TaskState, string> = {
@@ -55,6 +67,7 @@ const STATE_BADGE: Record<TaskState, string> = {
   failed: 'bg-red-100 text-red-700',
   running: 'bg-amber-100 text-amber-700',
   queued: 'bg-sky-100 text-sky-700',
+  interrupted: 'bg-amber-100 text-amber-700',
 };
 
 function stateIcon(state: TaskState, genType?: GenType): ReactNode {
@@ -66,6 +79,8 @@ function stateIcon(state: TaskState, genType?: GenType): ReactNode {
     );
   }
   if (state === 'failed') return <Trash2 className="h-4 w-4 text-red-600" />;
+  // 中断不用闪烁的 Hourglass，避免被误读成「还在跑」
+  if (state === 'interrupted') return <AlertTriangle className="h-4 w-4 text-amber-600" />;
   return <Hourglass className="h-4 w-4 text-amber-600" />;
 }
 
@@ -90,6 +105,7 @@ export default function TaskCard({ task }: TaskCardProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [segmentPanelOpen, setSegmentPanelOpen] = useState(false);
   const [slideshowOpen, setSlideshowOpen] = useState(false);
+  const [paramEditOpen, setParamEditOpen] = useState(false);
 
   /** 卡片标题：优先展示创作需求原文，缺失时才用「任务 #id」兜底 */
   const displayTitle = task.prompt?.trim() ? task.prompt.trim() : `任务 #${task.id}`;
@@ -208,13 +224,19 @@ export default function TaskCard({ task }: TaskCardProps) {
               </div>
             ))}
           </div>
-          {/* 图片任务（文生图/漫剧）且有段配置：显示段重生按钮 */}
-          {isTerminal && !!task.segmentsJson && (
+          {/* 图片任务（文生图/漫剧）段重生按钮：无分镜数据的旧任务置灰并说明原因 */}
+          {isTerminal && (
             <div className="mt-3 flex items-center justify-end">
               <button
                 type="button"
                 onClick={() => setSegmentPanelOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[11px] font-medium text-violet-600 transition-colors hover:bg-violet-50"
+                disabled={!task.segmentsJson}
+                title={
+                  task.segmentsJson
+                    ? '勾选要重生的图片，其余图片复用原图'
+                    : '该任务未保存分镜数据，仅支持全量重生'
+                }
+                className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[11px] font-medium text-violet-600 transition-colors hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 disabled:hover:bg-transparent"
               >
                 <ListVideo className="h-3.5 w-3.5" />
                 按段重生
@@ -271,7 +293,13 @@ export default function TaskCard({ task }: TaskCardProps) {
                   <button
                     type="button"
                     onClick={() => setSegmentPanelOpen(true)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[11px] font-medium text-violet-600 transition-colors hover:bg-violet-50"
+                    disabled={!task.segmentsJson}
+                    title={
+                      task.segmentsJson
+                        ? '勾选要重生的段，其余段复用原视频'
+                        : '该任务未保存分镜数据，仅支持全量重生'
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[11px] font-medium text-violet-600 transition-colors hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 disabled:hover:bg-transparent"
                   >
                     <ListVideo className="h-3.5 w-3.5" />
                     按段重生
@@ -305,12 +333,29 @@ export default function TaskCard({ task }: TaskCardProps) {
           <Hourglass className="h-4 w-4 animate-pulse text-amber-500" />
           AI 导演正在创作中，稍后回来查看…
         </div>
+      ) : imageUrls.length === 0 && state === 'interrupted' ? (
+        <div className="flex items-center gap-2 border-t border-slate-100 px-5 py-4 text-xs text-amber-600">
+          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
+          任务已中断，Agent 将在后台自动恢复续跑，可稍后刷新查看…
+        </div>
       ) : (
         <div className="px-5 py-4 text-xs text-slate-400">暂无生成产物</div>
       )}
 
       {/* 管理操作：删任何任务（运行中会顺带取消 Agent 排期）；重新生成仅终态 */}
             <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">
+              {/* 编辑参数：查看/修改该任务保存的精细控制参数，改完原地重新生成 */}
+              {isTerminal && (
+                <button
+                  type="button"
+                  onClick={() => setParamEditOpen(true)}
+                  title="查看并修改该任务保存的风格提示词 / 负面词 / 运镜 / 时长 / 镜头数"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:border-violet-300 hover:bg-violet-50 hover:text-violet-600"
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  编辑参数
+                </button>
+              )}
               {isTerminal && !task.segmentsJson && (
                 <button
                   type="button"
@@ -324,11 +369,18 @@ export default function TaskCard({ task }: TaskCardProps) {
                   {regenMutation.isPending ? '提交中…' : '重新生成'}
                 </button>
               )}
-              {isTerminal && !!task.segmentsJson && (
+              {/* 按段重生：需要任务保存了分镜（segments_json）；旧任务置灰并说明原因 */}
+              {isTerminal && (
                 <button
                   type="button"
                   onClick={() => setSegmentPanelOpen(true)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-3 py-1.5 text-xs font-medium text-violet-600 transition-colors hover:bg-violet-50"
+                  disabled={!task.segmentsJson}
+                  title={
+                    task.segmentsJson
+                      ? '勾选要重生的段，其余段复用原视频'
+                      : '该任务未保存分镜数据，仅支持全量重生'
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-3 py-1.5 text-xs font-medium text-violet-600 transition-colors hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 disabled:hover:bg-transparent"
                 >
                   <ListVideo className="h-3.5 w-3.5" />
                   按段重生
@@ -396,6 +448,15 @@ export default function TaskCard({ task }: TaskCardProps) {
                 taskId={task.id}
                 genType={task.genType}
                 onClose={() => setSegmentPanelOpen(false)}
+                onChanged={refreshList}
+              />
+            )}
+
+            {/* 参数编辑弹窗：改完精细控制参数后原地重新生成 */}
+            {paramEditOpen && (
+              <ParamEditDialog
+                task={task}
+                onClose={() => setParamEditOpen(false)}
                 onChanged={refreshList}
               />
             )}

@@ -52,6 +52,9 @@ export default function TrajectoryPanel() {
 
   // 任务完成时记录到历史（每个 id 只记一次，避免轮询重复）
   const isDone = task?.status === 'completed' || task?.status === 'failed';
+  // 中断任务在前端视为已停下：不再显示「Agent 正在创作中…」的假进行中提示；
+  // 但仍保留 3s 轮询，以便后端迟到的 completed 回调把它复活时能自动刷出来。
+  const isHalted = isDone || task?.status === 'interrupted';
   if (isDone && task && !recordedIds.current.has(task.id)) {
     recordedIds.current.add(task.id);
     addCompletedTask(task);
@@ -62,6 +65,8 @@ export default function TrajectoryPanel() {
       case 'completed': return <CheckCircle className="h-5 w-5 text-emerald-500" />;
       case 'failed': return <XCircle className="h-5 w-5 text-red-500" />;
       case 'queued': return <Clock className="h-5 w-5 text-amber-500 animate-pulse" />;
+      // 中断是停下来的状态，用静态图标（掉进 default 会变成一直转圈的假「进行中」）
+      case 'interrupted': return <AlertCircle className="h-5 w-5 text-amber-500" />;
       default: return <Video className="h-5 w-5 text-violet-500 animate-pulse" />;
     }
   };
@@ -71,6 +76,7 @@ export default function TrajectoryPanel() {
       case 'completed': return 'bg-emerald-50 border-emerald-200 text-emerald-700';
       case 'failed': return 'bg-red-50 border-red-200 text-red-700';
       case 'queued': return 'bg-amber-50 border-amber-200 text-amber-700';
+      case 'interrupted': return 'bg-amber-50 border-amber-200 text-amber-700';
       default: return 'bg-violet-50 border-violet-200 text-violet-700';
     }
   };
@@ -137,6 +143,7 @@ export default function TrajectoryPanel() {
                 {ev.type === 'tool_called' && <span className="text-amber-500">🔧</span>}
                 {ev.type === 'completed' && <CheckCircle className="h-4 w-4 text-emerald-500" />}
                 {ev.type === 'failed' && <XCircle className="h-4 w-4 text-red-500" />}
+                {ev.type === 'interrupted' && <AlertCircle className="h-4 w-4 text-amber-500" />}
                 <span className="text-slate-700">
                   {NODE_NAMES[ev.data.nodeId ?? ''] ?? ev.data.nodeName ?? EVENT_NAMES[ev.type] ?? ev.type}
                 </span>
@@ -147,7 +154,7 @@ export default function TrajectoryPanel() {
             ))}
           </div>
 
-          {!events.length && !isDone && (
+          {!events.length && !isHalted && (
             <motion.p
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -217,6 +224,18 @@ function TaskStatusLine({ task }: { task: { status: string; errorMessage?: strin
       >
         <CheckCircle className="h-5 w-5 shrink-0" />
         视频生成完成！
+      </motion.div>
+    );
+  }
+  if (task.status === 'interrupted') {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="mb-4 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700"
+      >
+        <AlertCircle className="h-5 w-5 shrink-0" />
+        任务已中断，Agent 将在后台自动恢复续跑，稍后刷新即可看到最新进展。
       </motion.div>
     );
   }
