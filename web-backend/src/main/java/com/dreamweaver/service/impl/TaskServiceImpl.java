@@ -144,6 +144,8 @@ public class TaskServiceImpl implements TaskService {
         request.setPrompt(original.getPrompt());
         request.setGenType(original.getGenType());
         request.setUserId(original.getUserId() == null ? null : String.valueOf(original.getUserId()));
+        // 还原精细控制参数（风格/负面词/时间轴/元素绑定），否则重生成会丢设定
+        applyGenParamsJson(original.getGenParamsJson(), request);
         log.info("重新生成任务: id={} 原地重跑 prompt={}", id, original.getPrompt());
         return dispatchToAgent(original, request);
     }
@@ -194,6 +196,8 @@ public class TaskServiceImpl implements TaskService {
         task.setGenType(request.getGenType() != null ? request.getGenType() : "text_video");
         // 段配置落库：重生时取此作为输入源（未勾选段复用已有视频、勾选段重新生成）
         task.setSegmentsJson(request.getSegments());
+        // 精细控制参数落库：regenerate 从 entity 重建请求时需要还原
+        task.setGenParamsJson(buildGenParamsJson(request));
         task.setCreatedAt(LocalDateTime.now());
         task.setUpdatedAt(LocalDateTime.now());
         taskMapper.insert(task);
@@ -228,6 +232,22 @@ public class TaskServiceImpl implements TaskService {
         }
         if (request.getSlideSeconds() != null) {
             body.put("slide_seconds", request.getSlideSeconds());
+        }
+        // 可灵式精细控制：风格/负面词/时间轴/元素绑定
+        if (request.getStylePrompt() != null && !request.getStylePrompt().isBlank()) {
+            body.put("style_prompt", request.getStylePrompt());
+        }
+        if (request.getNegativePrompt() != null && !request.getNegativePrompt().isBlank()) {
+            body.put("negative_prompt", request.getNegativePrompt());
+        }
+        if (request.getTotalSeconds() != null) {
+            body.put("total_seconds", request.getTotalSeconds());
+        }
+        if (request.getShotCount() != null) {
+            body.put("shot_count", request.getShotCount());
+        }
+        if (request.getReferenceBindings() != null && !request.getReferenceBindings().isBlank()) {
+            body.put("reference_bindings", request.getReferenceBindings());
         }
 
         CommonResult<Map<String, Object>> agentResp = null;
@@ -411,6 +431,8 @@ public class TaskServiceImpl implements TaskService {
         request.setGenType(original.getGenType());
         request.setUserId(original.getUserId() == null ? null : String.valueOf(original.getUserId()));
         request.setSegments(newSegmentsJson);
+        // 全局精细控制参数还原（段级 camera/负面词已随 segments_json 落库）
+        applyGenParamsJson(original.getGenParamsJson(), request);
         log.info("重生成段: id={} 重生成段={} 复用段={}", id, reworkIndices, segs.size() - reworkSet.size());
         return dispatchToAgent(taskMapper.selectById(id), request);
     }
@@ -457,6 +479,69 @@ public class TaskServiceImpl implements TaskService {
         } catch (Exception e) {
             log.warn("解析 segments_json 失败: {}", e.getMessage());
             return new java.util.ArrayList<>();
+        }
+    }
+
+    /**
+     * 把可灵式精细控制参数序列化为 JSON 落库。
+     * 全空时返回 null（不写无意义的 {} 占位，便于判断「是否配置过」）。
+     */
+    private String buildGenParamsJson(CreateTaskRequest request) {
+        boolean empty = (request.getStylePrompt() == null || request.getStylePrompt().isBlank())
+                && (request.getNegativePrompt() == null || request.getNegativePrompt().isBlank())
+                && request.getTotalSeconds() == null
+                && request.getShotCount() == null
+                && (request.getReferenceBindings() == null || request.getReferenceBindings().isBlank());
+        if (empty) {
+            return null;
+        }
+        Map<String, Object> params = new java.util.LinkedHashMap<>();
+        params.put("stylePrompt", request.getStylePrompt());
+        params.put("negativePrompt", request.getNegativePrompt());
+        params.put("totalSeconds", request.getTotalSeconds());
+        params.put("shotCount", request.getShotCount());
+        params.put("referenceBindings", request.getReferenceBindings());
+        try {
+            return objectMapper.writeValueAsString(params);
+        } catch (Exception e) {
+            log.warn("序列化 gen_params_json 失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 从落库的 gen_params_json 还原精细控制参数到请求体（regenerate / rework 共用）。 */
+    private void applyGenParamsJson(String genParamsJson, CreateTaskRequest request) {
+        if (genParamsJson == null || genParamsJson.isBlank()) {
+            return;
+        }
+        try {
+            Map<String, Object> params = objectMapper.readValue(genParamsJson,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            request.setStylePrompt(asText(params.get("stylePrompt")));
+            request.setNegativePrompt(asText(params.get("negativePrompt")));
+            request.setTotalSeconds(asInt(params.get("totalSeconds")));
+            request.setShotCount(asInt(params.get("shotCount")));
+            request.setReferenceBindings(asText(params.get("referenceBindings")));
+        } catch (Exception e) {
+            log.warn("解析 gen_params_json 失败: {}", e.getMessage());
+        }
+    }
+
+    private static String asText(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private static Integer asInt(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
+        }
+        try {
+            return Integer.valueOf(String.valueOf(value).trim());
+        } catch (NumberFormatException e) {
+            return null;
         }
     }
 

@@ -44,6 +44,13 @@ public class Task {
     /** 提交时的段配置数组 JSON（重生输入源：{prompt,image_url,reference_images,seconds,aspect_ratio}） */
     private String segmentsJson;
 
+    /**
+     * 可灵式精细控制参数 JSON（风格/负面词/总时长/镜头数/元素绑定）。
+     * 单独落库是为了 regenerate（全量重新生成）时不丢这些参数——
+     * 该链路只从 entity 重建 CreateTaskRequest，不从请求体取。
+     */
+    private String genParamsJson;
+
     /** 重生覆盖前的旧 result_json（回滚用） */
     private String prevResultJson;
 

@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS creative_task (
     prompt        TEXT         COMMENT '用户原始需求',
     result_json   TEXT         COMMENT '模型侧产物（视频 URL 数组等）',
     segments_json LONGTEXT     COMMENT '提交时的段配置数组 JSON（重生输入源）',
+    gen_params_json LONGTEXT   COMMENT '可灵式精细控制参数 JSON（风格/负面词/总时长/镜头数/元素绑定）',
     prev_result_json LONGTEXT  COMMENT '重生覆盖前的旧 result_json（回滚用）',
     is_draft       TINYINT      NOT NULL DEFAULT 1 COMMENT '草稿标记 0=成品 1=草稿（默认）',
     video_id      VARCHAR(64)  DEFAULT NULL COMMENT 'Agnes 异步任务 ID（用于幂等判断）',

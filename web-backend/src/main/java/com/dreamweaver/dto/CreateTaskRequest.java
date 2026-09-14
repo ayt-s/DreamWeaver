@@ -43,4 +43,24 @@ public class CreateTaskRequest {
 
     /** 图片合成视频：单张停留秒数（1~10，默认 3） */
     private Double slideSeconds;
+
+    // === 可灵式精细控制（全链路透传给 agent） ===
+
+    /** 全局风格提示词（如「3D写实国漫风，虚幻5，OC渲染」）；折进每镜提示词正文 */
+    private String stylePrompt;
+
+    /** 负面提示词（如「手指畸形、穿模、水印」）；agnes 无此字段，折成「避免出现：…」 */
+    private String negativePrompt;
+
+    /** 时间轴：期望总时长（秒）。给了则覆盖 LLM 对时长的自由估计 */
+    private Integer totalSeconds;
+
+    /** 时间轴：期望镜头数。给了则约束分镜数量，每镜时长 = 总时长 / 镜头数 */
+    private Integer shotCount;
+
+    /**
+     * 元素语义绑定 JSON 字符串：[{name, imageIndex}]，imageIndex 为 1-based。
+     * agent 转成 agnes reference 模式的 &lt;Picture N&gt; 占位符，保证角色/道具跨镜一致。
+     */
+    private String referenceBindings;
 }

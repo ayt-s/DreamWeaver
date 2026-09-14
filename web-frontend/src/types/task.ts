@@ -214,6 +214,47 @@ export interface CreateTaskRequest {
   segments?: string;
   /** 可选视频模型：agnes-video-2.5-flash（默认） / agnes-video-2.5（HD） */
   videoModel?: string;
+  /** 全局风格提示词（折进每镜提示词正文） */
+  stylePrompt?: string;
+  /** 负面提示词（折成「避免出现：…」进正文） */
+  negativePrompt?: string;
+  /** 时间轴：期望总时长（秒） */
+  totalSeconds?: number;
+  /** 时间轴：期望镜头数 */
+  shotCount?: number;
+  /** 元素语义绑定 JSON 字符串：[{name, imageIndex}]，imageIndex 1-based */
+  referenceBindings?: string;
+}
+
+// === 可灵式结构化运镜（与 agent prompting.py 白名单严格对齐） ===
+
+export interface CameraSpec {
+  /** 景别 */
+  shot_size?: string;
+  /** 机位 */
+  angle?: string;
+  /** 运镜 */
+  movement?: string;
+}
+
+export const SHOT_SIZE_OPTIONS = ['远景', '全景', '中景', '近景', '特写'] as const;
+export const CAMERA_ANGLE_OPTIONS = ['平视', '俯拍', '仰拍', '航拍', '过肩'] as const;
+export const CAMERA_MOVE_OPTIONS = ['固定', '推近', '拉远', '摇镜', '移镜', '跟拍', '环绕'] as const;
+
+export const SHOT_SIZE_LABEL = '景别';
+export const CAMERA_ANGLE_LABEL = '机位';
+export const CAMERA_MOVE_LABEL = '运镜';
+
+/** 运镜 spec 是否为空（空则不注入提示词） */
+export function hasCameraSpec(spec?: CameraSpec | null): boolean {
+  if (!spec) return false;
+  return Boolean(spec.shot_size || spec.angle || spec.movement);
+}
+
+/** 元素语义绑定：把剧本中的名词绑到参考图编号（<Picture N>，1-based） */
+export interface ReferenceBinding {
+  name: string;
+  imageIndex: number;
 }
 
 /** 无限画布片段（前端编辑态，提交时序列化为 CreateTaskRequest.segments） */

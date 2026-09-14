@@ -15,13 +15,28 @@ import {
   Clapperboard,
   LayoutGrid,
   Wand2,
+  Settings2,
+  ChevronDown,
   type LucideIcon,
 } from 'lucide-react';
 
 interface CreateForm {
   prompt: string;
   genType: GenType;
+  stylePrompt: string;
+  negativePrompt: string;
+  totalSeconds: string;
+  shotCount: string;
 }
+
+const FORM_DEFAULTS: CreateForm = {
+  prompt: '',
+  genType: 'text_video',
+  stylePrompt: '',
+  negativePrompt: '',
+  totalSeconds: '',
+  shotCount: '',
+};
 
 const SUGGESTIONS = [
   '赛博朋克风格的咖啡产品宣传视频，5秒',
@@ -52,23 +67,28 @@ export default function CreatePanel() {
     setValue,
     watch,
     formState: { errors, isSubmitting },
-  } = useForm<CreateForm>({ defaultValues: { prompt: '', genType: 'text_video' } });
+  } = useForm<CreateForm>({ defaultValues: FORM_DEFAULTS });
 
   const mutation = useMutation({
     mutationFn: createVideoTask,
     onSuccess: (task) => {
       setActiveTask(task.id);
-      reset({ prompt: '', genType: 'text_video' });
+      reset(FORM_DEFAULTS);
     },
   });
 
   const genType = watch('genType');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const [enriching, setEnriching] = useState(false);
   const [enrichError, setEnrichError] = useState('');
 
   // AI 丰富提示词：仅文生图/文生视频可用（图生视频走画布页）
   const isEnrichable = genType === 'text_image' || genType === 'text_video';
+  // 时间轴适用范围：标准视频给总时长+镜头数；漫剧/文生图只给分镜张数
+  const isVideoTimeline = genType === 'text_video';
+  const isShotCountApplicable =
+    genType === 'text_video' || genType === 'comic_video' || genType === 'text_image';
   const onEnrich = async () => {
     const current = watch('prompt').trim();
     if (!current) {
@@ -89,11 +109,21 @@ export default function CreatePanel() {
 
   const onSubmit = (values: CreateForm) => {
     const prompt = values.prompt.trim();
-    mutation.mutate({ prompt, genType: values.genType });
+    // 时间轴：空串 → undefined（不传，让 LLM 自由决定）；非法数字同理
+    const totalSeconds = Number.parseInt(values.totalSeconds, 10);
+    const shotCount = Number.parseInt(values.shotCount, 10);
+    mutation.mutate({
+      prompt,
+      genType: values.genType,
+      stylePrompt: values.stylePrompt.trim() || undefined,
+      negativePrompt: values.negativePrompt.trim() || undefined,
+      totalSeconds: Number.isFinite(totalSeconds) && totalSeconds > 0 ? totalSeconds : undefined,
+      shotCount: Number.isFinite(shotCount) && shotCount > 0 ? shotCount : undefined,
+    });
   };
 
   const fillSuggestion = (text: string) => {
-    reset({ prompt: text, genType });
+    reset({ ...FORM_DEFAULTS, prompt: text, genType });
   };
 
   return (
@@ -223,6 +253,110 @@ export default function CreatePanel() {
               {s.slice(0, 12)}...
             </button>
           ))}
+        </div>
+
+        {/* 高级设置：风格 / 负面提示词 / 时间轴（可灵式精细控制） */}
+        <div className="rounded-xl border border-slate-200 bg-slate-50/60">
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((v) => !v)}
+            className="flex w-full items-center justify-between px-4 py-2.5 text-left"
+          >
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600">
+              <Settings2 className="h-3.5 w-3.5" />
+              高级设置
+              <span className="font-normal text-slate-400">风格 · 负面词 · 时间轴</span>
+            </span>
+            <ChevronDown
+              className={`h-4 w-4 text-slate-400 transition-transform ${advancedOpen ? 'rotate-180' : ''}`}
+            />
+          </button>
+
+          {advancedOpen && (
+            <div className="space-y-3 border-t border-slate-200 px-4 py-3">
+              {/* ① 风格提示词 */}
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-slate-500">
+                  风格提示词
+                  <span className="ml-1 font-normal text-slate-400">
+                    画面质感 / 光影 / 渲染风格，会折进每一镜
+                  </span>
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="如：3D写实国漫风，虚幻5，OC渲染，电影级光影，体积光雾，色调柔和富有层次"
+                  className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs leading-relaxed focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/10"
+                  {...register('stylePrompt', { maxLength: { value: 1000, message: '风格过长（≤1000字）' } })}
+                />
+              </div>
+
+              {/* ① 负面提示词 */}
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-slate-500">
+                  负面提示词
+                  <span className="ml-1 font-normal text-slate-400">
+                    要规避的穿帮，会以「避免出现：…」写进提示词
+                  </span>
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="如：人物肢体扭曲、手指畸形、面部崩坏、穿模、画面抖动闪烁、水印logo、多余肢体"
+                  className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs leading-relaxed focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/10"
+                  {...register('negativePrompt', { maxLength: { value: 1000, message: '负面词过长（≤1000字）' } })}
+                />
+              </div>
+
+              {/* ② 时间轴：标准视频给「总时长+镜头数」；漫剧只出图，仅给镜头数（分镜张数） */}
+              {isShotCountApplicable && (
+                <div className={`grid gap-3 ${isVideoTimeline ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                  {isVideoTimeline && (
+                    <div>
+                      <label className="mb-1 block text-[11px] font-medium text-slate-500">
+                        总时长（秒）
+                      </label>
+                      <input
+                        type="number"
+                        min={4}
+                        max={600}
+                        placeholder="留空=自动"
+                        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/10"
+                        {...register('totalSeconds', {
+                          min: { value: 4, message: '总时长至少 4 秒' },
+                          max: { value: 600, message: '总时长最多 600 秒' },
+                        })}
+                      />
+                    </div>
+                  )}
+                  <div>
+                    <label className="mb-1 block text-[11px] font-medium text-slate-500">
+                      {isVideoTimeline ? '镜头数' : '分镜张数'}
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      placeholder="留空=自动"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/10"
+                      {...register('shotCount', {
+                        min: { value: 1, message: '镜头数至少 1' },
+                        max: { value: 20, message: '镜头数最多 20' },
+                      })}
+                    />
+                  </div>
+                  <p className="col-span-full text-[10px] leading-relaxed text-slate-400">
+                    {isVideoTimeline
+                      ? '两者都填时按「总时长 ÷ 镜头数」精确分配每镜秒数（单镜 4~12 秒，超出会自动钳制）；只填其一则另一项交给模型决定。'
+                      : '指定要生成几张分镜图；留空由模型按内容决定。'}
+                  </p>
+                </div>
+              )}
+              {(errors.totalSeconds || errors.shotCount) && (
+                <p className="text-[11px] text-red-600">
+                  {errors.totalSeconds?.message || errors.shotCount?.message}
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         <motion.button

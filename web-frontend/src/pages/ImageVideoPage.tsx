@@ -54,6 +54,13 @@ import {
   type CanvasProjectView,
 } from '../api/canvas';
 import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
+import {
+  CAMERA_ANGLE_OPTIONS,
+  CAMERA_MOVE_OPTIONS,
+  SHOT_SIZE_OPTIONS,
+  hasCameraSpec,
+  type CameraSpec,
+} from '../types/task';
 
 /* ------------------------------------------------------------------ */
 /* 工具：从项目名剥离章节标识，得到"小说名"用于下拉分组                    */
@@ -85,6 +92,8 @@ interface ImageNodeData {
   imageUrl: string;
   prompt: string;
   ratio: string;
+  /** 结构化运镜（景别/机位/运镜），可选；空则不注入提示词 */
+  cameraSpec?: CameraSpec;
 }
 interface VideoNodeData {
   seconds: number;
@@ -260,6 +269,55 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
         </select>
       </div>
 
+      {/* ③ 结构化运镜：景别 / 机位 / 运镜（留空=不指定，交给模型） */}
+      <div className="mb-2 space-y-1">
+        <div className="flex items-center gap-1">
+          <span className="w-8 shrink-0 text-[11px] text-slate-500">景别</span>
+          <select
+            value={data.cameraSpec?.shot_size ?? ''}
+            onChange={(e) => patch({ cameraSpec: { ...data.cameraSpec, shot_size: e.target.value } })}
+            className={selectCls + ' w-full'}
+          >
+            <option value="">不指定</option>
+            {SHOT_SIZE_OPTIONS.map((o) => (
+              <option key={o} value={o}>
+                {o}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="w-8 shrink-0 text-[11px] text-slate-500">机位</span>
+          <select
+            value={data.cameraSpec?.angle ?? ''}
+            onChange={(e) => patch({ cameraSpec: { ...data.cameraSpec, angle: e.target.value } })}
+            className={selectCls + ' w-full'}
+          >
+            <option value="">不指定</option>
+            {CAMERA_ANGLE_OPTIONS.map((o) => (
+              <option key={o} value={o}>
+                {o}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="w-8 shrink-0 text-[11px] text-slate-500">运镜</span>
+          <select
+            value={data.cameraSpec?.movement ?? ''}
+            onChange={(e) => patch({ cameraSpec: { ...data.cameraSpec, movement: e.target.value } })}
+            className={selectCls + ' w-full'}
+          >
+            <option value="">不指定</option>
+            {CAMERA_MOVE_OPTIONS.map((o) => (
+              <option key={o} value={o}>
+                {o}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
       <textarea
         value={data.prompt}
         onChange={(e) => patch({ prompt: e.target.value })}
@@ -383,6 +441,10 @@ export default function CanvasPage() {
   const [nodes, setNodes, onNodesChange] = useNodesState<GraphNode>(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [videoModel, setVideoModel] = useState(VIDEO_MODELS[0].value);
+  // 可灵式精细控制（画布全局）：风格 + 负面词，提交时透传给 agent
+  const [stylePrompt, setStylePrompt] = useState('');
+  const [negativePrompt, setNegativePrompt] = useState('');
+  const [controlPanelOpen, setControlPanelOpen] = useState(false);
   // 背景偏好持久化：localStorage 即时保存，另随项目画布数据一起保存（跨设备）
   // 默认白底（light）；用户手动切过再按 localStorage 走
   const [dark, setDark] = useState<boolean>(
@@ -806,6 +868,7 @@ export default function CanvasPage() {
       prompt: string;
       seconds: number;
       aspect_ratio: string;
+      camera_spec?: CameraSpec;
     }> = [];
     const texts: string[] = [];
     let videoSeconds = 4;
@@ -831,6 +894,8 @@ export default function CanvasPage() {
           prompt,
           seconds: videoSeconds,
           aspect_ratio: img.ratio || '16:9',
+          // 结构化运镜：空 spec 不写字段，避免给 agent 塞无意义空对象
+          ...(hasCameraSpec(img.cameraSpec) ? { camera_spec: img.cameraSpec } : {}),
         });
       }
     }
@@ -913,6 +978,9 @@ export default function CanvasPage() {
         genType: plan.segments.length > 0 ? 'image_video' : 'text_video',
         segments: segmentsJson,
         videoModel: videoModel || undefined,
+        // 可灵式精细控制：全局风格 + 负面词（折进每镜提示词正文）
+        stylePrompt: stylePrompt.trim() || undefined,
+        negativePrompt: negativePrompt.trim() || undefined,
       });
     },
     onSuccess: async () => {
@@ -1308,7 +1376,41 @@ export default function CanvasPage() {
 
           {/* 底部悬浮控制栏 */}
           <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-4">
-            <div className={`pointer-events-auto flex items-center gap-3 rounded-2xl border ${theme.bar} px-4 py-2.5 shadow-lg backdrop-blur`}>
+            <div className="flex flex-col items-center gap-2">
+              {/* 精细控制面板：全局风格 + 负面词（可灵式，折进每镜提示词） */}
+              {controlPanelOpen && (
+                <div className={`pointer-events-auto w-[520px] max-w-[90vw] rounded-2xl border ${theme.bar} p-4 shadow-lg backdrop-blur`}>
+                  <div className={`mb-2 flex items-center gap-1.5 text-[11px] font-semibold ${theme.headText}`}>
+                    <Wand2 className="h-3.5 w-3.5" />
+                    精细控制
+                    <span className={`font-normal ${theme.hint}`}>风格 · 负面词（对所有片段生效）</span>
+                  </div>
+                  <div className="space-y-2">
+                    <div>
+                      <label className={`mb-1 block text-[10px] ${theme.hint}`}>风格提示词</label>
+                      <textarea
+                        rows={2}
+                        value={stylePrompt}
+                        onChange={(e) => setStylePrompt(e.target.value)}
+                        placeholder="如：3D写实国漫风，虚幻5，OC渲染，电影级光影，体积光雾"
+                        className={`w-full rounded-lg border p-2 text-[11px] leading-relaxed outline-none ${theme.input}`}
+                      />
+                    </div>
+                    <div>
+                      <label className={`mb-1 block text-[10px] ${theme.hint}`}>负面提示词</label>
+                      <textarea
+                        rows={2}
+                        value={negativePrompt}
+                        onChange={(e) => setNegativePrompt(e.target.value)}
+                        placeholder="如：手指畸形、面部崩坏、穿模、画面抖动、水印logo"
+                        className={`w-full rounded-lg border p-2 text-[11px] leading-relaxed outline-none ${theme.input}`}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className={`pointer-events-auto flex items-center gap-3 rounded-2xl border ${theme.bar} px-4 py-2.5 shadow-lg backdrop-blur`}>
               <div>
                 <div className={`mb-0.5 text-[10px] ${theme.hint}`}>视频模型</div>
                 <select
@@ -1323,6 +1425,17 @@ export default function CanvasPage() {
                   ))}
                 </select>
               </div>
+              <button
+                type="button"
+                onClick={() => setControlPanelOpen((v) => !v)}
+                title="精细控制：风格提示词 / 负面提示词"
+                className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${theme.btn} ${controlPanelOpen ? 'ring-1 ring-indigo-400' : ''}`}
+              >
+                <Wand2 className="h-3.5 w-3.5" /> 精细控制
+                {(stylePrompt.trim() || negativePrompt.trim()) && (
+                  <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-indigo-500" />
+                )}
+              </button>
               <div className="h-8 w-px bg-slate-700" />
               <button
                 onClick={() => {
@@ -1346,6 +1459,7 @@ export default function CanvasPage() {
                   '生成成片'
                 )}
               </button>
+              </div>
             </div>
           </div>
         </main>

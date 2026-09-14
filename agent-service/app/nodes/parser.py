@@ -69,6 +69,14 @@ async def requirement_parser_node(state: CreativeSessionState) -> dict:
     prompt = BRIEF_TEMPLATE.format(prompt=state["raw_prompt"])
     raw = await _llm_json_with_retry(prompt, session_id=state["session_id"])
     brief = validate_brief(raw)
+    # 时间轴精确控制：用户显式给了总时长/镜头数 → 覆盖 LLM 的自由估计
+    # （LLM 常把「5秒」当默认值，用户手动设定必须优先）
+    total_seconds = state.get("total_seconds")
+    if total_seconds:
+        brief["duration_seconds"] = str(total_seconds)
+    shot_count = state.get("shot_count")
+    if shot_count:
+        brief["shot_count"] = str(shot_count)
     await events.emit(state["session_id"], "node_completed",
                       {"node_id": "requirement_parser", "summary": f"主题: {brief.get('theme', '')}"})
     return {"brief": brief, "status": TaskStatus.QUEUED}

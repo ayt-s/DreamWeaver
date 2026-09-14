@@ -1,0 +1,147 @@
+"""提示词组装工具：可灵式精细控制（运镜结构化 / 风格 / 负面词 / 元素绑定）。
+
+agnes 官方没有 negative_prompt 字段（实测未知字段直接 400），
+所以负面词一律折进提示词文本；风格同理。
+
+agnes 官方推荐的提示词结构（见 agnes-video-2.5 文档 Prompting Recommendations）：
+  1. 主体与场景  2. 动作与变化  3. 镜头语言  4. 视觉风格  5. 声音节奏  6. 一致性要求
+本模块负责第 3/4/6 段的确定性拼接。
+
+元素语义绑定：agnes reference 模式支持 <Picture N> / <Audio N> / <Video N> 占位符，
+1-indexed 且各数组独立编号（images[0] = <Picture 1>）。
+"""
+from __future__ import annotations
+
+# 景别 → 英文（对齐 agnes 文档 shot size 表述）
+SHOT_SIZE_EN: dict[str, str] = {
+    "远景": "wide shot",
+    "全景": "full shot",
+    "中景": "medium shot",
+    "近景": "close-up shot",
+    "特写": "extreme close-up",
+}
+
+# 机位 → 英文（镜头角度）
+CAMERA_ANGLE_EN: dict[str, str] = {
+    "平视": "eye-level angle",
+    "俯拍": "high-angle shot",
+    "仰拍": "low-angle shot",
+    "航拍": "aerial shot",
+    "过肩": "over-the-shoulder shot",
+}
+
+# 运镜 → 英文（对齐 agnes 文档 push / pull / pan / tilt / tracking / fixed）
+CAMERA_MOVE_EN: dict[str, str] = {
+    "固定": "static camera",
+    "推近": "slow push-in",
+    "拉远": "slow pull-out",
+    "摇镜": "pan",
+    "移镜": "tracking shot",
+    "跟拍": "follow shot",
+    "环绕": "orbit shot",
+}
+
+# 前端下拉选项源（与前端保持一致；后端做白名单校验用）
+SHOT_SIZE_OPTIONS = list(SHOT_SIZE_EN)
+CAMERA_ANGLE_OPTIONS = list(CAMERA_ANGLE_EN)
+CAMERA_MOVE_OPTIONS = list(CAMERA_MOVE_EN)
+
+
+def camera_phrase(spec: object) -> str:
+    """把结构化运镜 spec 拼成英文提示词片段。
+
+    spec 形状：{"shot_size": "远景", "angle": "俯拍", "movement": "推近"}。
+    非法/空值忽略；全空返回空串。白名单外的值丢弃（防注入脏值进提示词）。
+    """
+    if not isinstance(spec, dict):
+        return ""
+    parts: list[str] = []
+    for key, table in (
+        ("shot_size", SHOT_SIZE_EN),
+        ("angle", CAMERA_ANGLE_EN),
+        ("movement", CAMERA_MOVE_EN),
+    ):
+        value = str(spec.get(key) or "").strip()
+        if value and value in table:
+            parts.append(table[value])
+    return ", ".join(parts)
+
+
+def normalize_camera_spec(spec: object) -> dict:
+    """清洗运镜 spec：只保留白名单内的键值，返回规范 dict（可能为空）。"""
+    if not isinstance(spec, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, table in (
+        ("shot_size", SHOT_SIZE_EN),
+        ("angle", CAMERA_ANGLE_EN),
+        ("movement", CAMERA_MOVE_EN),
+    ):
+        value = str(spec.get(key) or "").strip()
+        if value and value in table:
+            out[key] = value
+    return out
+
+
+def build_cn_description(
+    base_parts: list[str],
+    style_prompt: str = "",
+    negative_prompt: str = "",
+) -> str:
+    """拼中文描述（供 LLM 翻译）：主体/动作 → 风格 → 负面词。
+
+    风格与负面词一并进入翻译，保证英文产物里两者都被表达
+    （agnes 无独立字段，只能写进提示词正文）。
+    """
+    parts = [str(p).strip() for p in base_parts if str(p or "").strip()]
+    style = str(style_prompt or "").strip()
+    if style:
+        parts.append(f"画面风格：{style}")
+    negative = str(negative_prompt or "").strip()
+    if negative:
+        parts.append(f"避免出现：{negative}")
+    return "，".join(parts)
+
+
+def build_reference_bindings(bindings: object) -> tuple[list[str], list[str]]:
+    """元素语义绑定 → (角色定义句, 一致性要求句)。
+
+    输入 shapes（兼容两种）：
+      1. [{"name": "我", "image_index": 2}, {"name": "摩托车", "image_index": 3}]
+      2. [{"name": "我", "imageIndex": 2}]  # Java/前端透传为 camelCase
+
+    输出英文提示词片段：agnes reference 模式用 <Picture N> 指代 images[N-1]。
+    返回 ([...], [...])，调用方按位置插入提示词。
+    """
+    if not isinstance(bindings, list):
+        return [], []
+    defines: list[str] = []
+    consistency: list[str] = []
+    for item in bindings:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        # 兼容 snake_case（内部）/ camelCase（Java 与前端透传）
+        raw_index = item.get("image_index", item.get("imageIndex", 0))
+        try:
+            # 前端传 1-based 图片编号（<Picture N> 语义），与 agnes 对齐
+            idx = int(raw_index)
+        except (TypeError, ValueError):
+            continue
+        if idx < 1:
+            continue
+        defines.append(f'"{name}" refers to <Picture {idx}>')
+        consistency.append(name)
+    if not defines:
+        return [], []
+    role_clause = "In this shot: " + "; ".join(defines) + "."
+    keep_clause = ""
+    if consistency:
+        keep_clause = (
+            "Keep the appearance of "
+            + ", ".join(consistency)
+            + " exactly consistent with the referenced images."
+        )
+    return [role_clause], [keep_clause] if keep_clause else []

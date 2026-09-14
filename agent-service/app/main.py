@@ -35,6 +35,7 @@ from app import events
 from app.errors import AppError, friendly_error_message, register_exception_handlers
 from app.graph import compiled_graph
 from app.state import CreativeSessionState, TaskStatus
+from app.utils.prompting import normalize_camera_spec
 from app.poller import poller
 from app.scheduler import scheduler
 from app.agent.chat_api import router as agent_chat_router
@@ -89,6 +90,16 @@ class CreateVideoTaskRequest(BaseModel):
     # 图片合成视频：从已有图片直接拼成片（ffmpeg 幻灯片，不消耗 agnes 额度）
     slideshow_images: Optional[str] = None
     slide_seconds: Optional[float] = None
+    # === 可灵式精细控制 ===
+    # 全局风格提示词（折进每镜提示词正文）
+    style_prompt: Optional[str] = None
+    # 负面提示词（折成「避免出现：…」进正文）
+    negative_prompt: Optional[str] = None
+    # 时间轴：总时长（秒）/ 镜头数
+    total_seconds: Optional[int] = None
+    shot_count: Optional[int] = None
+    # 元素语义绑定 JSON：[{name, image_index}]，image_index 1-based（<Picture N>）
+    reference_bindings: Optional[str] = None
 
 
 class CreateVideoTaskResponse(BaseModel):
@@ -153,6 +164,12 @@ def _parse_segments(raw: str | None) -> list:
                 "existing_video_url": str(s.get("existing_video_url") or "").strip(),
                 # 预翻译英文提示词（段重生时 storyboard 已带，跳过 LLM 翻译）
                 "prompt_en": str(s.get("prompt_en", "")).strip(),
+                # 该段已有图片 URL（图片任务段重生复用）
+                "existing_image_url": str(s.get("existing_image_url") or "").strip(),
+                # 可灵式结构化运镜：{shot_size, angle, movement}
+                "camera_spec": normalize_camera_spec(s.get("camera_spec") or s.get("camera")),
+                # 该段级负面词（覆盖全局）
+                "negative_prompt": str(s.get("negative_prompt") or "").strip(),
             })
         return segments
     except json.JSONDecodeError:
@@ -244,6 +261,12 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
         "slideshow": bool(slideshow_images),
         "slideshow_images": slideshow_images,
         "slide_seconds": req.slide_seconds or 3.0,
+        # 可灵式精细控制：风格/负面词/时间轴/元素绑定
+        "style_prompt": (req.style_prompt or "").strip(),
+        "negative_prompt": (req.negative_prompt or "").strip(),
+        "total_seconds": req.total_seconds,
+        "shot_count": req.shot_count,
+        "reference_bindings": _parse_json_list(req.reference_bindings, "reference_bindings"),
         "status": TaskStatus.QUEUED,
         "fix_round": 0,
         "max_fix_rounds": 3,

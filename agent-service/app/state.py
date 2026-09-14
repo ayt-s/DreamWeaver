@@ -45,6 +45,18 @@ class CreativeSessionState(TypedDict):
     slideshow_images: NotRequired[list]
     slide_seconds: NotRequired[float]
 
+    # === 可灵式精细控制 ===
+    # 全局风格提示词（折进每镜提示词正文；agnes 无独立 style 字段）
+    style_prompt: NotRequired[str]
+    # 负面提示词（agnes 无 negative_prompt 字段，折成「避免出现：…」进正文）
+    negative_prompt: NotRequired[str]
+    # 时间轴：总时长（秒）。给了则覆盖 LLM 对 brief 的时长猜测
+    total_seconds: NotRequired[int]
+    # 时间轴：镜头数。给了则约束 LLM 分镜数量，每镜时长 = 总时长 / 镜头数
+    shot_count: NotRequired[int]
+    # 元素语义绑定：[{name, image_index}]，image_index 为 1-based（对应 <Picture N>）
+    reference_bindings: NotRequired[list]
+
     # === 各节点产出（全部落 State → Checkpoint 序列化，断点恢复用）===
     brief: NotRequired[dict]
     script: NotRequired[list]
