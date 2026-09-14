@@ -200,6 +200,9 @@ async def _run_session(state: CreativeSessionState) -> None:
     config = {"configurable": {"thread_id": state["session_id"]}}
     # 心跳续期：独立于节点边界——video_generator 单节点可能跑 15 分钟以上
     hb_task = asyncio.create_task(_heartbeat_loop(state["session_id"]))
+    # 「已跑到终态」标志：正常结束 / 已按失败落定 → True（可清快照）；
+    # 被取消（CancelledError 不被下面的 except Exception 捕获）→ 保持 False（保留快照待恢复）
+    settled = False
     try:
         # 用 astream 替代 ainvoke：每个 checkpoint 实时同步 state，
         # 让 /v1/tasks/{sid} 能反映执行进度（video_generating/synthesizing 等），
@@ -230,6 +233,7 @@ async def _run_session(state: CreativeSessionState) -> None:
         # 会话保留 1 小时用于查轨迹，之后释放，防止 _sessions 无限增长（内存泄漏）
         asyncio.get_running_loop().call_later(
             3600, _sessions.pop, state["session_id"], None)
+        settled = True
     except Exception as exc:  # 节点异常 → 记 FAILED，不裸崩后台任务
         # 异常 str() 可能为空（如部分 asyncio 异常），兜底用异常类型名；
         # 用户侧文案友好化，完整异常只进日志
@@ -252,9 +256,9 @@ async def _run_session(state: CreativeSessionState) -> None:
         # 会话保留 1 小时用于查轨迹，之后释放，防止 _sessions 无限增长（内存泄漏）
         asyncio.get_running_loop().call_later(
             3600, _sessions.pop, state["session_id"], None)
+        settled = True
     finally:
-        # 会话结束（成功/失败都一样）：停心跳 + 清理 Redis 快照与活跃索引。
-        # 终态无需再恢复；进程被强杀时 finally 不执行，快照保留 → 下次启动恢复。
+        # 会话收尾：无论成功/失败/被取消都先停心跳。
         hb_task.cancel()
         try:
             await hb_task  # await 一次收尾，避免残留 pending task 告警
@@ -262,7 +266,14 @@ async def _run_session(state: CreativeSessionState) -> None:
             pass
         except Exception as exc:  # 心跳自身的问题绝不影响会话结果
             logger.debug("心跳协程收尾异常（忽略）: %s", exc)
-        await session_store.delete_session(state["session_id"])
+        # 只有「已跑到终态」才清 Redis 快照（静默降级由 session_store 保证）。
+        # 被取消时 settled 仍为 False → 保留快照，下次启动继续恢复。
+        # ⚠️ CancelledError 继承自 BaseException，上面的 except Exception 抓不到它，
+        #    所以「取消」与「失败」必须靠 settled 区分：scheduler.stop() → w.cancel()
+        #    正是 Ctrl+C 优雅停止的路径。若无条件清快照，就会变成「优雅停止丢会话、
+        #    硬杀反而能恢复」（硬杀不执行 finally），与设计意图正好相反。
+        if settled:
+            await session_store.delete_session(state["session_id"])
 
 
 async def _heartbeat_loop(session_id: str) -> None:

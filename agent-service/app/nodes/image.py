@@ -129,12 +129,24 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
                           {"node_id": "image_generator",
                            "summary": f"复用已有 {len(reused)} 张图片"})
         # 跳过节点主体后，会话级完成回调必须在这里补发（否则 Java 永远等不到 completed）
+        # 只有「本节点即会话终点」的两种模式才能写 COMPLETED：
+        #   - 段重生（segments 非空）→ 上面已发完成回调，图之后无视频
+        #   - 文生图/漫剧 → _image_route 走 text_done 直达 END
+        # 标准视频模式（text_video/image_video）后面还有 video_generator，此处若写
+        # COMPLETED 会让快照出现「假终态」：进程死在视频生成期间时，启动恢复会误判
+        # 会话已结束而放弃恢复（P0，2026-09-14 评审）。保持中间态交给 video_generator。
+        terminal = bool(state.get("segments")) or state.get("gen_type") in (
+            "text_image", "comic_video")
         if state.get("segments"):
             await _finish_segment_rework(session_id, reused,
                                          state.get("storyboard") or [], [])
         elif state.get("gen_type") in ("text_image", "comic_video"):
             await _finish_text_image(session_id, state.get("storyboard") or [], reused)
-        return {"image_urls": reused, "status": TaskStatus.COMPLETED}
+        return {
+            "image_urls": reused,
+            "status": TaskStatus.COMPLETED if terminal
+            else (state.get("status") or TaskStatus.ASSET_GENERATING),
+        }
 
     await events.emit(session_id, "node_entered",
                       {"node_id": "image_generator", "node_name": "图像生成"})
