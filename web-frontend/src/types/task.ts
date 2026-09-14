@@ -176,12 +176,15 @@ export function parseResultUrls(resultJson?: string | null): string[] {
  */
 export function finalVideoUrl(resultJson?: string | null): string | null {
   const urls = parseResultUrls(resultJson);
-  if (urls.length > 1) {
-    const first = urls[0];
-    // 本地拼接产物路径（agent /v1/files/**）才认定为成片；agnes 直链不算
-    if (first.startsWith('/v1/files/')) {
-      return first;
-    }
+  const first = urls[0];
+  // 本地拼接产物路径（agent /v1/files/**）才认定为成片；agnes 直链不算。
+  //
+  // 不再要求 urls.length > 1：「合成视频」（image_slideshow）的 result_json 就只有
+  // 一个元素 [final.mp4]，按 >1 判断会让它被当成分段渲染（成片区域空着）。
+  // 这条放宽是安全的：result_json 里的分段永远是 agnes CDN URL，
+  // 本地 /v1/files/ 项按构造只可能是 synthesizer / slideshow 拼出的成片。
+  if (first && first.startsWith('/v1/files/')) {
+    return first;
   }
   return null;
 }
