@@ -29,6 +29,11 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
     # 断点恢复：跳过已完成的镜次，不再重复提交
     done = len(video_urls)
 
+    # 按镜次索引落位（复用段与新生段都写入对应索引），避免交错时顺序错乱。
+    # done 之前的已有 URL 先按索引放入，重建时一并保留（断点恢复语义）。
+    url_by_index: dict[int, str] = {i: u for i, u in enumerate(video_urls)}
+    id_by_index: dict[int, str] = {i: v for i, v in enumerate(video_ids)}
+
     # 收集所有 Future 和对应的 shot 信息
     pending_shots: list[tuple[int, str, asyncio.Future]] = []
 
@@ -36,8 +41,8 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
         # 重生混合模式：该段已有视频 URL → 直接复用，不提交 agnes（不消耗额度）
         existing = str(shot.get("existing_video_url") or "").strip()
         if existing:
-            video_urls.append(existing)
-            video_ids.append(f"reused-{idx}")
+            url_by_index[idx] = existing
+            id_by_index[idx] = f"reused-{idx}"
             trace.append({
                 "tool_name": "reuse_video",
                 "params": {"shot_index": idx},
@@ -95,8 +100,8 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
                     {"error": msg, "shot_index": idx}
                 )
             else:
-                video_urls.append(result["video_url"])
-                video_ids.append(result["video_id"])
+                url_by_index[idx] = result["video_url"]
+                id_by_index[idx] = result["video_id"]
                 trace.append({
                     "tool_name": "generate_video",
                     "params": {
@@ -112,6 +117,10 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
                     "timestamp": int(time.time()),
                     "retry_count": 0,
                 })
+
+    # 按镜次索引顺序重建，保证 video_urls / video_ids 与 storyboard 索引严格对齐
+    video_urls = [url_by_index[i] for i in sorted(url_by_index)]
+    video_ids = [id_by_index[i] for i in sorted(id_by_index)]
 
     # 完成回调：标准模式整会话发一次，携带全量 URL 数组；全镜失败则发失败态。
     # 画布模式（segments 非空）不回这里发完成通知——synthesizer 拼接出长视频后统一回调，

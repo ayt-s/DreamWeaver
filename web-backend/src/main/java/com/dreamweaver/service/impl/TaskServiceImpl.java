@@ -385,16 +385,19 @@ public class TaskServiceImpl implements TaskService {
         List<String> existingUrls = isImageTask
                 ? parseImageUrls(original.getImageUrls())
                 : parseResultUrls(original.getResultJson());
+        // 图片任务的已有产物即 existingUrls，无需重复解析；视频任务用不到该列表
+        List<String> existingImageUrls = isImageTask
+                ? existingUrls
+                : java.util.Collections.emptyList();
         if (existingUrls.size() != segs.size()) {
-            throw new IllegalArgumentException(
-                    "历史结果与段数不匹配（段数=" + segs.size()
-                            + "，已有" + (isImageTask ? "图片" : "视频") + "=" + existingUrls.size()
-                            + "），存在历史段生成失败导致序号错位，无法按段重生，请全量重新生成");
+            log.warn("重生成段：历史产物与段数不匹配，按索引尽力对齐（id={} 段数={} 已有{}={}），无产物段将自动补重生",
+                    id, segs.size(), isImageTask ? "图片" : "视频", existingUrls.size());
         }
 
         // 2. 组装混合模式段：未勾选复用 existing_video_url（视频）/ existing_image_url（图片），勾选段更新 prompt 后重新生成
-        List<String> existingImageUrls = parseImageUrls(original.getImageUrls());
         Set<Integer> reworkSet = new java.util.HashSet<>(reworkIndices);
+        // 用户勾选段 + 因缺失历史产物而被迫重生的段
+        Set<Integer> effectiveRework = new java.util.TreeSet<>();
         List<Map<String, Object>> out = new java.util.ArrayList<>();
         for (int i = 0; i < segs.size(); i++) {
             Map<String, Object> seg = new java.util.HashMap<>(segs.get(i));
@@ -408,12 +411,25 @@ public class TaskServiceImpl implements TaskService {
                 seg.remove("prompt_en");
                 seg.remove("existing_video_url");
                 seg.remove("existing_image_url");
-            } else if (isImageTask && i < existingImageUrls.size()) {
+                effectiveRework.add(i);
+            } else if (isImageTask && i < existingImageUrls.size()
+                    && existingImageUrls.get(i) != null && !existingImageUrls.get(i).isBlank()) {
                 seg.put("existing_image_url", existingImageUrls.get(i));
-            } else {
+            } else if (!isImageTask && i < existingUrls.size()
+                    && existingUrls.get(i) != null && !existingUrls.get(i).isBlank()) {
                 seg.put("existing_video_url", existingUrls.get(i));
+            } else {
+                // 该段没有可复用的历史产物（历史上生成失败/产物缺失）：视为需要重生
+                seg.remove("prompt_en");
+                seg.remove("existing_video_url");
+                seg.remove("existing_image_url");
+                effectiveRework.add(i);
             }
             out.add(seg);
+        }
+        if (effectiveRework.size() > reworkSet.size()) {
+            log.warn("重生成段：以下段缺少可复用历史产物，已自动补入重生列表 id={} 补重生段={}",
+                    id, effectiveRework);
         }
         String newSegmentsJson = toJsonString(out);
 
@@ -436,7 +452,8 @@ public class TaskServiceImpl implements TaskService {
         request.setSegments(newSegmentsJson);
         // 全局精细控制参数还原（段级 camera/负面词已随 segments_json 落库）
         applyGenParamsJson(original.getGenParamsJson(), request);
-        log.info("重生成段: id={} 重生成段={} 复用段={}", id, reworkIndices, segs.size() - reworkSet.size());
+        log.info("重生成段: id={} 重生成段={} 复用段={}", id, effectiveRework,
+                segs.size() - effectiveRework.size());
         return dispatchToAgent(taskMapper.selectById(id), request);
     }
 

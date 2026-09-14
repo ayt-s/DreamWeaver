@@ -187,12 +187,19 @@ export function segmentVideoUrls(resultJson?: string | null): string[] {
   return final ? urls.filter((u) => u !== final) : urls;
 }
 
-/** 解析 imageUrls JSON 为图片 URL 列表（容错同 parseResultUrls） */
+/**
+ * 解析 imageUrls JSON 为图片 URL 列表（容错同 parseResultUrls）。
+ *
+ * 过滤空串：段重生时生成失败的段会以 "" 占位以保持索引对齐（Java 侧按索引取图），
+ * 但空串在 UI 上会渲染成破图，且会污染「合成视频」的 ≥2 张判定，故展示层一律剔除。
+ */
 export function parseImageUrls(imageUrls?: string | null): string[] {
   if (!imageUrls) return [];
   try {
     const parsed = JSON.parse(imageUrls);
-    return Array.isArray(parsed) ? parsed.filter((u): u is string => typeof u === 'string') : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((u): u is string => typeof u === 'string' && u.trim() !== '')
+      : [];
   } catch {
     return [];
   }

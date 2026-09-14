@@ -19,11 +19,13 @@ interface SegmentManagerProps {
 /**
  * 穿帮段重新生成面板。
  *
- * 数据流：加载任务段配置 + 每段已有视频 → 用户勾选穿帮段（可修改提示词）→
+ * 数据流：加载任务段配置 + 每段已有产物 → 用户勾选穿帮段（可修改提示词）→
  * 提交后 agent 只重生勾选段、复用其余段、重新拼接成片。
- * 后端校验：段数必须与历史视频数一致（有历史段失败导致错位时拒绝重生）。
+ * 后端容错：段数少于历史产物数时按索引尽力对齐，缺少可复用产物的段自动补入重生列表。
  */
-export default function SegmentManager({ taskId, onClose, onChanged, segments: segmentsProp }: SegmentManagerProps) {
+export default function SegmentManager({ taskId, onClose, onChanged, segments: segmentsProp, genType }: SegmentManagerProps) {
+  // 图片类任务（文生图 / 漫画）与视频类任务的段重生语义不同：前者重生单张图片，后者重生片段并拼接
+  const isImageTask = genType === 'text_image' || genType === 'comic_video';
   const [segments, setSegments] = useState<TaskSegment[] | null>(segmentsProp ?? null);
   const [loadError, setLoadError] = useState('');
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -114,7 +116,9 @@ export default function SegmentManager({ taskId, onClose, onChanged, segments: s
             <div>
               <h3 className="text-sm font-semibold text-slate-900">穿帮段重新生成</h3>
               <p className="text-[11px] text-slate-500">
-                勾选要重生的段（可改提示词），其余段复用原视频
+                {isImageTask
+                  ? '勾选要重生的图片（可改提示词），其余图片复用原图'
+                  : '勾选要重生的段（可改提示词），其余段复用原视频'}
               </p>
             </div>
           </div>
@@ -178,7 +182,9 @@ export default function SegmentManager({ taskId, onClose, onChanged, segments: s
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-semibold text-slate-700">第 {idx + 1} 段</span>
+                        <span className="text-xs font-semibold text-slate-700">
+                          {isImageTask ? `第 ${idx + 1} 张` : `第 ${idx + 1} 段`}
+                        </span>
                         {seg.seconds ? (
                           <span className="text-[10px] text-slate-400">{seg.seconds}s</span>
                         ) : null}
@@ -197,13 +203,13 @@ export default function SegmentManager({ taskId, onClose, onChanged, segments: s
                   {isExp && (
                     <div className="border-t border-slate-100 bg-white p-2.5">
                       <label className="mb-1 block text-[10px] font-medium text-slate-500">
-                        视频提示词（留空则沿用原提示词）
+                        {isImageTask ? '图片提示词（留空则沿用原提示词）' : '视频提示词（留空则沿用原提示词）'}
                       </label>
                       <textarea
                         value={editedPrompts[String(idx)] ?? seg.prompt ?? ''}
                         onChange={(e) => onPromptChange(idx, e.target.value)}
                         rows={2}
-                        placeholder={seg.prompt || '输入新的视频描述…'}
+                        placeholder={seg.prompt || (isImageTask ? '输入新的图片描述…' : '输入新的视频描述…')}
                         className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs leading-relaxed focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-500/15"
                       />
                       <p className="mt-1 text-[10px] text-slate-400">
@@ -248,7 +254,7 @@ export default function SegmentManager({ taskId, onClose, onChanged, segments: s
                 ) : (
                   <Wand2 className="h-3.5 w-3.5" />
                 )}
-                {submitting ? '提交中…' : `重生 ${selected.size} 段并重新拼接`}
+                {submitting ? '提交中…' : isImageTask ? `重生 ${selected.size} 张图片` : `重生 ${selected.size} 段并重新拼接`}
               </button>
             </div>
           </div>

@@ -394,6 +394,7 @@ export default function TaskCard({ task }: TaskCardProps) {
             {segmentPanelOpen && (
               <SegmentManager
                 taskId={task.id}
+                genType={task.genType}
                 onClose={() => setSegmentPanelOpen(false)}
                 onChanged={refreshList}
               />

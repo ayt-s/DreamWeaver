@@ -34,7 +34,7 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
 
     if segments:
         # 段重生模式：segments 含 prompt + existing_image_url
-        print(f"[image] 段重生模式：共 {len(segments)} 段")
+        logger.info("段重生模式：共 %d 段", len(segments))
         storyboard = []
         # 逐段落位（复用段直接回填、重生段生成后回填），保持索引与 segments 对齐
         url_by_index: dict[int, str] = {}
@@ -47,7 +47,7 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
 
             if existing:
                 # 复用已有图片，跳过 agnes 调用（不消耗额度）
-                print(f"[image] 段复用: {existing[:80]}")
+                logger.info("段复用: %s", existing[:80])
                 url_by_index[i] = existing
                 await events.emit(session_id, "progress",
                                   {"phase": f"复用第 {i + 1} 张（跳过重生）"})
@@ -73,7 +73,8 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
             if urls:
                 url_by_index[i] = urls[0]
 
-        # 按段索引收集；生成失败的段沿用原有图片，避免整任务因单段失败而错位
+        # 按段索引收集：每段一个元素，生成失败的段用空串占位（不 continue 跳过），
+        # 保持 image_urls 与 segments 索引严格对齐——Java 侧按索引落库/取图。
         image_urls: list[str] = []
         failed_indices: list[int] = []
         for i, seg in enumerate(segments):
@@ -82,17 +83,19 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
                 u = str(seg.get("existing_image_url", "")).strip()
             if not u:
                 failed_indices.append(i)
+                image_urls.append("")  # 失败段空串占位，保持索引对齐
                 continue
             image_urls.append(u)
 
         # 构建 storyboard（包含所有图片：新生成 + 复用），供 Java 保存 segments_json
+        # image_url 直接取 image_urls[i]，保证与落库列表逐段一致（失败段同样为空串）
         storyboard = []
         for i, seg in enumerate(segments):
             storyboard.append({
                 "id": i,
                 "prompt": str(seg.get("prompt", "")),
                 "prompt_en": str(seg.get("prompt_en", "")),
-                "image_url": url_by_index.get(i, str(seg.get("existing_image_url", ""))).strip(),
+                "image_url": image_urls[i],
                 "reference_images": list(seg.get("reference_images") or []),
             })
 
@@ -103,12 +106,14 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
         # 段重生分支也必须发完成回调，否则任务永远停在 pending（Java 不会主动轮询 agent）
         from app.callback.java_notify import notify_java_completion
         import json as _json
-        if image_urls:
+        # 「全部失败」判定：非空 URL 数量为 0（列表长度恒等于 segments 数，含空串占位）
+        non_empty_urls = [u for u in image_urls if u]
+        if non_empty_urls:
             asyncio.create_task(
                 notify_java_completion(
                     session_id=session_id,
                     status="completed",
-                    image_urls=image_urls,
+                    image_urls=image_urls,  # 完整列表（含空串），索引与 segments 对齐
                     storyboard=_json.dumps(storyboard, ensure_ascii=False),
                 )
             )
@@ -124,11 +129,11 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
             await events.emit(session_id, "failed", {})
 
         return {
-            "image_url": image_urls[0] if image_urls else "",
+            "image_url": non_empty_urls[0] if non_empty_urls else "",
             "image_urls": image_urls,
             "storyboard": storyboard,
             "trace": trace,
-            "status": TaskStatus.COMPLETED if image_urls else TaskStatus.FAILED,
+            "status": TaskStatus.COMPLETED if non_empty_urls else TaskStatus.FAILED,
         }
 
     # ---- 文生图模式：storyboard 逐镜生成 ----
