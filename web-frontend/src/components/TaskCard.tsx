@@ -217,7 +217,7 @@ export default function TaskCard({ task }: TaskCardProps) {
                 className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[11px] font-medium text-violet-600 transition-colors hover:bg-violet-50"
               >
                 <ListVideo className="h-3.5 w-3.5" />
-                段重生
+                按段重生
               </button>
             </div>
           )}
@@ -274,7 +274,7 @@ export default function TaskCard({ task }: TaskCardProps) {
                     className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[11px] font-medium text-violet-600 transition-colors hover:bg-violet-50"
                   >
                     <ListVideo className="h-3.5 w-3.5" />
-                    穿帮段重生
+                    按段重生
                   </button>
                 </div>
                 <div className="flex gap-2 overflow-x-auto pb-1">
@@ -331,7 +331,7 @@ export default function TaskCard({ task }: TaskCardProps) {
                   className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-3 py-1.5 text-xs font-medium text-violet-600 transition-colors hover:bg-violet-50"
                 >
                   <ListVideo className="h-3.5 w-3.5" />
-                  穿帮段重生
+                  按段重生
                 </button>
               )}
               {isTerminal && !!task.segmentsJson && (
@@ -390,7 +390,7 @@ export default function TaskCard({ task }: TaskCardProps) {
               </button>
             </div>
 
-            {/* 穿帮段重生面板（画布多段任务才可用） */}
+            {/* 按段重生面板（画布多段任务才可用） */}
             {segmentPanelOpen && (
               <SegmentManager
                 taskId={task.id}

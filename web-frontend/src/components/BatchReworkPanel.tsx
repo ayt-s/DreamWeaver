@@ -27,7 +27,7 @@ interface BatchReworkPanelProps {
 }
 
 /**
- * 批量穿帮段重新生成面板。
+ * 批量按段重生面板。
  *
  * 画廊页选中多个任务后打开此面板，每个任务独立显示段列表，
  * 用户勾选要重生的段（可修改提示词），一次性提交所有任务。
@@ -173,7 +173,7 @@ export default function BatchReworkPanel({
             </div>
             <div>
               <h3 className="text-sm font-semibold text-slate-900">
-                批量穿帮段重新生成
+                批量按段重生
               </h3>
               <p className="text-[11px] text-slate-500">
                 勾选要重生的段（可改提示词），其余段复用原视频

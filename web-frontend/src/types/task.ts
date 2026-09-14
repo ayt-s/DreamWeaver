@@ -94,7 +94,7 @@ export interface TaskResponse {
   prompt?: string;
   /** 草稿标记：true=草稿（默认，新生成物进草稿区）false=成品 */
   isDraft?: boolean;
-  /** 段配置 JSON 字符串（有值时支持穿帮段重生） */
+  /** 段配置 JSON 字符串（有值时支持按段重生） */
   segmentsJson?: string;
   /** 终态完成/失败时间（ISO 格式） */
   completedAt?: string;

@@ -52,7 +52,7 @@ export async function regenerateTask(id: number): Promise<TaskResponse> {
   return unwrap(client.post(`/tasks/${id}/regenerate`));
 }
 
-// 查询任务的段配置 + 每段已有视频 URL（供穿帮段重生 UI 展示）
+// 查询任务的段配置 + 每段已有视频 URL（供按段重生 UI 展示）
 export interface TaskSegment {
   index: number;
   prompt: string;
@@ -72,7 +72,7 @@ export async function getTaskSegments(id: number): Promise<TaskSegment[]> {
   return unwrap(client.get(`/tasks/${id}/segments`));
 }
 
-// 穿帮段重新生成：勾选段重生（可改提示词）+ 未勾选段复用已有视频 + 重新拼接成片
+// 按段重生：勾选段重生（可改提示词）+ 未勾选段复用已有视频 + 重新拼接成片
 export async function reworkTask(
   id: number,
   req: { reworkIndices: number[]; editedPrompts?: Record<string, string> },
@@ -80,7 +80,7 @@ export async function reworkTask(
   return unwrap(client.post(`/tasks/${id}/rework`, req));
 }
 
-// 批量穿帮段重新生成：一次提交多个任务的段重生
+// 批量按段重生：一次提交多个任务的段重生
 export interface BatchReworkItemReq {
   taskId: number;
   reworkIndices: number[];

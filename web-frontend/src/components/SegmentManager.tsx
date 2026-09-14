@@ -17,9 +17,9 @@ interface SegmentManagerProps {
 }
 
 /**
- * 穿帮段重新生成面板。
+ * 按段重生面板。
  *
- * 数据流：加载任务段配置 + 每段已有产物 → 用户勾选穿帮段（可修改提示词）→
+ * 数据流：加载任务段配置 + 每段已有产物 → 用户勾选要重生的段（可修改提示词）→
  * 提交后 agent 只重生勾选段、复用其余段、重新拼接成片。
  * 后端容错：段数少于历史产物数时按索引尽力对齐，缺少可复用产物的段自动补入重生列表。
  */
@@ -114,7 +114,7 @@ export default function SegmentManager({ taskId, onClose, onChanged, segments: s
               <ListVideo className="h-4 w-4 text-violet-600" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-slate-900">穿帮段重新生成</h3>
+              <h3 className="text-sm font-semibold text-slate-900">按段重生</h3>
               <p className="text-[11px] text-slate-500">
                 {isImageTask
                   ? '勾选要重生的图片（可改提示词），其余图片复用原图'
@@ -213,7 +213,7 @@ export default function SegmentManager({ taskId, onClose, onChanged, segments: s
                         className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs leading-relaxed focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-500/15"
                       />
                       <p className="mt-1 text-[10px] text-slate-400">
-                        修改提示词可解决「描述不清导致的穿帮」；仅重试则留空。
+                        修改提示词可解决「描述不清导致的画面不符」；仅重试则留空。
                       </p>
                     </div>
                   )}
