@@ -113,8 +113,11 @@ def edit_prompt(canvas_id: int, node_id: str, new_prompt: str) -> dict:
         return {"error": f"节点 {node_id} 不存在"}
     if "data" not in target:
         target["data"] = {}
-    old_prompt = target["data"].get("prompt", "")
-    target["data"]["prompt"] = new_prompt
+    # 字段名按节点类型定：文本节点的正文在 content，图片/视频节点的提示词在 prompt。
+    # 写错字段的后果是「助手说改好了，节点上什么都没变」。
+    field = "content" if target.get("type") == "textNode" else "prompt"
+    old_prompt = target["data"].get(field, "")
+    target["data"][field] = new_prompt
     # 立即持久化到数据库（重新读取原数据以保留 theme 包装格式）
     raw = _get(f"/api/canvas/{canvas_id}")
     _parsed, wrapper = _parse_nodes_json(raw.get("nodesJson"))

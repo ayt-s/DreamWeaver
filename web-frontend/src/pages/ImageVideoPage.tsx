@@ -54,6 +54,7 @@ import {
   deleteProject,
   type CanvasProjectView,
 } from '../api/canvas';
+import { generateText } from '../api/agent';
 import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
 import {
   CAMERA_ANGLE_OPTIONS,
@@ -93,6 +94,8 @@ interface ImageNodeData {
   imageUrl: string;
   prompt: string;
   ratio: string;
+  /** 一键文生图产出的多张候选（同 prompt 多次请求）；点缩略图切换 imageUrl */
+  candidates?: string[];
   /** 结构化运镜（景别/机位/运镜），可选；空则不注入提示词 */
   cameraSpec?: CameraSpec;
 }
@@ -103,7 +106,9 @@ interface VideoNodeData {
 type GraphNode = Node<any>;
 
 const RATIO_PRESETS = ['16:9', '9:16', '1:1', '4:3', '3:4'];
-const TEXT_MODES = ['自己编写', '一句话生成剧本', '文生图', '文生视频', '图片反推提示词'];
+// 文本节点原来的下拉（一句话生成剧本 / 文生图 / 文生视频 / 图片反推提示词）已移除：
+// 四项全是 disabled 的占位（过度设计），而真正缺的「调文本模型补内容」反而没有。
+// 现在文本节点 = textarea + AI 生成/改写按钮；data.mode 仅为兼容老画布数据保留。
 const VIDEO_MODELS = [
   { value: 'agnes-video-2.5-flash', label: 'Agnes Video 2.5 Flash（快）' },
   { value: 'agnes-video-2.5', label: 'Agnes Video 2.5 HD（慢但清晰）' },
@@ -118,6 +123,47 @@ export function isPublicImageUrl(url: string): boolean {
   return true;
 }
 
+/**
+ * 文生图单张：提交 text_image 任务并轮询到完成，返回图片 URL。
+ *
+ * 抽成模块级函数是为了「一键文生图」批量流程与单节点按钮共用同一套超时/失败语义，
+ * 免得两处各写一套轮询逻辑、各自演化。
+ */
+async function generateOneImage(
+  prompt: string,
+  count = 1,
+  timeoutMs = 180_000,
+): Promise<string[]> {
+  const res = await createVideoTask({
+    prompt,
+    genType: 'text_image',
+    // 直出图：跳过 agent 侧需求解析/剧本/分镜，一次出 count 张同 prompt 候选
+    directImage: true,
+    imageCount: count,
+    // 素材标记：画廊默认不展示（否则一次批量会在草稿区刷出 N 个任务）
+    source: 'canvas_asset',
+  });
+  const taskId = Number(res.id);
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 4000));
+    const cur: TaskResponse | null = await getTask(taskId);
+    if (!cur) throw new Error('任务查询失败');
+    if (cur.status === 'completed') {
+      const urls = parseImageUrls(cur.imageUrls);
+      if (urls.length > 0) return urls;
+      throw new Error('生成完成但无图片');
+    }
+    if (cur.status === 'failed' || cur.status === 'expired') {
+      throw new Error(cur.errorMessage || '生成失败');
+    }
+    if (cur.status === 'interrupted') {
+      throw new Error('生成已中断（Agent 可能正在恢复，稍后可重试）');
+    }
+  }
+  throw new Error('文生图超时（120s）');
+}
+
 const CANVAS_THEME_KEY = 'dreamweaver:canvas-theme';
 
 const selectCls =
@@ -129,33 +175,102 @@ const textareaCls =
 /* 自定义节点组件（模块级定义，React Flow 要求 nodeTypes 静态稳定）        */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 节点右上角的删除按钮（hover 显示）。
+ *
+ * 用 React Flow v12 的 `deleteElements`：它会把该节点的关联连线一并删掉，
+ * 比手写 setNodes/setEdges 过滤干净。
+ * `nodrag` class 必须加 —— 否则点它会被 React Flow 当成拖拽起点，按钮点不动。
+ */
+function NodeDeleteButton({ id }: { id: string }) {
+  const { deleteElements } = useReactFlow();
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        void deleteElements({ nodes: [{ id }] });
+      }}
+      title="删除该节点（关联连线一并删除）"
+      className="nodrag absolute -right-2 -top-2 z-10 hidden rounded-full border border-slate-200 bg-white p-1 text-slate-400 shadow-sm transition hover:border-red-300 hover:text-red-500 group-hover:block"
+    >
+      <X className="h-3 w-3" />
+    </button>
+  );
+}
+
+
 function TextNodeView({ id, data }: NodeProps<GraphNode>) {
   const { updateNodeData } = useReactFlow();
+  const [aiInput, setAiInput] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState('');
   const patch = (p: Partial<TextNodeData>) => updateNodeData(id, p);
+  const content = (data.content || '').trim();
+
+  /** 让文本模型生成/改写节点内容：有输入按输入来，没输入就把现有内容改写成画面提示词 */
+  const runAi = async () => {
+    const intent = aiInput.trim();
+    if (!intent && !content) {
+      setAiError('先写点内容，或填一句「想要什么」');
+      return;
+    }
+    setAiLoading(true);
+    setAiError('');
+    try {
+      const text = await generateText(intent, content);
+      if (text) {
+        patch({ content: text });
+        setAiInput('');
+      } else {
+        setAiError('模型返回空内容');
+      }
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : 'AI 生成失败');
+    } finally {
+      setAiLoading(false);
+    }
+  };
   return (
-    <div className="w-60 rounded-xl border border-slate-200 bg-white p-3 shadow-md">
+    <div className="group relative w-60 rounded-xl border border-slate-200 bg-white p-3 shadow-md">
+      <NodeDeleteButton id={id} />
       <Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !bg-indigo-400" />
       <div className="mb-2 flex items-center gap-1 text-[11px] font-semibold text-slate-500">
         <Type className="h-3.5 w-3.5" /> 文本节点
       </div>
-      <select
-        value={data.mode}
-        onChange={(e) => patch({ mode: e.target.value })}
-        className={selectCls + ' w-full'}
-      >
-        {TEXT_MODES.map((m) => (
-          <option key={m} value={m} disabled={m !== '自己编写'}>
-            {m === '自己编写' ? m : `${m}（规划中）`}
-          </option>
-        ))}
-      </select>
       <textarea
         value={data.content}
         onChange={(e) => patch({ content: e.target.value })}
         rows={4}
         placeholder="描述画面内容，或输入一句提示词…"
-        className={textareaCls + ' mt-2'}
+        className={textareaCls}
       />
+      {/* AI 生成/改写：把意图交给文本模型（单轮，不走画布助手），结果直接落进节点内容 */}
+      <div className="mt-2 flex items-center gap-1">
+        <input
+          value={aiInput}
+          onChange={(e) => setAiInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              void runAi();
+            }
+          }}
+          placeholder={content ? '怎么改？（留空=改写为画面提示词）' : '想要什么画面？'}
+          className="nodrag min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-700 outline-none focus:border-indigo-300"
+        />
+        <button
+          type="button"
+          onClick={() => void runAi()}
+          disabled={aiLoading}
+          title="让文本模型按你的要求生成/改写这段内容（100~200 字画面提示词）"
+          className="nodrag inline-flex shrink-0 items-center gap-1 rounded-lg border border-indigo-200 px-2 py-1 text-[11px] font-medium text-indigo-600 transition hover:bg-indigo-50 disabled:opacity-50"
+        >
+          {aiLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wand2 className="h-3 w-3" />}
+          AI
+        </button>
+      </div>
+      {aiError && <div className="mt-1 text-[10px] text-red-500">{aiError}</div>}
       <Handle type="source" position={Position.Right} className="!h-2.5 !w-2.5 !bg-indigo-400" />
     </div>
   );
@@ -223,10 +338,20 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
   };
 
   return (
-    <div className="w-64 rounded-xl border border-indigo-200 bg-white p-3 shadow-md">
+    <div className="group relative w-64 rounded-xl border border-indigo-200 bg-white p-3 shadow-md">
+      <NodeDeleteButton id={id} />
       <Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !bg-indigo-400" />
       <div className="mb-2 flex items-center gap-1 text-[11px] font-semibold text-slate-500">
         <ImagePlus className="h-3.5 w-3.5" /> 图片节点
+        {/* 成片顺序徽标：chain 按 x 坐标排，拖动节点即改顺序 —— 不显示序号用户看不出来 */}
+        {(data as { __order?: number }).__order ? (
+          <span
+            className="ml-auto shrink-0 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-600"
+            title="成片里的第几段（按画布从左到右排序，拖动节点会改变它）"
+          >
+            第 {(data as { __order?: number }).__order} 段
+          </span>
+        ) : null}
       </div>
 
       {/* 图片预览 / 占位：有图显示图；无图但有 prompt 显示 prompt 预览（小说转画布常用）；都没有显示默认占位 */}
@@ -254,6 +379,34 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
           </div>
         )}
       </div>
+      {data.candidates && data.candidates.length > 1 && (
+        <div className="mb-2">
+          <div className="mb-1 text-[10px] text-slate-500">
+            候选 {data.candidates.length} 张 · 点一张设为首帧
+          </div>
+          <div className="flex gap-1 overflow-x-auto pb-0.5">
+            {(data.candidates as string[]).map((u: string, i: number) => (
+              <button
+                key={`${id}-cand-${i}`}
+                type="button"
+                onClick={() => patch({ imageUrl: u })}
+                title={`候选 ${i + 1}（点击作为该镜首帧）`}
+                className={`h-11 w-11 shrink-0 overflow-hidden rounded border transition ${
+                  data.imageUrl === u
+                    ? 'border-indigo-500 ring-1 ring-indigo-400'
+                    : 'border-slate-200 hover:border-indigo-300'
+                }`}
+              >
+                <img
+                  src={cachedImageUrl(u)}
+                  alt={`候选 ${i + 1}`}
+                  className="h-full w-full object-cover"
+                />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {data.imageUrl && !isPublicImageUrl(data.imageUrl) && (
         <div className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
           本地上传图仅可预览，生成需公网图：请用历史作品或点「文生图」生成
@@ -373,7 +526,8 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
 function VideoNodeView({ id, data }: NodeProps<GraphNode>) {
   const { updateNodeData } = useReactFlow();
   return (
-    <div className="w-52 rounded-xl border-2 border-indigo-500 bg-white p-3 shadow-md">
+    <div className="group relative w-52 rounded-xl border-2 border-indigo-500 bg-white p-3 shadow-md">
+      <NodeDeleteButton id={id} />
       <Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !bg-indigo-500" />
       <div className="mb-2 flex items-center gap-1 text-[11px] font-semibold text-indigo-600">
         <Clapperboard className="h-3.5 w-3.5" /> 成片 · 长视频合成
@@ -403,8 +557,18 @@ function VideoNodeView({ id, data }: NodeProps<GraphNode>) {
 /* 主画布页面                                                           */
 /* ------------------------------------------------------------------ */
 
-let nodeCounter = 0;
-const nextId = () => `n${++nodeCounter}`;
+/** 生成不与现有节点冲突的 id：取现有 `n<数字>` 的最大编号 +1。
+ *  原先用模块级自增计数器（从 n1 开始），与 initialNodes 的硬编码 id（n1..n3）撞车：
+ *  点「添加节点」生成 n1/n2/n3 会**覆盖同 id 的老节点**，把成片节点悄悄换成文本节点 ——
+ *  表现出来就是"点了添加没反应，反而少了个节点"。改成看现有节点取最大值+1，稳态不会重号。 */
+const nextFreeNodeId = (list: GraphNode[]) => {
+  let max = 0;
+  for (const n of list) {
+    const m = /^n(\d+)$/.exec(n.id);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return `n${max + 1}`;
+};
 
 const initialNodes: GraphNode[] = [
   {
@@ -469,7 +633,7 @@ export default function CanvasPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   // URL ?anchorRefs 携带从小说转画布时生成的角色/场景锚定图
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const anchorRefsParam = searchParams.get('anchorRefs');
   const anchorRefs = useMemo(() => {
     if (!anchorRefsParam) return null;
@@ -733,7 +897,9 @@ export default function CanvasPage() {
     );
     // theme 随画布数据持久化：nodesJson 用 {theme, nodes} 包装（老数据是纯数组，加载时兼容）
     return {
-      nodesJson: JSON.stringify({ theme: dark ? 'dark' : 'light', nodes: nodes.map(({ id, type, position, data }) => ({ id, type, position, data })) }),
+      // 不把主题写进 nodesJson：黑/白底是画布的 UI 偏好（走 localStorage，全局一致），
+      // 混进画布数据会导致「切换项目就换主题」，也污染了本该只描述画布的内容。
+      nodesJson: JSON.stringify({ nodes: nodes.map(({ id, type, position, data }) => ({ id, type, position, data })) }),
       edgesJson,
     };
   }, [nodes, edges, dark]);
@@ -741,9 +907,11 @@ export default function CanvasPage() {
   // 删除当前项目：确认后服务端删除，本地清空为新建态
   const onDeleteProject = async () => {
     if (!currentProjectId) return;
+    // 别把"项目名"寄托在本地列表上：从小说页直开(?project=N)或列表还没加载完时，
+    // projects 里可能根本没有这一项 —— 原来的 `if (!p) return` 会让点删除毫无反应。
     const p = projects.find((x) => x.id === currentProjectId);
-    if (!p) return;
-    if (!window.confirm(`删除项目「${p.name}」？删除后画布内容不可恢复。`)) return;
+    const label = p?.name ?? projectName ?? `#${currentProjectId}`;
+    if (!window.confirm(`删除项目「${label}」？删除后画布内容不可恢复。`)) return;
     try {
       await deleteProject(currentProjectId);
       setProjects((ps) => ps.filter((x) => x.id !== currentProjectId));
@@ -751,6 +919,8 @@ export default function CanvasPage() {
       setProjectName('');
       setNodes(initialNodes);
       setEdges([]);
+      // 清掉 URL 上的 ?project=：否则刷新会回来加载一个刚被删掉的项目
+      setSearchParams({}, { replace: true });
       window.alert('已删除');
     } catch (e) {
       window.alert(e instanceof Error ? e.message : '删除失败');
@@ -811,6 +981,15 @@ export default function CanvasPage() {
     }
   };
 
+  // 删除节点时同步清掉关联连线（键盘 Delete/Backspace 删除也走这里）
+  const onNodesDelete = useCallback(
+    (deleted: GraphNode[]) => {
+      const ids = new Set(deleted.map((n) => n.id));
+      setEdges((es) => es.filter((e) => !ids.has(e.source) && !ids.has(e.target)));
+    },
+    [setEdges],
+  );
+
   // 保存当前画布到当前项目（无项目先新建）
   const onSaveCanvas = async () => {
     const { nodesJson, edgesJson } = serializeCanvas();
@@ -848,11 +1027,12 @@ export default function CanvasPage() {
         const ns = Array.isArray(parsed) ? parsed : (parsed.nodes ?? []);
         setNodes(ns);
         setEdges(JSON.parse(p.edgesJson ?? '[]'));
-        if (parsed.theme === 'dark' || parsed.theme === 'light') setDark(parsed.theme === 'dark');
+        // 主题不再从项目里读：黑/白底是全局 UI 偏好（localStorage 唯一来源）。
+        // 老项目 nodesJson 里可能残留 theme 字段——忽略即可，下次保存自动消失。
       } else {
         setNodes(initialNodes);
         setEdges(initialEdges);
-        setDark(true);
+        // 空项目也不强制切主题：保留用户当前的全局偏好
       }
       setCurrentProjectId(p.id);
       setProjectName(p.name);
@@ -942,7 +1122,7 @@ export default function CanvasPage() {
     (type: GraphNode['type']) => {
       setNodes((nds) => {
         const offset = nds.length * 40;
-        const base: GraphNode = { id: nextId(), type, position: { x: 60 + offset, y: 360 + offset }, data: {} as never };
+        const base: GraphNode = { id: nextFreeNodeId(nds), type, position: { x: 60 + offset, y: 360 + offset }, data: {} as never };
         if (type === 'textNode') {
           base.data = { content: '', mode: '自己编写' };
         } else if (type === 'imageNode') {
@@ -961,7 +1141,7 @@ export default function CanvasPage() {
       setNodes((nds) => [
         ...nds,
         {
-          id: nextId(),
+          id: nextFreeNodeId(nds),
           type: 'imageNode',
           position: { x: 380, y: 420 + nds.length * 40 },
           data: { imageUrl: url, prompt: '', ratio: '16:9' },
@@ -984,7 +1164,13 @@ export default function CanvasPage() {
   const { data: history } = useQuery({
     queryKey: ['canvas-history-images'],
     queryFn: async () => {
-      const { list } = await listTasks({ page: 1, size: 40, genType: 'text_image' });
+      // includeAssets：画布的一键文生图素材（source=canvas_asset）也要能选回来
+      const { list } = await listTasks({
+        page: 1,
+        size: 40,
+        genType: 'text_image',
+        includeAssets: true,
+      });
       return list.filter((t) => t.status === 'completed');
     },
     staleTime: 30_000,
@@ -1037,6 +1223,147 @@ export default function CanvasPage() {
       navigate('/');
     },
   });
+
+  // === 一键文生图：把所有「有提示词但还没有图」的图片节点依次生成首帧 ===
+  // 串行、不并发：agnes 图片侧有间隔限制，前端打满只会换来一串 429/队列满。
+  // 单张失败不中断整批（部分成功），进度与失败数实时显示在按钮上。
+  // 注意：批次由前端驱动，页面关掉就停——服务端化（可离开页面、跨设备可见）留到 P2。
+  const pendingImageNodes = useMemo(
+    () =>
+      nodes.filter((n) => {
+        if (n.type !== 'imageNode') return false;
+        const d = n.data as ImageNodeData;
+        return !(d.imageUrl || '').trim() && (d.prompt || '').trim().length > 0;
+      }),
+    [nodes],
+  );
+  // 每个节点生成几张候选（按张计费，3 张是「够挑又不浪费」的默认）
+  const [candidateCount, setCandidateCount] = useState(3);
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchDone, setBatchDone] = useState(0);
+  const [batchTotal, setBatchTotal] = useState(0);
+  const [batchFailed, setBatchFailed] = useState(0);
+  const batchStopRef = useRef(false);
+
+  const runBatchTextToImage = async () => {
+    const targets = pendingImageNodes.map((n) => ({
+      id: n.id,
+      prompt: ((n.data as ImageNodeData).prompt || '').trim(),
+    }));
+    if (targets.length === 0) return;
+    batchStopRef.current = false;
+    setBatchRunning(true);
+    setBatchDone(0);
+    setBatchFailed(0);
+    setBatchTotal(targets.length);
+    let failed = 0;
+    for (let i = 0; i < targets.length; i++) {
+      if (batchStopRef.current) break;
+      const t = targets[i];
+      try {
+        const urls = await generateOneImage(t.prompt, candidateCount);
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === t.id
+              ? { ...n, data: { ...n.data, candidates: urls, imageUrl: urls[0] } }
+              : n,
+          ),
+        );
+      } catch (e) {
+        failed += 1;
+        setBatchFailed(failed);
+        console.warn('批量文生图失败:', t.id, e);
+      }
+      setBatchDone(i + 1);
+    }
+    setBatchRunning(false);
+  };
+
+  // === 一键回填：从历史素材任务里把已生成的图找回节点 ===
+  // 场景：之前生成过、但画布没保存（刷新/重启/换浏览器）→ 节点显示「待生成」，
+  // 而图其实还在（素材任务 source=canvas_asset 保留在库里，agnes URL 仍有效）。
+  // 按 prompt 精确匹配即可——节点 prompt 是唯一的，不会张冠李戴。
+  const [backfillCount, setBackfillCount] = useState<number | null>(null);
+  const backfillMutation = useMutation({
+    mutationFn: async () => {
+      const { list } = await listTasks({
+        page: 1,
+        size: 50,
+        genType: 'text_image',
+        includeAssets: true,
+      });
+      const byPrompt = new Map<string, string[]>();
+      for (const t of list) {
+        if (t.status !== 'completed') continue;
+        const key = (t.prompt || '').trim();
+        if (!key || byPrompt.has(key)) continue;
+        const urls = parseImageUrls(t.imageUrls);
+        if (urls.length > 0) byPrompt.set(key, urls);
+      }
+      let filled = 0;
+      setNodes((nds) =>
+        nds.map((n) => {
+          if (n.type !== 'imageNode') return n;
+          const d = n.data as ImageNodeData;
+          if ((d.imageUrl || '').trim()) return n;
+          const urls = byPrompt.get((d.prompt || '').trim());
+          if (!urls) return n;
+          filled += 1;
+          return { ...n, data: { ...n.data, candidates: urls, imageUrl: urls[0] } };
+        }),
+      );
+      return filled;
+    },
+    onSuccess: (filled) => setBackfillCount(filled),
+  });
+
+  // === 自动保存：节点/连线有实质变化就防抖写回项目（1.2s） ===
+  // 不自动保存的后果：一键文生图回填的图片只活在内存里，刷新/服务重启后节点又变回「待生成」。
+  // 用「上次快照」比对，避免刚加载完项目就白写一次。
+  const lastSavedSnapshotRef = useRef('');
+  useEffect(() => {
+    if (currentProjectId === null) return;
+    const { nodesJson, edgesJson } = serializeCanvas();
+    const key = `${nodesJson}|${edgesJson}`;
+    if (lastSavedSnapshotRef.current === '') {
+      lastSavedSnapshotRef.current = key; // 首轮 = 刚加载完项目，记快照不写库
+      return;
+    }
+    if (lastSavedSnapshotRef.current === key) return;
+    const timer = setTimeout(() => {
+      saveProject(currentProjectId, { nodesJson, edgesJson })
+        .then(() => {
+          lastSavedSnapshotRef.current = key;
+        })
+        .catch(() => {
+          /* 静默：自动保存失败不打断操作，顶栏「保存」仍可兜底 */
+        });
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, [nodes, edges, currentProjectId, serializeCanvas]);
+
+  // === 成片顺序写进图片节点（画布上显示「第 N 段」）===
+  // chain 按 x 坐标排序 → 拖动节点即改顺序；不显示序号用户根本判断不出提交顺序。
+  useEffect(() => {
+    const order = new Map<string, number>();
+    let seq = 0;
+    for (const id of chain) {
+      const node = nodes.find((x) => x.id === id);
+      if (node?.type === 'imageNode') order.set(id, (seq += 1));
+    }
+    if (order.size === 0) return;
+    setNodes((nds) => {
+      let changed = false;
+      const next = nds.map((node) => {
+        if (node.type !== 'imageNode') return node;
+        const want = order.get(node.id) ?? 0;
+        if ((node.data as { __order?: number }).__order === want) return node;
+        changed = true;
+        return { ...node, data: { ...node.data, __order: want } };
+      });
+      return changed ? next : nds;
+    });
+  }, [chain, nodes, setNodes]);
 
   const canSubmit = plan.segments.length > 0 || plan.texts.length > 0;
   const totalSeconds = plan.segments.length * plan.videoSeconds;
@@ -1165,7 +1492,7 @@ export default function CanvasPage() {
             disabled={!currentProjectId}
             className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${theme.btn} disabled:cursor-not-allowed disabled:opacity-40`}
           >
-            <Trash2 className="h-3.5 w-3.5" /> 删除
+            <Trash2 className="h-3.5 w-3.5" /> 删除项目
           </button>
           {/* 背景深/浅切换 */}
           <button
@@ -1413,7 +1740,13 @@ export default function CanvasPage() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onNodesDelete={onNodesDelete}
+            // 键盘删除节点：Windows 用户习惯 Delete，Backspace 是 React Flow 默认值
+            deleteKeyCode={['Delete', 'Backspace']}
             nodeTypes={nodeTypes}
+            // React Flow 自带的控件（缩放/适配）跟随全局主题；
+            // 不传的话它默认 colorMode='light'，黑底画布上仍是白色控件。
+            colorMode={dark ? 'dark' : 'light'}
             fitView
             minZoom={0.15}
             maxZoom={2.5}
@@ -1559,6 +1892,63 @@ export default function CanvasPage() {
                   <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-indigo-500" />
                 )}
               </button>
+              {(pendingImageNodes.length > 0 || batchRunning) && (
+                <>
+                  <select
+                    value={candidateCount}
+                    onChange={(e) => setCandidateCount(Number(e.target.value))}
+                    disabled={batchRunning}
+                    title="每个节点生成几张候选图供你挑一张（按张计费）"
+                    className={`rounded-lg border px-2 py-1 text-xs outline-none disabled:opacity-50 ${theme.input}`}
+                  >
+                    <option value={1}>候选 1 张</option>
+                    <option value={3}>候选 3 张</option>
+                    <option value={5}>候选 5 张</option>
+                  </select>
+                  {!batchRunning && (
+                    <button
+                      type="button"
+                      onClick={() => backfillMutation.mutate()}
+                      disabled={backfillMutation.isPending}
+                      title="从历史素材任务里按提示词找回已生成的图，不重新花钱生成（画布没保存过时用这个救回来）"
+                      className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${theme.btn} disabled:opacity-50`}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      {backfillMutation.isPending ? '回填中…' : '回填已生成图'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (batchRunning) {
+                        batchStopRef.current = true;
+                        return;
+                      }
+                      void runBatchTextToImage();
+                    }}
+                    title="把所有「有提示词但还没图」的图片节点依次生成首帧图（串行跑，避免平台限流；只花图片额度，不消耗视频额度）"
+                    className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${theme.btn}`}
+                  >
+                    {batchRunning ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> 生成中 {batchDone}/{batchTotal}（点此停止）
+                      </>
+                    ) : (
+                      <>
+                        <Wand2 className="h-3.5 w-3.5" /> 一键文生图（{pendingImageNodes.length}）
+                      </>
+                    )}
+                  </button>
+                  {!batchRunning && batchFailed > 0 && (
+                    <span className="text-[10px] text-amber-500">失败 {batchFailed} 张</span>
+                  )}
+                  {!batchRunning && backfillCount !== null && (
+                    <span className="text-[10px] text-emerald-600">
+                      {backfillCount > 0 ? `已找回 ${backfillCount} 个节点的图` : '没找到匹配的历史图'}
+                    </span>
+                  )}
+                </>
+              )}
               <div className="h-8 w-px bg-slate-700" />
               <button
                 onClick={() => {
@@ -1574,6 +1964,11 @@ export default function CanvasPage() {
                   mutation.mutate();
                 }}
                 disabled={!canSubmit || mutation.isPending}
+                title={
+                  canSubmit
+                    ? '按连线顺序逐段生成视频，模型侧自动拼接成片'
+                    : '还没有可生成的片段：至少需要 1 张已生成的图片（点左边「一键文生图」）或 1 个非空文本节点'
+                }
                 className="rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {mutation.isPending ? (

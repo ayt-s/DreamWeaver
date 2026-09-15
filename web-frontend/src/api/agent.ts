@@ -47,6 +47,21 @@ export async function agentChat(
   return resp.data.data;
 }
 
+/**
+ * 单轮文本生成（画布文本节点的「AI 生成/改写」）。
+ * 与 agentChat 的区别：不带画布工具、不走对话循环，直接返回一段纯文本，快且干净。
+ */
+export async function generateText(instruction: string, context = ''): Promise<string> {
+  const resp = await agentClient.post<{ code: number; message: string; data?: { text?: string } }>(
+    '/text/generate',
+    { instruction, context },
+  );
+  if (resp.data.code !== 0) {
+    throw new Error(resp.data.message || 'AI 生成失败');
+  }
+  return (resp.data.data?.text ?? '').trim();
+}
+
 /** 单镜质检结果（agent nodes/qc.py 产出） */
 export interface QcShotReport {
   index: number;
