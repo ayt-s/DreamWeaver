@@ -34,6 +34,31 @@ def _quiet_side_effects(monkeypatch):
     monkeypatch.setattr(settings, "heartbeat_interval_s", 3600, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _forbid_real_agnes_calls(monkeypatch):
+    """禁止测试打真实 Agnes API：任何忘了注入替身的调用直接报错。
+
+    **为什么必须有（2026-09-15 实测踩到）**：`app/nodes/video.py` 与
+    `app/tools/video.py` **各自** `from app.gateway.agnes import gateway`，
+    只 patch 其中一处时另一处仍会打真实 API。症状是**测试挂住**
+    （等 503 退避重试，实测 31.2s × 6 次），严重时会真的提交任务烧额度。
+    这条夹具让这类遗漏立刻以 AssertionError 暴露，而不是静默打网络。
+    """
+    from app.gateway.agnes import AgnesGateway
+
+    def _boom(name: str):
+        def _raise(*args, **kwargs):
+            raise AssertionError(
+                f"测试调用了真实 Agnes 网关的 {name}()：请注入替身。"
+                f"注意 app.nodes.* 与 app.tools.* 各有自己的 gateway 引用，两处都要 patch"
+            )
+        return _raise
+
+    for name in ("chat", "submit_video", "query_video", "generate_image"):
+        if hasattr(AgnesGateway, name):
+            monkeypatch.setattr(AgnesGateway, name, _boom(name))
+
+
 # === 测试隔离：产物目录 + asset_fetch 下载替身 ===
 @pytest.fixture(autouse=True)
 def _isolate_outputs_and_asset_fetch(monkeypatch, tmp_path):
