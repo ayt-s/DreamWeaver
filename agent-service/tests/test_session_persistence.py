@@ -883,3 +883,109 @@ async def test_heartbeat_posts_and_swallows_failures(monkeypatch):
     assert hits[0][0].endswith("/internal/heartbeat")
     assert hits[0][1] == {"session_id": "hb-2"}
     assert alive_despite_failures
+
+
+# ==========================================================================
+# 5. 查询接口回落 Redis 快照（F1）
+# ==========================================================================
+
+def _snapshot(sid: str) -> dict:
+    return {
+        "session_id": sid,
+        "status": "completed",
+        "video_urls": ["http://x/seg0.mp4"],
+        "brief": {"theme": "主题"},
+        "storyboard": [{"shot_id": 0, "prompt_en": "p0"}],
+        "trace": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_task_falls_back_to_redis_snapshot(monkeypatch):
+    """内存态已被 `_release_session` 释放，但 Redis 快照还在 → 必须返回 200 而不是 404。
+
+    回归背景：`_sessions` 在会话终态后保留 1 小时就 pop，而 Redis 快照 TTL 更长。
+    原先接口只读内存 → 之后查同一 session 直接 404，而前端 `TrajectoryPanel`
+    每 3s 轮询这个接口 → 轨迹面板变成永久报错，即使数据其实还在 Redis 里。
+    """
+    import app.main as main_mod
+    from app import session_store
+
+    sid = f"f1-{uuid.uuid4().hex[:8]}"
+    main_mod._sessions.pop(sid, None)          # 前置：内存里没有
+
+    async def _load_state(_sid):
+        assert _sid == sid
+        return copy.deepcopy(_snapshot(sid))
+
+    monkeypatch.setattr(session_store, "load_state", _load_state)
+
+    try:
+        resp = await main_mod.get_task(sid)
+        assert resp.code == 0
+        assert resp.data["session_id"] == sid
+        assert resp.data["status"] == "completed"
+        # 顺手回填内存：前端 3s 轮询一次，不回填就每次都打 Redis
+        assert main_mod._sessions[sid]["session_id"] == sid
+    finally:
+        main_mod._sessions.pop(sid, None)
+
+
+@pytest.mark.asyncio
+async def test_get_task_prefers_memory_over_redis(monkeypatch):
+    """内存命中时不应碰 Redis（轮询很密，避免无谓往返）。"""
+    import app.main as main_mod
+    from app import session_store
+
+    sid = f"f1-mem-{uuid.uuid4().hex[:6]}"
+    main_mod._sessions[sid] = _snapshot(sid)
+
+    async def _boom(_sid):
+        raise AssertionError("内存命中时不该查 Redis")
+
+    monkeypatch.setattr(session_store, "load_state", _boom)
+
+    try:
+        resp = await main_mod.get_task(sid)
+        assert resp.data["session_id"] == sid
+    finally:
+        main_mod._sessions.pop(sid, None)
+
+
+@pytest.mark.asyncio
+async def test_get_task_404_when_both_memory_and_redis_miss(monkeypatch):
+    """两处都没有才 404（不能把「真的不存在」也返回 200）。"""
+    from app import session_store
+    from app.errors import AppError
+    import app.main as main_mod
+
+    sid = f"f1-miss-{uuid.uuid4().hex[:6]}"
+    main_mod._sessions.pop(sid, None)
+
+    async def _load_state(_sid):
+        return None
+
+    monkeypatch.setattr(session_store, "load_state", _load_state)
+
+    with pytest.raises(AppError) as ei:
+        await main_mod.get_task(sid)
+    assert ei.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_task_tolerates_redis_outage(monkeypatch):
+    """Redis 不可用时 load_state 返回 None（已静默降级）→ 正常 404，不抛连接异常。"""
+    from app import session_store
+    from app.errors import AppError
+    import app.main as main_mod
+
+    sid = f"f1-down-{uuid.uuid4().hex[:6]}"
+    main_mod._sessions.pop(sid, None)
+
+    async def _load_state(_sid):
+        return None   # session_store.load_state 在 Redis 挂掉时的契约就是 None
+
+    monkeypatch.setattr(session_store, "load_state", _load_state)
+
+    with pytest.raises(AppError):
+        await main_mod.get_task(sid)

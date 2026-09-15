@@ -499,9 +499,24 @@ def _parse_last_event_id(raw: str | None) -> int | None:
 
 @app.get("/v1/tasks/{session_id}", response_model=ApiResponse)
 async def get_task(session_id: str) -> ApiResponse:
+    """查询会话状态。
+
+    **内存未命中时回落 Redis 快照**（F1）：内存态 `_sessions` 在会话终态后
+    保留 1 小时就释放（`_release_session`），而 Redis 快照的 TTL 更长 ——
+    原先这里直接 404，前端 `TrajectoryPanel` 每 3s 轮询就会变成永久报错，
+    即使数据其实还在 Redis 里。
+
+    命中快照时顺手回填内存，后续轮询就走快路径。
+    """
     state = _sessions.get(session_id)
     if not state:
-        raise AppError("session 不存在", status_code=404)
+        snapshot = await session_store.load_state(session_id)
+        if not snapshot:
+            raise AppError("session 不存在", status_code=404)
+        state = snapshot
+        # 回填内存：前端轮询很密（3s 一次），不回填就会每次都打 Redis
+        _sessions[session_id] = state
+        logger.debug("会话 %s 内存未命中，已从 Redis 快照回填", session_id)
     return ApiResponse(
         code=0,
         message="ok",
