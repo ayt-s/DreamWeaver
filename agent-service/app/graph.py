@@ -24,7 +24,6 @@
 import logging
 
 from langgraph.graph import END, StateGraph
-from langgraph.checkpoint.memory import MemorySaver
 
 from app.state import CreativeSessionState, TaskStatus
 from app.nodes.parser import requirement_parser_node
@@ -210,6 +209,20 @@ graph.add_edge("fix_give_up", "notify_final")
 # 图的唯一终态出口：恰好发一次完成回调（A9）
 graph.add_edge("notify_final", END)
 
-# MemorySaver 开发用；生产换 PostgresSaver（设计文档 §4.1）
-checkpointer = MemorySaver()
-compiled_graph = graph.compile(checkpointer=checkpointer)
+# 刻意**不装 checkpointer**：恢复统一走 session_store.py 的 Redis 快照 + recovery.py。
+#
+# 为什么删掉 MemorySaver（原先写着「开发用，生产换 PostgresSaver」）：
+#   1. **零功能**：全仓 grep `get_state` / `update_state` / `get_state_history` 零命中，
+#      没有任何地方做「从 checkpoint 恢复」；recovery.py 是「重建 state + 从入口重新入队」，
+#      完全不碰 checkpointer。
+#   2. **粒度不对**：checkpointer 的粒度是「节点边界」，救不了 video_generator 全段并发
+#      提交中途被杀的场景（见 session_store.py 顶部注释；video.py 里也是同一句）。
+#   3. **无界内存泄漏**：实测跑 300 个不同 thread_id → saver.storage 0 → 300 条，
+#      **永不被清理**，每条含一份完整 state 副本。生产上跑得越久占用越大。
+#
+# 实测依据（2026-09-15）：去掉 checkpointer 后跑全量真实测试 → 零回归
+# （且那是含 set_conditional_entry_point + 4 处 conditional_edges 的真实图，不是玩具图）。
+#
+# 若将来需要 interrupt()（human-in-the-loop）或时间旅行调试，再装 —— 那时应配
+# 带 TTL 的持久化 saver（如 PostgresSaver），而不是内存版。
+compiled_graph = graph.compile()

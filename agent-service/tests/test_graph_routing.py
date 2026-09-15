@@ -64,6 +64,26 @@ def test_old_direct_edges_are_gone():
     assert ("video_generator", "synthesizer") not in edges
 
 
+def test_graph_compiled_without_checkpointer():
+    """**锁定「不装 checkpointer」的决定**（批次 G）。
+
+    MemorySaver 在本项目里提供**零功能、只提供无界内存泄漏**：
+    - 全仓 grep `get_state`/`update_state`/`get_state_history` 零命中，
+      恢复统一走 session_store 的 Redis 快照 + recovery.py
+    - 实测跑 300 个 thread_id → saver.storage 累积 300 条且**永不清理**，
+      每条含一份完整 state 副本
+    - 粒度也不对：checkpointer 是「节点边界」，救不了 video_generator
+      全段并发提交中途被杀的场景
+
+    若将来确实需要（interrupt / human-in-the-loop / 时间旅行调试），
+    请配**带 TTL 的持久化 saver**（如 PostgresSaver）并删除本测试 —— 不要退回内存版。
+    """
+    from app import graph
+
+    assert graph.compiled_graph.checkpointer is None
+    assert not hasattr(graph, "MemorySaver"), "MemorySaver 不该再被导入"
+
+
 def test_synthesizer_and_qc_still_terminal_downstream():
     """回归护栏（A9 + B2 后更新）：QC 通过 → notify_final；QC 失败 → fix_looping
     → （retry | fix_give_up）→ 最终都汇到 notify_final。
