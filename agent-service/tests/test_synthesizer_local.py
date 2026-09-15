@@ -125,6 +125,39 @@ async def test_local_file_deleted_on_disk_is_refetched(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_no_video_urls_notifies_failed(monkeypatch, tmp_path):
+    """画布模式全镜失败：必须补发「失败」回调。
+
+    A9 把 video_generator 的终态回调挪走后，这条兜底只能由 synthesizer 接住 ——
+    否则整条链路一次回调都不发，Java 任务会卡在 queued 直到看门狗兜底成 interrupted。
+    """
+    rec = _make_fakes(monkeypatch, tmp_path)
+
+    state = {
+        "session_id": "s10",
+        "segments": [{"prompt": "a"}],
+        "video_urls": [],
+        "video_error": "seg0=平台限流; seg1=平台限流",
+    }
+    out = await synthesizer.synthesizer_node(state)
+
+    assert out["status"] == "failed" or str(out["status"]).endswith("failed")
+    assert rec["notified"][0]["status"] == "failed"
+    assert "seg0=平台限流" in rec["notified"][0]["error_message"]
+    assert out["final_video_url"] == ""
+
+
+@pytest.mark.asyncio
+async def test_no_video_urls_without_reason_still_notifies(monkeypatch, tmp_path):
+    rec = _make_fakes(monkeypatch, tmp_path)
+    await synthesizer.synthesizer_node(
+        {"session_id": "s11", "segments": [{"prompt": "a"}], "video_urls": []})
+
+    assert rec["notified"][0]["status"] == "failed"
+    assert rec["notified"][0]["error_message"]
+
+
+@pytest.mark.asyncio
 async def test_concat_failure_degrades_to_passthrough(monkeypatch, tmp_path):
     """拼接失败 → 透传原 video_urls + error_message 带回 Java（不标 failed）。"""
     rec = _make_fakes(monkeypatch, tmp_path)

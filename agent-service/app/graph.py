@@ -4,8 +4,14 @@
 - 无限画布图生视频（segments 非空）：canvas_storyboarder → video_generator → asset_fetch
   → synthesizer → END
 - 标准文生视频/图生视频（segments 为空）：requirement_parser → script_writer → storyboarder
-  → image_generator → video_generator → asset_fetch → qc_checker → END
+  → image_generator → video_generator → asset_fetch → qc_checker → notify_final → END
 - 文生图模式：image_generator 之后直达 END（只出图不出视频）
+
+**notify_final（A9 接入）**：图里**唯一**发终态回调的地方。此前标准模式的回调在
+`video_generator` 内发出，位置在 QC **之前** → Java 任务立刻转终态，导致
+(1) `NotifyServiceImpl` 的终态检查会丢弃 fix_looping 重生后的回调、
+(2) `handleHeartbeat` 对终态任务回 `tracked=false` 而 agent 把它当中止信号 →
+自愈循环被自己掐死。回调收敛到终态后这两个问题一并消失。
 
 **asset_fetch（A4 接入）**：video_generator 产出的是 agnes 公网直链，QC 只能检本地文件，
 所以必须先把产物落到本地再进 QC。原先下载只发生在 synthesizer 内部，而标准模式
@@ -28,6 +34,7 @@ from app.nodes.asset_fetch import asset_fetch_node
 from app.nodes.synthesizer import synthesizer_node
 from app.nodes.image_slideshow import image_slideshow_node
 from app.nodes.qc import qc_checker_node
+from app.nodes.notify_final import notify_final_node
 
 
 def _fix_looping_node(state: CreativeSessionState) -> dict:
@@ -97,7 +104,8 @@ graph.add_node("asset_fetch", asset_fetch_node)
 graph.add_node("qc_checker", qc_checker_node)
 graph.add_node("synthesizer", synthesizer_node)
 graph.add_node("image_slideshow", image_slideshow_node)
-graph.add_node("fix_looping", _fix_looping_node)  # Phase 2 stub
+graph.add_node("fix_looping", _fix_looping_node)  # Phase 2 stub（B 批次重写为真循环）
+graph.add_node("notify_final", notify_final_node)
 
 # === 入口路由 ===
 graph.set_conditional_entry_point(
@@ -137,12 +145,21 @@ graph.add_conditional_edges(
 graph.add_edge("synthesizer", END)
 graph.add_edge("image_slideshow", END)
 
-# QC 结果分支
+# QC 结果分支：通过 → 终态通知；失败 → fix_looping（B 批次改为真循环）
 graph.add_conditional_edges(
     "qc_checker",
     _qc_route,
-    {"qc_passed": END, "qc_failed": "fix_looping"},
+    {"qc_passed": "notify_final", "qc_failed": "fix_looping"},
 )
+
+# fix_looping 暂时直达终态通知（B 批次会改成条件边：
+# retry → video_generator 继续修，give_up → notify_final）。
+# 现在必须保留这条出边 —— 否则 QC 失败的任务既不发回调也不终止，
+# Java 侧只能等看门狗兜底成 interrupted。
+graph.add_edge("fix_looping", "notify_final")
+
+# 图的唯一终态出口：恰好发一次完成回调（A9）
+graph.add_edge("notify_final", END)
 
 # MemorySaver 开发用；生产换 PostgresSaver（设计文档 §4.1）
 checkpointer = MemorySaver()

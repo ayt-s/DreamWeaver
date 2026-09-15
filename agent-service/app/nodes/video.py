@@ -146,41 +146,22 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
     video_urls = [url_by_index[i] for i in sorted(url_by_index)]
     video_ids = [id_by_index[i] for i in sorted(id_by_index)]
 
-    # 完成回调：标准模式整会话发一次，携带全量 URL 数组；全镜失败则发失败态。
-    # 画布模式（segments 非空）不回这里发完成通知——synthesizer 拼接出长视频后统一回调，
-    # 避免 Java 任务先被 completed 落定、后续拼接 URL 无法再更新。
-    canvas_mode = bool(state.get("segments"))
-    # 序列化 storyboard 为 JSON（Java 侧保存为 segments_json，供段重生用）
-    import json as _json
-    sb_json = _json.dumps(state.get("storyboard") or [], ensure_ascii=False)
-    if not canvas_mode:
-        if video_urls:
-            _notify_unified(
-                state["session_id"], TaskStatus.COMPLETED,
-                video_urls=video_urls, storyboard=sb_json,
-            )
-        else:
-            _notify_unified(
-                state["session_id"], TaskStatus.FAILED,
-                error_message=_format_error_msgs(error_msgs) or "所有镜次视频生成失败",
-                storyboard=sb_json,
-            )
-    else:
-        # 画布模式全镜失败 → 也补发失败态（否则 Java 任务永远 pending）
-        if not video_urls:
-            _notify_unified(
-                state["session_id"], TaskStatus.FAILED,
-                error_message=_format_error_msgs(error_msgs) or "所有片段视频生成失败",
-            )
-        else:
-            logger.info(
-                "画布模式 video_generator 完成（%d 段），完成回调推迟到 synthesizer",
-                len(video_urls),
-            )
+    # 遍历结束，把生成阶段的错误汇总进 state，供终态节点 notify_final 一次性带回 Java。
+    #
+    # ⚠️ 这里**刻意不再发终态回调**（Task A9）：
+    #   标准模式的回调原先在这里发，位置在 QC **之前** → Java 任务立刻转终态，
+    #   于是 (1) NotifyServiceImpl 的终态检查会丢弃后续回调，fix_looping 重生后的
+    #   产物永远送不到 Java；(2) handleHeartbeat 对已终态任务回 tracked=false，
+    #   而 main.py 把它当中止信号 → abort.mark → 自愈循环在第一轮就被自己掐死。
+    #   现在回调收敛到图的真正终态（nodes/notify_final.py），保证恰好发一次。
+    video_error = _format_error_msgs(error_msgs)
+    if video_error:
+        logger.warning("video_generator 存在失败镜次: %s", video_error)
 
     return {
         "video_urls": video_urls,
         "video_ids": video_ids,
+        "video_error": video_error,
         "trace": trace,
         "status": TaskStatus.VIDEO_GENERATING,
     }
@@ -191,6 +172,9 @@ def _format_error_msgs(msgs: list[str]) -> str:
 
     格式：`seg0=<错误>; seg1=<错误>; ...`。
     单个错误超过 200 字截断，避免 Java error_message 字段过长。
+
+    A9 起不再直接回调 Java，而是写进 `state["video_error"]`，
+    由终态节点 notify_final 统一带回。
     """
     if not msgs:
         return ""
@@ -201,23 +185,3 @@ def _format_error_msgs(msgs: list[str]) -> str:
             s = s[:200] + "..."
         parts.append(f"seg{i}={s}")
     return "; ".join(parts)
-
-
-def _notify_unified(session_id: str, status: str,
-                    video_urls: list[str] | None = None,
-                    error_message: str | None = None,
-                    storyboard: str | None = None) -> None:
-    """fire-and-forget 通知 Java（不阻塞节点返回）。"""
-    from app.callback.java_notify import notify_java_completion
-    asyncio.create_task(
-        notify_java_completion(
-            video_id="",  # 整会话回调不依赖单镜 video_id，Java 按 session_id 关联
-            session_id=session_id,
-            shot_index=None,
-            status=status,
-            video_url=" ".join(video_urls or []),  # 兼容单值字段；主载荷走 video_urls
-            video_urls=video_urls or [],
-            error_message=error_message,
-            storyboard=storyboard,
-        )
-    )

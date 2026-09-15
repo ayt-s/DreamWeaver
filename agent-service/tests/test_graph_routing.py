@@ -65,8 +65,33 @@ def test_old_direct_edges_are_gone():
 
 
 def test_synthesizer_and_qc_still_terminal_downstream():
-    """回归护栏：synthesizer → END，qc_checker 仍分叉到 END/fix_looping。"""
+    """回归护栏（A9 后更新）：QC 通过 → notify_final；QC 失败 → fix_looping → notify_final。
+
+    ⚠️ `qc_checker` 不再直连 END：终态回调统一由 notify_final 发出，
+    否则回调会发生在 QC 之前，Java 任务提前转终态 → fix_looping 的产物被丢弃。
+    """
     edges = _edges()
     assert ("synthesizer", "__end__") in edges
-    assert ("qc_checker", "__end__") in edges
+    assert ("qc_checker", "notify_final") in edges
     assert ("qc_checker", "fix_looping") in edges
+    assert ("fix_looping", "notify_final") in edges
+    assert ("notify_final", "__end__") in edges
+
+
+def test_qc_never_reaches_end_directly():
+    """A9 的核心约束：终态回调必须发生在 QC 之后。
+
+    若 qc_checker 存在直达 END 的边，说明回调又回到了 QC 之前的位置。
+    """
+    edges = _edges()
+    assert ("qc_checker", "__end__") not in edges
+
+
+def test_notify_final_is_reachable_from_every_video_terminal():
+    """防止某条路径既不发回调也不终止（任务卡 queued 只能等看门狗兜底）。"""
+    g = compiled_graph.get_graph()
+    edges = {(e.source, e.target) for e in g.edges}
+    # 视频链路的两个终端必须都能到 notify_final
+    assert ("qc_checker", "notify_final") in edges or ("qc_checker", "fix_looping") in edges
+    assert ("fix_looping", "notify_final") in edges
+    assert "notify_final" in g.nodes

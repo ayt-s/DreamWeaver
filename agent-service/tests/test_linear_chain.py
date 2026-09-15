@@ -124,8 +124,11 @@ async def test_linear_chain_with_image_gen():
     config = {"configurable": {"thread_id": "test-001"}}
     result = await graph.compiled_graph.ainvoke(state, config=config)
 
-    # 1. 全链路走完 → status 到 QC_CHECKING
-    assert result["status"] == TaskStatus.QC_CHECKING
+    # 1. 全链路走完 → status 到 COMPLETED
+    #    （A9 前这里是 QC_CHECKING：qc_checker 返回该状态且直连 END，
+    #      于是一个跑完的任务对外显示「质检中」。回调收敛到终态节点
+    #      notify_final 之后，终态语义才正确。）
+    assert result["status"] == TaskStatus.COMPLETED
 
     # 2. brief / script / storyboard 逐层产出
     assert result["brief"]["theme"] == "产品宣传"

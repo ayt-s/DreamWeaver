@@ -53,10 +53,18 @@ async def synthesizer_node(state: CreativeSessionState) -> dict:
 
     video_urls = list(state.get("video_urls", []))
     if not video_urls:
+        # 画布模式全镜失败会走到这里。A9 把 video_generator 的终态回调挪走后，
+        # 本分支必须自己补发失败态 —— 否则整条链路一次回调都不发，
+        # Java 任务会一直卡在 queued，只能等看门狗兜底成 interrupted。
         logger.warning("synthesizer: 无视频可拼接")
         await events.emit(session_id, "node_completed",
                           {"node_id": "synthesizer", "summary": "无视频，跳过拼接"})
-        return {"status": TaskStatus.COMPLETED, "final_video_url": ""}
+        await _notify_final(
+            session_id, "failed", [],
+            error_message=str(state.get("video_error") or "所有片段视频生成失败"),
+        )
+        await events.emit(session_id, "failed", {})
+        return {"status": TaskStatus.FAILED, "final_video_url": ""}
 
     shot_dir = session_dir(session_id)
     # 优先复用 asset_fetch 已下载的本地文件（画布模式下载次数 2 → 1）
