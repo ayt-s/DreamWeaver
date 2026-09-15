@@ -6,9 +6,17 @@ import type {
   NovelSegment,
 } from '../types/novel';
 
-/** 提交预处理（同步等待 agent，10-60s） */
+/**
+ * 提交预处理（同步等待 agent）。
+ * 前端超时必须大于后端对 agent 的超时（180s），否则后端还在等、前端先放弃。
+ */
 export function preprocessNovel(req: NovelPreprocessRequest): Promise<NovelProject> {
-  return unwrap(client.post('/novel/preprocess', req, { timeout: 120_000 }));
+  return unwrap(client.post('/novel/preprocess', req, { timeout: 240_000 }));
+}
+
+/** 删除小说项目记录（只删本记录；它生成的画布项目不受影响） */
+export function deleteNovelProject(id: number): Promise<void> {
+  return unwrap(client.delete(`/novel/${id}`));
 }
 
 /** 查询项目 */
@@ -29,7 +37,20 @@ export function updateSegments(
   return unwrap(client.put(`/novel/${id}/segments`, { segments }));
 }
 
-/** 转画布：把分镜落成 canvas project */
-export function toCanvas(id: number): Promise<CanvasProjectRef> {
-  return unwrap(client.post(`/novel/${id}/to-canvas`));
+/**
+ * 转画布：把分镜落成 canvas project（后端幂等：已绑定画布则复用更新）。
+ * 锚定图随请求落库到 canvas_project.character_refs/scene_refs，
+ * 这样刷新画布、换设备都还在（此前只靠 URL query + localStorage）。
+ */
+export function toCanvas(
+  id: number,
+  anchors?: { characters?: Record<string, string>; scenes?: Record<string, string> },
+): Promise<CanvasProjectRef> {
+  const body = anchors
+    ? {
+        characterRefs: JSON.stringify(anchors.characters ?? {}),
+        sceneRefs: JSON.stringify(anchors.scenes ?? {}),
+      }
+    : {};
+  return unwrap(client.post(`/novel/${id}/to-canvas`, body));
 }

@@ -28,8 +28,17 @@ public class NovelSegment {
     /** 场景描述 */
     private String scene;
 
-    /** 镜头机位/运镜 */
+    /** 镜头机位/运镜（自由文本，供人读与拼提示词） */
     private String camera;
+
+    /** 结构化景别：远景/全景/中景/近景/特写（画布 dropdown 用；空=不指定） */
+    private String shotSize;
+
+    /** 结构化机位：平视/俯拍/仰拍/航拍/过肩（空=不指定） */
+    private String angle;
+
+    /** 结构化运镜：固定/推近/拉远/摇镜/移镜/跟拍/环绕（空=不指定） */
+    private String movement;
 
     /** 时长（秒） */
     private Integer seconds;

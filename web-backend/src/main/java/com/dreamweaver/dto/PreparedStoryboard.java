@@ -20,6 +20,9 @@ public class PreparedStoryboard {
     /** 主要场景列表 */
     private List<String> scenes;
 
+    /** agent 实际生效的视觉风格（空入参时为 AI 分析结果） */
+    private String visualStyle;
+
     /** 分镜片段 */
     private List<NovelSegment> segments;
 

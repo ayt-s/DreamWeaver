@@ -48,6 +48,10 @@ class CreativeSessionState(TypedDict):
     total_seconds: NotRequired[int]
     # 时间轴：镜头数。给了则约束 LLM 分镜数量，每镜时长 = 总时长 / 镜头数
     shot_count: NotRequired[int]
+    # 直出图（画布节点「一键文生图」）：跳过需求解析/剧本/分镜，直接按 raw_prompt 出图
+    direct_image: NotRequired[bool]
+    # 直出图的候选张数（1~5）：同 prompt 多次请求，产出多个候选供人选一张
+    image_count: NotRequired[int]
     # 全局运镜倾向：{shot_size, angle, movement}（标准模式 LLM 自由分镜时注入）
     shot_language: NotRequired[dict]
     # 元素语义绑定：[{name, image_index}]，image_index 为 1-based（对应 <Picture N>）

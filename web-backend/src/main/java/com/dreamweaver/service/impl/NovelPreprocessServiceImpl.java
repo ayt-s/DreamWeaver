@@ -68,8 +68,17 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
 
     // ========== 1. 预处理 ==========
 
+    /** agent 预处理超时（秒）：切章 + 综合分析 + 分镜 + 拼装，实测 30~90s，给足余量 */
+    private static final long PREPROCESS_TIMEOUT_S = 180;
+
+    /**
+     * 预处理。
+     *
+     * <p>⚠️ 刻意**不加** {@code @Transactional}：方法体内有最长 180s 的同步 HTTP 调用，
+     * 包在事务里会长时间占着数据库连接（并发几个请求就能打满连接池）。
+     * 方法内只有最后一条 insert，本身不需要事务边界。</p>
+     */
     @Override
-    @Transactional
     public NovelProject preprocess(Long userId, NovelPreprocessRequest req) {
         NovelProject p = new NovelProject();
         p.setUserId(userId != null ? userId : DEFAULT_USER_ID);
@@ -83,7 +92,8 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
             body.put("novel_text", req.getNovelText());
             body.put("target_segments", req.getTargetSegments() != null ? req.getTargetSegments() : 6);
             body.put("seconds_per_segment", req.getSecondsPerSegment() != null ? req.getSecondsPerSegment() : 5);
-            body.put("style", DEFAULT_STYLE);
+            // 空 = 自动：由 agent 侧 analyzer 分析出的 visual_style 决定
+            body.put("style", req.getVisualStyle() == null ? "" : req.getVisualStyle().trim());
             body.put("generate_character_portrait",
                     req.getGenerateCharacterPortrait() != null && req.getGenerateCharacterPortrait());
             requestBody = OM.writeValueAsString(body);
@@ -99,7 +109,7 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
         try {
             HttpRequest httpReq = HttpRequest.newBuilder()
                     .uri(URI.create(AGENT_URL))
-                    .timeout(Duration.ofSeconds(60))
+                    .timeout(Duration.ofSeconds(PREPROCESS_TIMEOUT_S))
                     .header("Content-Type", "application/json; charset=utf-8")
                     .POST(HttpRequest.BodyPublishers.ofString(requestBody, java.nio.charset.StandardCharsets.UTF_8))
                     .build();
@@ -124,6 +134,10 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
                     storyboard = OM.convertValue(innerData, PreparedStoryboard.class);
                 }
             }
+        } catch (java.net.http.HttpTimeoutException e) {
+            // HttpTimeoutException 是 IOException 的子类，必须排在前面单独捕
+            errorMsg = "预处理超时（" + PREPROCESS_TIMEOUT_S + " 秒）：agent-service 未在规定时间内返回";
+            log.warn("novel preprocess 超时（{}s）", PREPROCESS_TIMEOUT_S);
         } catch (IOException | InterruptedException e) {
             if (e instanceof InterruptedException) Thread.currentThread().interrupt();
             errorMsg = "调用 agent-service 失败: " + e.getMessage();
@@ -133,7 +147,11 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
         if (storyboard != null) {
             p.setAnalysisJson(buildAnalysisJson(storyboard));
             p.setSegmentsJson(safeJson(storyboard.getSegments()));
-            p.setVisualStyle(DEFAULT_STYLE);
+            // 用 agent 实际生效的风格（空入参时即 AI 识别的 visual_style）；
+            // 回退 DEFAULT_STYLE 只为兜底「agent 未返回该字段」的情况
+            String styleFromAgent = storyboard.getVisualStyle();
+            p.setVisualStyle(styleFromAgent == null || styleFromAgent.isBlank()
+                    ? DEFAULT_STYLE : styleFromAgent.trim());
             // 分镜时长回填
             for (NovelSegment seg : safeSegments(storyboard)) {
                 if (seg.getSeconds() == null) seg.setSeconds(5);
@@ -184,6 +202,18 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
     }
 
     @Override
+    @Transactional
+    public void delete(Long id) {
+        NovelProject p = mapper.selectById(id);
+        if (p == null) {
+            throw new IllegalArgumentException("小说项目不存在: " + id);
+        }
+        mapper.deleteById(id);
+        log.info("novel 项目删除: id={} name={}（关联画布 {} 不受影响）",
+                id, p.getProjectName(), p.getCanvasProjectId());
+    }
+
+    @Override
     public NovelProjectResponse toResponse(NovelProject p) {
         if (p == null) return null;
         NovelProjectResponse r = new NovelProjectResponse();
@@ -223,7 +253,7 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
 
     @Override
     @Transactional
-    public CanvasProjectView saveToCanvas(Long novelProjectId) {
+    public CanvasProjectView saveToCanvas(Long novelProjectId, String characterRefs, String sceneRefs) {
         NovelProject p = mapper.selectById(novelProjectId);
         if (p == null) {
             throw new IllegalArgumentException("小说项目不存在: " + novelProjectId);
@@ -255,6 +285,16 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
             imgData.put("prompt", seg.getImagePrompt());
             imgData.put("ratio", "16:9");
             imgData.put("imageUrl", "");
+            // 结构化镜头写进 cameraSpec：画布节点的「景别/机位/运镜」下拉即可预填。
+            // 不写的话用户在画布上看到三行「不指定」，会以为预处理没给镜头信息
+            // （镜头描述其实在 prompt 文本里，但被超长的 [角色锚] 挤到卡片折叠之外了）。
+            Map<String, Object> cameraSpec = new LinkedHashMap<>();
+            putIfNotBlank(cameraSpec, "shot_size", seg.getShotSize());
+            putIfNotBlank(cameraSpec, "angle", seg.getAngle());
+            putIfNotBlank(cameraSpec, "movement", seg.getMovement());
+            if (!cameraSpec.isEmpty()) {
+                imgData.put("cameraSpec", cameraSpec);
+            }
             imgNode.put("data", imgData);
             nodes.add(imgNode);
         }
@@ -278,10 +318,23 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
         String nodesJson = safeJson(nodes);
         String edgesJson = safeJson(edges);
 
-        // 两步法：先建空项目拿 id，再保存 nodes/edges
-        CanvasProject created = canvasProjectService.createProject(p.getProjectName(), DEFAULT_USER_ID);
+        // 幂等：项目已绑定画布 → 复用更新；否则新建。
+        // （此前无条件 createProject，点 N 次「转入画布」就在库里留 N 个同名项目）
+        CanvasProject target = null;
+        if (p.getCanvasProjectId() != null) {
+            target = canvasProjectService.getProject(p.getCanvasProjectId(), DEFAULT_USER_ID);
+            if (target != null) {
+                log.info("novel -> canvas 复用已有画布: novelId={} canvasId={}",
+                        p.getId(), p.getCanvasProjectId());
+            }
+        }
+        if (target == null) {
+            target = canvasProjectService.createProject(p.getProjectName(), DEFAULT_USER_ID);
+        }
+        // 锚定图一并落库：刷新画布/换设备都还在（此前只走 URL query + localStorage）
         CanvasProject saved = canvasProjectService.saveProject(
-                created.getId(), DEFAULT_USER_ID, p.getProjectName(), nodesJson, edgesJson, null, null);
+                target.getId(), DEFAULT_USER_ID, p.getProjectName(), nodesJson, edgesJson,
+                characterRefs, sceneRefs);
 
         // 回填 canvasProjectId 关联
         NovelProject patch = new NovelProject();
@@ -333,6 +386,13 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
 
     private List<NovelSegment> safeSegments(PreparedStoryboard sb) {
         return sb.getSegments() != null ? sb.getSegments() : new ArrayList<>();
+    }
+
+    /** 仅当值非空时写入 map（空串/空白视为「不指定」） */
+    private static void putIfNotBlank(Map<String, Object> map, String key, String value) {
+        if (value != null && !value.isBlank()) {
+            map.put(key, value.trim());
+        }
     }
 
     private static String truncate(String s, int max) {

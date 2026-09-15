@@ -33,6 +33,14 @@ public class NovelPreprocessRequest {
     private Integer secondsPerSegment = 5;
 
     /**
+     * 视觉风格短语（如「电影写实」「水墨青蓝、暖黄侧光」）。
+     * <p>空 = 自动：由 agent 侧 analyzer 分析出的 visual_style 决定。
+     * 此前后端硬编码「电影写实」并透传，用户既选不了、AI 的判断也被丢弃。</p>
+     */
+    @Size(max = 64, message = "visualStyle 过长（≤64）")
+    private String visualStyle;
+
+    /**
      * 是否生成角色立绘。
      * <p>Phase 1 阶段仅接收并透传给 agent-service，UI 层不暴露；agent 侧当前管线尚未启用。</p>
      */

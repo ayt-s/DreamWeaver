@@ -20,7 +20,8 @@ class NovelPreprocessRequest(BaseModel):
     novel_text: str = Field(..., description="小说原文")
     target_segments: int = Field(default=6, ge=1, le=30, description="期望分镜数")
     seconds_per_segment: int = Field(default=5, ge=4, le=12, description="单段目标秒数（会被 clamp 到 [4,12]）")
-    style: str = Field(default="电影写实", description="整体视觉风格短语")
+    # 空字符串 = 自动：由 analyzer 分析出的 visual_style 决定（用户没选风格时走这条）
+    style: str = Field(default="", description="整体视觉风格短语；空 = 由 AI 分析决定")
     generate_character_portrait: bool = Field(default=False, description="是否生成角色立绘（当前管线未启用）")
 
 

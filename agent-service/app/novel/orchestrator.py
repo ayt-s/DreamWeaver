@@ -59,6 +59,15 @@ async def preprocess_novel(
     # 2) 分析（LLM）
     analysis = await analyzer.analyze(novel_text, model=model)
 
+    # 2.1) 视觉风格定稿：用户显式选了就用用户的；没选（空 = 自动）就用 AI 分析出的
+    #      visual_style；两者都没有才回退默认值。
+    #      此前 Java 侧硬编码"电影写实"，把 analyzer 的判断整个丢掉了——
+    #      界面上显示的「视觉风格」其实不是 AI 识别的结果。
+    effective_style = ((style or "").strip()
+                       or str(analysis.get("visual_style") or "").strip()
+                       or "电影写实")
+    logger.info("预处理视觉风格: 入参=%r → 生效=%s", style, effective_style)
+
     # 3) 分镜（LLM）
     raw_segments = await storyboarder.storyboard(
         novel_text=novel_text,
@@ -72,11 +81,15 @@ async def preprocess_novel(
     # 4) 拼装 prompt（无 LLM），并 clamp 秒数到 [4, 12]
     for seg in raw_segments:
         seg["seconds"] = max(4, min(12, int(seg.get("seconds", seconds_per_segment))))
-        seg["imagePrompt"] = composer.compose_image_prompt(seg, style, analysis)
-        seg["videoPrompt"] = composer.compose_video_prompt(seg, style, analysis)
+        seg["imagePrompt"] = composer.compose_image_prompt(seg, effective_style, analysis)
+        seg["videoPrompt"] = composer.compose_video_prompt(seg, effective_style, analysis)
         # 补齐 id / chapter 兜底
         if not seg.get("id"):
             seg["id"] = f"s{len(raw_segments)}"
+        # 结构化镜头字段转 camelCase（pydantic 字段名是 shot_size）：
+        # Java NovelSegment 与前端画布节点的 cameraSpec 都按 camelCase 接
+        if "shot_size" in seg:
+            seg["shotSize"] = seg.pop("shot_size")
 
     total_duration = sum(int(s.get("seconds", 0)) for s in raw_segments)
     return {
@@ -86,4 +99,6 @@ async def preprocess_novel(
         "segments": raw_segments,
         "totalSegments": len(raw_segments),
         "totalDurationSeconds": total_duration,
+        # 实际生效的视觉风格（Java 侧落库 + 前端展示；空入参时这里就是 AI 分析结果）
+        "visualStyle": effective_style,
     }

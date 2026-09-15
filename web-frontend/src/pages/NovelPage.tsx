@@ -8,10 +8,17 @@ import {
   FolderOpen,
   Loader2,
   Sparkles,
+  Trash2,
   Wand2,
   X,
 } from 'lucide-react';
-import { getNovelProject, listNovelProjects, preprocessNovel, toCanvas } from '../api/novel';
+import {
+  deleteNovelProject,
+  getNovelProject,
+  listNovelProjects,
+  preprocessNovel,
+  toCanvas,
+} from '../api/novel';
 import { generateAnchors } from '../api/novelAnchors';
 import type { NovelProject, NovelSegment } from '../types/novel';
 import { stripChapterSuffix } from '../utils/projectName';
@@ -28,6 +35,8 @@ export default function NovelPage() {
   const [novelText, setNovelText] = useState('');
   const [targetSegments, setTargetSegments] = useState(6);
   const [secondsPerSegment, setSecondsPerSegment] = useState(5);
+  // 视觉风格：空 = 自动（由 agent 侧 analyzer 通读原文后判断）
+  const [visualStyle, setVisualStyle] = useState('');
   const [project, setProject] = useState<NovelProject | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [converting, setConverting] = useState(false);
@@ -44,6 +53,8 @@ export default function NovelPage() {
         novelText: novelText.trim(),
         targetSegments,
         secondsPerSegment,
+        // 空 = 自动：交给 agent 的 analyzer 决定
+        visualStyle: visualStyle.trim() || undefined,
       });
       setProject(p);
       if (p.status === 'ready') {
@@ -105,8 +116,9 @@ export default function NovelPage() {
         ? encodeURIComponent(JSON.stringify(anchorRefsObj))
         : '';
 
-      // 步骤 2：转画布并跳转（anchorRefs 通过 URL query 传给 ImageVideoPage）
-      const canvas = await toCanvas(project.id);
+      // 步骤 2：转画布并跳转。锚定图随请求落库（URL query 仍带一份作兜底，
+      // 让画布页在首次加载时无需等接口即能渲染）
+      const canvas = await toCanvas(project.id, anchorRefsObj ?? undefined);
       const url = anchorRefs
         ? `/canvas?project=${canvas.id}&anchorRefs=${anchorRefs}`
         : `/canvas?project=${canvas.id}`;
@@ -156,12 +168,14 @@ export default function NovelPage() {
             novelText={novelText}
             targetSegments={targetSegments}
             secondsPerSegment={secondsPerSegment}
+            visualStyle={visualStyle}
             canSubmit={!!canSubmit}
             setProjectName={setProjectName}
             setNovelName={setNovelName}
             setNovelText={setNovelText}
             setTargetSegments={setTargetSegments}
             setSecondsPerSegment={setSecondsPerSegment}
+            setVisualStyle={setVisualStyle}
             onSubmit={handleSubmit}
           />
         )}
@@ -216,17 +230,20 @@ function InputPanel(props: {
   novelText: string;
   targetSegments: number;
   secondsPerSegment: number;
+  visualStyle: string;
   canSubmit: boolean;
   setProjectName: (v: string) => void;
   setNovelName: (v: string) => void;
   setNovelText: (v: string) => void;
   setTargetSegments: (v: number) => void;
   setSecondsPerSegment: (v: number) => void;
+  setVisualStyle: (v: string) => void;
   onSubmit: () => void;
 }) {
   const {
-    projectName, novelName, novelText, targetSegments, secondsPerSegment,
-    setProjectName, setNovelName, setNovelText, setTargetSegments, setSecondsPerSegment, onSubmit,
+    projectName, novelName, novelText, targetSegments, secondsPerSegment, visualStyle,
+    setProjectName, setNovelName, setNovelText, setTargetSegments, setSecondsPerSegment,
+    setVisualStyle, onSubmit,
   } = props;
 
   const charCount = novelText.length;
@@ -239,6 +256,26 @@ function InputPanel(props: {
   const [loadingId, setLoadingId] = useState<number | null>(null);
   const [loadError, setLoadError] = useState('');
   const [loadNotice, setLoadNotice] = useState('');
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  // 删除项目记录：只删 novel_project 这一条，它生成的画布项目不受影响
+  // （画布可能已被手工编辑过，级联删除会误伤）
+  const removeExistingProject = async (id: number, name: string) => {
+    if (!window.confirm(
+      `删除项目记录「${name}」？\n\n只删除这条小说项目记录，它生成的画布项目不受影响。`,
+    )) return;
+    setDeletingId(id);
+    setLoadError('');
+    try {
+      await deleteNovelProject(id);
+      setExistingProjects((ps) => ps.filter((p) => p.id !== id));
+      setLoadNotice(`已删除「${name}」`);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : '删除失败');
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const openExisting = async () => {
     setShowExisting((s) => !s);
@@ -356,21 +393,38 @@ function InputPanel(props: {
                     </div>
                     <div className="ml-1 space-y-1">
                       {group.projects.map((p) => (
-                        <button
+                        <div
                           key={p.id}
-                          type="button"
-                          disabled={loadingId !== null}
-                          onClick={() => selectExistingProject(p.id)}
-                          className="flex w-full items-center gap-2 rounded border border-slate-700 bg-slate-900/40 px-2.5 py-1.5 text-left text-xs text-slate-300 hover:border-indigo-500 hover:bg-slate-800 disabled:cursor-wait disabled:opacity-50"
+                          className="flex w-full items-center gap-1 rounded border border-slate-700 bg-slate-900/40 px-2.5 py-1.5 text-xs text-slate-300 hover:border-indigo-500 hover:bg-slate-800"
                         >
-                          {loadingId === p.id ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin text-indigo-400" />
-                          ) : (
-                            <FolderOpen className="h-3.5 w-3.5 text-slate-500" />
-                          )}
-                          <span className="flex-1 truncate">{p.projectName}</span>
-                          <StatusBadge status={p.status} />
-                        </button>
+                          <button
+                            type="button"
+                            disabled={loadingId !== null}
+                            onClick={() => selectExistingProject(p.id)}
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-wait disabled:opacity-50"
+                          >
+                            {loadingId === p.id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin text-indigo-400" />
+                            ) : (
+                              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+                            )}
+                            <span className="flex-1 truncate">{p.projectName}</span>
+                            <StatusBadge status={p.status} />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={deletingId !== null}
+                            onClick={() => removeExistingProject(p.id, p.projectName)}
+                            title="删除这条项目记录（不影响它生成的画布项目）"
+                            className="shrink-0 rounded p-0.5 text-slate-600 transition hover:text-red-400 disabled:opacity-40"
+                          >
+                            {deletingId === p.id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -444,6 +498,31 @@ function InputPanel(props: {
             className="w-full accent-indigo-500"
           />
           <div className="mt-1 text-[10px] text-slate-500">4-12 秒，对齐 agnes 视频模型支持范围</div>
+        </div>
+      </div>
+
+      {/* 视觉风格：留空 = 由 AI 通读原文后判断（analyzer 的 visual_style） */}
+      <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5">
+        <label className="mb-1.5 block text-xs text-slate-400">
+          视觉风格 <span className="text-slate-500">（留空则由 AI 通读原文后判断）</span>
+        </label>
+        <input
+          value={visualStyle}
+          onChange={(e) => setVisualStyle(e.target.value)}
+          list="visual-style-presets"
+          placeholder="如：电影写实；留空 = 自动"
+          maxLength={64}
+          className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500"
+        />
+        <datalist id="visual-style-presets">
+          <option value="电影写实" />
+          <option value="水墨青蓝、暖黄侧光、呼吸感长镜头、江南质感" />
+          <option value="3D 写实国漫、虚幻 5 渲染、颗粒感" />
+          <option value="日式赛璐璐、高饱和、清晰描边" />
+          <option value="胶片纪实、自然光、手持微晃" />
+        </datalist>
+        <div className="mt-1 text-[10px] text-slate-500">
+          这个风格会同时影响分镜、每镜的画面提示词与成片质感；选定后全流程一致
         </div>
       </div>
 

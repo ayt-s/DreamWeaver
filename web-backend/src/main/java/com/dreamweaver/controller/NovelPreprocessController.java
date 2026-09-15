@@ -8,6 +8,7 @@ import com.dreamweaver.dto.NovelSegmentUpdateRequest;
 import com.dreamweaver.service.NovelPreprocessService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -53,9 +54,27 @@ public class NovelPreprocessController {
         return CommonResult.ok(service.updateSegments(id, req.getSegments()));
     }
 
-    /** 同步到画布项目 */
+    /**
+     * 删除小说项目记录（列表里的清理入口）。
+     * 只删本记录；它生成的画布项目不受影响。
+     */
+    @DeleteMapping("/{id}")
+    public CommonResult<Void> delete(@PathVariable Long id) {
+        service.delete(id);
+        return CommonResult.ok(null);
+    }
+
+    /**
+     * 同步到画布项目（幂等：项目已绑定画布则复用更新，不再重复新建）。
+     * body 可选：携带角色/场景锚定图 → 落库到 canvas_project.character_refs/scene_refs。
+     */
     @PostMapping("/{id}/to-canvas")
-    public CommonResult<CanvasProjectView> toCanvas(@PathVariable Long id) {
-        return CommonResult.ok(service.saveToCanvas(id));
+    public CommonResult<CanvasProjectView> toCanvas(
+            @PathVariable Long id,
+            @RequestBody(required = false) com.dreamweaver.dto.CanvasSyncRequest body) {
+        return CommonResult.ok(service.saveToCanvas(
+                id,
+                body == null ? null : body.getCharacterRefs(),
+                body == null ? null : body.getSceneRefs()));
     }
 }

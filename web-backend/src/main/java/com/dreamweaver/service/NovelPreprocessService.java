@@ -31,6 +31,17 @@ public interface NovelPreprocessService {
     /** 更新分镜片段 JSON，返回最新视图 */
     NovelProjectResponse updateSegments(Long id, List<NovelSegment> segments);
 
-    /** 把当前分镜同步到一张新画布项目（image/video/compose 网格布局） */
-    CanvasProjectView saveToCanvas(Long novelProjectId);
+    /**
+     * 删除小说项目记录。
+     * <p>⚠️ 只删本表记录：它生成的画布项目（canvas_project_id 指向的那张）**不受影响** ——
+     * 画布可能已被手工编辑过，级联删除会误伤。清理画布请到无限画布页删。</p>
+     */
+    void delete(Long id);
+
+    /**
+     * 把当前分镜同步到画布项目（image/video/compose 网格布局）。
+     * <p>幂等：项目已绑定画布时复用更新，不再每次新建（此前点 N 次「转入画布」
+     * 就在库里留下 N 个同名画布项目）。锚定图随本次一并落库。</p>
+     */
+    CanvasProjectView saveToCanvas(Long novelProjectId, String characterRefs, String sceneRefs);
 }

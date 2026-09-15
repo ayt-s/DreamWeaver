@@ -14,6 +14,17 @@ from app.utils.retry import with_retry
 MIN_SECONDS = 4
 MAX_SECONDS = 12
 
+# 结构化镜头白名单：与前端画布下拉、app/utils/prompting.py 的表严格一致。
+# LLM 若给出表外值一律清空（画布上显示"不指定"），避免脏值进提示词。
+ALLOWED_SHOT_SIZE = ("远景", "全景", "中景", "近景", "特写")
+ALLOWED_ANGLE = ("平视", "俯拍", "仰拍", "航拍", "过肩")
+ALLOWED_MOVEMENT = ("固定", "推近", "拉远", "摇镜", "移镜", "跟拍", "环绕")
+_CAMERA_TABLES = {
+    "shot_size": ALLOWED_SHOT_SIZE,
+    "angle": ALLOWED_ANGLE,
+    "movement": ALLOWED_MOVEMENT,
+}
+
 
 class NovelSegmentPydantic(BaseModel):
     """单个分镜片段。"""
@@ -30,6 +41,26 @@ class NovelSegmentPydantic(BaseModel):
     )
     seconds: int = Field(..., ge=1, le=99, description="4-12 秒的片段时长")
     mood: str = Field(..., description="2-6 字情绪，如『平静、坚韧』")
+    # 结构化镜头三字段（供画布下拉预填；不确定就留空，画布显示"不指定"）
+    shot_size: str = Field(
+        default="",
+        description="景别，只能取：远景/全景/中景/近景/特写；不确定填空字符串",
+    )
+    angle: str = Field(
+        default="",
+        description="机位/角度，只能取：平视/俯拍/仰拍/航拍/过肩；不确定填空字符串",
+    )
+    movement: str = Field(
+        default="",
+        description="运镜，只能取：固定/推近/拉远/摇镜/移镜/跟拍/环绕；不确定填空字符串",
+    )
+
+    @field_validator("shot_size", "angle", "movement")
+    @classmethod
+    def _whitelist_camera(cls, v: str, info) -> str:
+        table = _CAMERA_TABLES[info.field_name]
+        s = str(v or "").strip()
+        return s if s in table else ""
 
     @field_validator("seconds")
     @classmethod
@@ -66,6 +97,12 @@ SYSTEM_PROMPT_TEMPLATE = """你是小说转漫剧分镜器。请根据输入的�
   运动方向可选：固定 / 横移 / 跟拍 / 推进 / 拉远 / 摇移 / 推拉
   构图/机位必须给出：人物位置（居中/三分线/偏左/偏右）+ 前景/背景关系
 - mood 2-6 字情绪，如『平静、坚韧』。
+- 除上面的字段外，还要给出三个**结构化镜头字段**（画布下拉要用，必须严格从白名单里选）：
+  · shot_size 景别：远景 / 全景 / 中景 / 近景 / 特写
+  · angle    机位：平视 / 俯拍 / 仰拍 / 航拍 / 过肩
+  · movement 运镜：固定 / 推近 / 拉远 / 摇镜 / 移镜 / 跟拍 / 环绕
+  三者必须与 camera 文本描述的镜头一致（如 camera 写『中景缓慢推进』，则
+  shot_size=中景、movement=推近）；拿不准就留空字符串，不要编表外的值。
 
 时长分配规则（按情节密度）：
 - 对话密集/动作戏/紧张情节 → 8-10 秒（给足时间展开）
