@@ -35,6 +35,7 @@ public class TaskServiceImpl implements TaskService {
     private final WebClient.Builder webClientBuilder;
     private final StuckTaskWatchdog stuckTaskWatchdog;
     private final TaskJsonCodec taskJsonCodec;
+    private final SegmentReworkPlanner reworkPlanner;
 
     /** 终态集合：可直接删除 / 可重新生成 */
     private static final Set<String> TERMINAL_STATUSES = Set.of("completed", "failed", "expired");
@@ -142,6 +143,40 @@ public class TaskServiceImpl implements TaskService {
         return regenerateTask(id, null);
     }
 
+    /**
+     * 把任务重置为「待派发」的公共部分（全量重生 / 段重生共用）。
+     *
+     * <p>原先这两条链路各写一遍约 12 行几乎相同的 {@code LambdaUpdateWrapper}，差异只在
+     * 段配置与参数两三个字段上。合并成一处后，新增「重置时要清 / 要保留什么」只需要改这里，
+     * 不会再出现「改了一条链路忘了另一条」。
+     *
+     * <p>两条链路的差异由调用方追加（返回的 wrapper 可以继续 {@code .set(...)}）：
+     * <ul>
+     *   <li>全量重生：清 {@code image_urls} 与 {@code segments_json}，写 {@code gen_params_json}</li>
+     *   <li>段重生：写新的 {@code segments_json}（保留其他字段）</li>
+     * </ul>
+     *
+     * <p>⚠️ 为什么必须用 wrapper 而不是 {@code updateById}：后者的
+     * {@code FieldStrategy.NOT_NULL} 会**忽略 null 字段**，显式置空根本不生效。
+     *
+     * @param prevResultJson 旧产物（存 {@code prev_result_json} 供回滚）；可为 null
+     */
+    private com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<Task>
+            resetTaskForRerun(Long id, String prevResultJson) {
+        return new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<Task>()
+                .eq(Task::getId, id)
+                .set(Task::getStatus, "pending")
+                .set(Task::getSessionId, null)
+                .set(Task::getResultJson, null)
+                .set(Task::getErrorMessage, null)
+                .set(Task::getCompletedAt, null)
+                // 计时打点清零：本轮重新派发时由 dispatchToAgent 重新写 started_at，
+                // 否则派发失败会把上一次的生成耗时留在画廊上（耗时口径见 phase8_migration.sql）
+                .set(Task::getStartedAt, null)
+                .set(Task::getPrevResultJson, prevResultJson)
+                .set(Task::getUpdatedAt, LocalDateTime.now());
+    }
+
     @Override
     @Transactional
     public TaskResponse regenerateTask(Long id, CreateTaskRequest override) {
@@ -174,24 +209,12 @@ public class TaskServiceImpl implements TaskService {
 
         // 同一任务原地重新生成：清空旧产物与错误，保留 id/prompt/genType/userId，
         // 重新走 提交→排队→生成→回调 链路（不再创建新任务 id）
-        // 注意：updateById 的 FieldStrategy.NOT_NULL 会忽略 null 字段，显式置空必须走 wrapper
-        taskMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<com.dreamweaver.entity.Task>()
-                .eq(com.dreamweaver.entity.Task::getId, id)
-                .set(com.dreamweaver.entity.Task::getStatus, "pending")
-                .set(com.dreamweaver.entity.Task::getSessionId, null)
-                .set(com.dreamweaver.entity.Task::getResultJson, null)
-                .set(com.dreamweaver.entity.Task::getImageUrls, null)
-                .set(com.dreamweaver.entity.Task::getErrorMessage, null)
-                .set(com.dreamweaver.entity.Task::getCompletedAt, null)
-                // 计时打点清零：本轮重新派发时由 dispatchToAgent 重新写 started_at，
-                // 否则派发失败会把上一次的生成耗时留在画廊上（耗时口径见 phase8_migration.sql）
-                .set(com.dreamweaver.entity.Task::getStartedAt, null)
-                // 全量重生成 → 旧产物存 prev_result_json 供回滚，段配置失效一并清空
-                .set(com.dreamweaver.entity.Task::getPrevResultJson, original.getResultJson())
-                .set(com.dreamweaver.entity.Task::getSegmentsJson, null)
+        taskMapper.update(null, resetTaskForRerun(id, original.getResultJson())
+                // 全量重生成：段配置失效一并清空，旧产物已存入 prev_result_json 供回滚
+                .set(Task::getImageUrls, null)
+                .set(Task::getSegmentsJson, null)
                 // 本次编辑后的参数落库（全空时 buildGenParamsJson 返回 null，同样清掉旧值）
-                .set(com.dreamweaver.entity.Task::getGenParamsJson, genParamsJson)
-                .set(com.dreamweaver.entity.Task::getUpdatedAt, LocalDateTime.now()));
+                .set(Task::getGenParamsJson, genParamsJson));
         // 内存态同步：dispatchToAgent 里的 updateById(original) 会把 entity 上的
         // gen_params_json 一并写回库，不刷新这里就会用旧值覆盖刚写入的新参数
         original.setGenParamsJson(genParamsJson);
@@ -471,73 +494,23 @@ public class TaskServiceImpl implements TaskService {
             throw new IllegalArgumentException("未选择需要重新生成的段");
         }
 
-        // 1. 解析段配置 + 已有产物 URL
-        List<Map<String, Object>> segs = taskJsonCodec.parseSegments(original.getSegmentsJson());
-        boolean isImageTask = "text_image".equals(original.getGenType())
-                || "comic_video".equals(original.getGenType());
-        List<String> existingUrls = isImageTask
-                ? taskJsonCodec.parseImageUrls(original.getImageUrls())
-                : taskJsonCodec.parseResultUrls(original.getResultJson());
-        // 图片任务的已有产物即 existingUrls，无需重复解析；视频任务用不到该列表
-        List<String> existingImageUrls = isImageTask
-                ? existingUrls
-                : java.util.Collections.emptyList();
-        if (existingUrls.size() != segs.size()) {
-            log.warn("重生成段：历史产物与段数不匹配，按索引尽力对齐（id={} 段数={} 已有{}={}），无产物段将自动补重生",
-                    id, segs.size(), isImageTask ? "图片" : "视频", existingUrls.size());
-        }
+        // 1+2. 组装混合模式段配置（勾选段重生 / 未勾选段复用历史产物）。
+        //      抽到 SegmentReworkPlanner 并单测 —— 这段承载过「索引错位」(949cf41) 与
+        //      「缺产物的段被静默跳过」两个真实 bug，藏在 private 方法里根本测不到。
+        SegmentReworkPlanner.ReworkPlan plan = reworkPlanner.plan(
+                id,
+                original.getSegmentsJson(),
+                original.getGenType(),
+                original.getResultJson(),
+                original.getImageUrls(),
+                reworkIndices,
+                editedPrompts);
+        String newSegmentsJson = plan.segmentsJson();
 
-        // 2. 组装混合模式段：未勾选复用 existing_video_url（视频）/ existing_image_url（图片），勾选段更新 prompt 后重新生成
-        Set<Integer> reworkSet = new java.util.HashSet<>(reworkIndices);
-        // 用户勾选段 + 因缺失历史产物而被迫重生的段
-        Set<Integer> effectiveRework = new java.util.TreeSet<>();
-        List<Map<String, Object>> out = new java.util.ArrayList<>();
-        for (int i = 0; i < segs.size(); i++) {
-            Map<String, Object> seg = new java.util.HashMap<>(segs.get(i));
-            if (reworkSet.contains(i)) {
-                String edited = (editedPrompts != null)
-                        ? editedPrompts.get(String.valueOf(i)) : null;
-                if (edited != null && !edited.isBlank()) {
-                    seg.put("prompt", edited);
-                }
-                // 重活段必须重新翻译（旧 prompt_en 对应用户修改前的中文描述）
-                seg.remove("prompt_en");
-                seg.remove("existing_video_url");
-                seg.remove("existing_image_url");
-                effectiveRework.add(i);
-            } else if (isImageTask && i < existingImageUrls.size()
-                    && existingImageUrls.get(i) != null && !existingImageUrls.get(i).isBlank()) {
-                seg.put("existing_image_url", existingImageUrls.get(i));
-            } else if (!isImageTask && i < existingUrls.size()
-                    && existingUrls.get(i) != null && !existingUrls.get(i).isBlank()) {
-                seg.put("existing_video_url", existingUrls.get(i));
-            } else {
-                // 该段没有可复用的历史产物（历史上生成失败/产物缺失）：视为需要重生
-                seg.remove("prompt_en");
-                seg.remove("existing_video_url");
-                seg.remove("existing_image_url");
-                effectiveRework.add(i);
-            }
-            out.add(seg);
-        }
-        if (effectiveRework.size() > reworkSet.size()) {
-            log.warn("重生成段：以下段缺少可复用历史产物，已自动补入重生列表 id={} 补重生段={}",
-                    id, effectiveRework);
-        }
-        String newSegmentsJson = taskJsonCodec.toJsonString(out);
 
         // 3. 重置任务为 pending（旧产物存 prev_result_json 供回滚），段配置更新为最新版
-        taskMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<com.dreamweaver.entity.Task>()
-                .eq(com.dreamweaver.entity.Task::getId, id)
-                .set(com.dreamweaver.entity.Task::getStatus, "pending")
-                .set(com.dreamweaver.entity.Task::getSessionId, null)
-                .set(com.dreamweaver.entity.Task::getResultJson, null)
-                .set(com.dreamweaver.entity.Task::getErrorMessage, null)
-                .set(com.dreamweaver.entity.Task::getCompletedAt, null)
-                .set(com.dreamweaver.entity.Task::getStartedAt, null)
-                .set(com.dreamweaver.entity.Task::getPrevResultJson, original.getResultJson())
-                .set(com.dreamweaver.entity.Task::getSegmentsJson, newSegmentsJson)
-                .set(com.dreamweaver.entity.Task::getUpdatedAt, LocalDateTime.now()));
+        taskMapper.update(null, resetTaskForRerun(id, original.getResultJson())
+                .set(Task::getSegmentsJson, newSegmentsJson));
 
         CreateTaskRequest request = new CreateTaskRequest();
         request.setPrompt(original.getPrompt());
@@ -546,8 +519,8 @@ public class TaskServiceImpl implements TaskService {
         request.setSegments(newSegmentsJson);
         // 全局精细控制参数还原（段级 camera/负面词已随 segments_json 落库）
         taskJsonCodec.applyGenParamsJson(original.getGenParamsJson(), request);
-        log.info("重生成段: id={} 重生成段={} 复用段={}", id, effectiveRework,
-                segs.size() - effectiveRework.size());
+        log.info("重生成段: id={} 重生成段={} 复用段={}", id, plan.effectiveRework(),
+                plan.reusedCount());
         return dispatchToAgent(taskMapper.selectById(id), request);
     }
 
