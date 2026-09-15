@@ -93,6 +93,19 @@ class Settings:
     #              得到「后缀有没有用」的答案，fix_history[*].used_hint 记录分组
     fix_hint_mode: str = _env("AGENT_FIX_HINT_MODE", "random50")
 
+    # === 可观测性：文件日志 ===
+    # **为什么必须是文件**：本项目所有模块都用 logging.getLogger(__name__)，但从未配置
+    # 过任何 handler —— 日志只到 stdout。于是**一次手动重启就抹掉全部诊断证据**。
+    # 实测代价（2026-09-15）：一个真实任务 13:07 进入 fix_looping、13:12 变 failed，
+    # 但 video_urls 从 1 变成 0、qc_report 从有变无 —— 想定位只能猜。
+    # 三样凑齐导致无法取证：stdout 日志随重启消失 + events.py 无缓冲
+    # + recovery 在同 id 下重跑覆盖内存 state。
+    log_to_file: bool = _env("AGENT_LOG_TO_FILE", "1").strip().lower() not in (
+        "0", "false", "no", "off")
+    # 相对路径按 <agent-service>/ 解析；空串 = data/logs
+    log_dir: str = _env("AGENT_LOG_DIR", "").strip() or "data/logs"
+    log_level: str = _env("AGENT_LOG_LEVEL", "INFO").strip().upper() or "INFO"
+
     @property
     def headers(self) -> dict:
         return {

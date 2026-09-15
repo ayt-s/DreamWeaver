@@ -325,6 +325,16 @@ async def _heartbeat_loop(session_id: str) -> None:
 
 @app.on_event("startup")
 async def _startup() -> None:
+    # 先挂文件日志再做别的：启动过程中的异常也要能事后回溯。
+    # （stdout 日志会随手动重启消失，见 app/logging_setup.py 的模块注释）
+    from app.config import settings
+    from app.logging_setup import setup_file_logging
+
+    log_path = setup_file_logging()
+    if log_path:
+        logger.info("文件日志已启用: %s（级别 %s，10MB × 5 份轮转）",
+                    log_path, settings.log_level)
+
     await poller.start()
     await scheduler.start(runner=_run_session)
     # 启动自动恢复：把上次进程被杀时未完成的会话从 Redis 快照里捡回来断点续跑。
