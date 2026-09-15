@@ -1,10 +1,16 @@
 """LangGraph 图定义（Phase 4 P0：文生图 + 图生视频贯通；画布模式多镜拼接）。
 
 三种入口：
-- 无限画布图生视频（segments 非空）：canvas_storyboarder → video_generator → synthesizer → END
+- 无限画布图生视频（segments 非空）：canvas_storyboarder → video_generator → asset_fetch
+  → synthesizer → END
 - 标准文生视频/图生视频（segments 为空）：requirement_parser → script_writer → storyboarder
-  → image_generator → video_generator → qc_checker → END
+  → image_generator → video_generator → asset_fetch → qc_checker → END
 - 文生图模式：image_generator 之后直达 END（只出图不出视频）
+
+**asset_fetch（A4 接入）**：video_generator 产出的是 agnes 公网直链，QC 只能检本地文件，
+所以必须先把产物落到本地再进 QC。原先下载只发生在 synthesizer 内部，而标准模式
+根本不经过 synthesizer —— 于是 qc_checker 拿到的永远是 http 直链，只能 skip 返回 passed，
+**质检链路在生产环境从未真正执行过**（P0-1）。
 
 无限画布模式说明：用户上传 N 张图片并逐段描述内容（segments），
 每段生成几秒小视频，最后由 synthesizer 用 ffmpeg 拼接成一条长视频。
@@ -18,6 +24,7 @@ from app.nodes.script import script_writer_node
 from app.nodes.storyboard import storyboarder_node, canvas_storyboarder_node
 from app.nodes.image import image_generator_node
 from app.nodes.video import video_generator_node
+from app.nodes.asset_fetch import asset_fetch_node
 from app.nodes.synthesizer import synthesizer_node
 from app.nodes.image_slideshow import image_slideshow_node
 from app.nodes.qc import qc_checker_node
@@ -62,7 +69,17 @@ def _image_route(state: CreativeSessionState) -> str:
 
 
 def _video_route(state: CreativeSessionState) -> str:
-    """video_generator 之后的分流：画布模式（segments）→ synthesizer 拼接；否则走 QC。"""
+    """video_generator 之后**一律**先进 asset_fetch 把产物落到本地。
+
+    不能让画布模式直连 synthesizer、标准模式直连 qc_checker —— 那样标准模式的
+    QC 就只拿到 agnes 公网直链，只能 skip 返回 passed（P0-1 的根因）。
+    两种模式的分流改到 asset_fetch 之后（见 _asset_route）。
+    """
+    return "fetch"
+
+
+def _asset_route(state: CreativeSessionState) -> str:
+    """asset_fetch 之后的分流：画布模式（segments）→ synthesizer 拼接；否则进 QC。"""
     if state.get("segments"):
         return "synthesize"
     return "qc"
@@ -76,6 +93,7 @@ graph.add_node("storyboarder", storyboarder_node)
 graph.add_node("canvas_storyboarder", canvas_storyboarder_node)
 graph.add_node("image_generator", image_generator_node)
 graph.add_node("video_generator", video_generator_node)
+graph.add_node("asset_fetch", asset_fetch_node)
 graph.add_node("qc_checker", qc_checker_node)
 graph.add_node("synthesizer", synthesizer_node)
 graph.add_node("image_slideshow", image_slideshow_node)
@@ -104,17 +122,20 @@ graph.add_conditional_edges(
 # === 画布模式：用户自定分镜，跳过剧本/分镜/生图，直接生成视频再拼接 ===
 graph.add_edge("canvas_storyboarder", "video_generator")
 
-# video_generator 后分流：画布模式 → synthesizer 拼接长视频；标准模式 → QC
+# video_generator 之后一律先进 asset_fetch（产物落地本地），
+# 再由 _asset_route 分流：画布模式 → synthesizer 拼接；标准模式 → QC
 graph.add_conditional_edges(
     "video_generator",
     _video_route,
+    {"fetch": "asset_fetch"},
+)
+graph.add_conditional_edges(
+    "asset_fetch",
+    _asset_route,
     {"synthesize": "synthesizer", "qc": "qc_checker"},
 )
 graph.add_edge("synthesizer", END)
 graph.add_edge("image_slideshow", END)
-
-# === 标准链路：video_generator → qc_checker ===
-# （上面已由 _video_route 接入；此处仅为可读性保留注释）
 
 # QC 结果分支
 graph.add_conditional_edges(
