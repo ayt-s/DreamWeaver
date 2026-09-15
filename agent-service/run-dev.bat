@@ -2,17 +2,25 @@
 REM ============================================================================
 REM DreamWeaver agent-service 开发启动脚本
 REM
-REM ⚠️ --reload-dir app 是必须的，不要去掉：
-REM    uvicorn 默认递归监视**整个工作目录**的 *.py，**包括 tests/**。
-REM    于是「跑真实任务时改任何 .py、或跑测试新增 .py」都会重启服务 →
-REM    在跑的会话被杀 → recovery 用同一 session_id 重跑 → 状态重置 +
-REM    重新烧一遍 agnes 额度。（2026-09-15 实测踩到）
+REM ⚠️ 用**纯 --reload**，不要加 --reload-dir！
 REM
-REM    收窄到 app/ 后：改 app 下的代码仍会自动重载；改 tests/scripts/data/
-REM    不会再打断正在跑的任务。
+REM 2026-09-15 实测（隔离实例对照，端口 8001/8004）：
+REM   ✓ 纯 --reload（监视整个 agent-service）       → 改 app/xxx.py 内容**会**重载
+REM   ✗ --reload --reload-dir app                    → 改 app/xxx.py 内容**不会**重载
+REM                                                     （只有新增/删除文件才触发）
+REM
+REM   即 --reload-dir 在本机（Windows + watchfiles 1.2.0）对「已有文件的内容变更」
+REM   失效，表现为「启动日志说在监视、改代码却毫无反应」→ **静默跑旧代码**。
+REM   那比不reload 更危险，所以宁可不要它。
+REM
+REM 代价（已知并接受）：uvicorn 默认递归监视整个工作目录的 *.py，**含 tests/**。
+REM   所以「跑真实任务时新增/改测试文件」会重启服务 → 在跑的会话被杀 →
+REM   recovery 用同一 session_id 重跑 → 状态重置 + 重新烧一遍 agnes 额度。
+REM   → 跑真实任务期间避免动 tests/ 下的文件。
 REM
 REM 日志：应用自身写 agent-service\data\logs\agent.log（10MB × 5 份轮转）。
-REM       额外落一份 stdout 到这个控制台。
+REM       改完 agent 代码后可 tail 该文件确认真的重载了（会打印新的
+REM       「文件日志已启用」+「VideoPoller 启动」）。
 REM ============================================================================
 cd /d "%~dp0"
-.venv\Scripts\python.exe -m uvicorn app.main:app --reload --reload-dir app --port 8000
+.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
