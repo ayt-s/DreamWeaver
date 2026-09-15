@@ -65,7 +65,8 @@ def test_old_direct_edges_are_gone():
 
 
 def test_synthesizer_and_qc_still_terminal_downstream():
-    """回归护栏（A9 后更新）：QC 通过 → notify_final；QC 失败 → fix_looping → notify_final。
+    """回归护栏（A9 + B2 后更新）：QC 通过 → notify_final；QC 失败 → fix_looping
+    → （retry | fix_give_up）→ 最终都汇到 notify_final。
 
     ⚠️ `qc_checker` 不再直连 END：终态回调统一由 notify_final 发出，
     否则回调会发生在 QC 之前，Java 任务提前转终态 → fix_looping 的产物被丢弃。
@@ -74,8 +75,21 @@ def test_synthesizer_and_qc_still_terminal_downstream():
     assert ("synthesizer", "__end__") in edges
     assert ("qc_checker", "notify_final") in edges
     assert ("qc_checker", "fix_looping") in edges
-    assert ("fix_looping", "notify_final") in edges
+    assert ("fix_give_up", "notify_final") in edges
     assert ("notify_final", "__end__") in edges
+
+
+def test_fix_loop_actually_loops_back_to_video_generator():
+    """B1/B2 的核心：fix_looping 必须能回到 video_generator 形成**真循环**。
+
+    改之前 fix_looping 没有任何出边（LangGraph 视其为终端）——
+    图能跑，但「修复重试」永远不会重试。这条断言锁住那个形态不再回归。
+    同时 video_generator → asset_fetch 必须仍在，否则重生后不会再跑 QC。
+    """
+    edges = _edges()
+    assert ("fix_looping", "video_generator") in edges, "没有回边 = 自愈循环不存在"
+    assert ("fix_looping", "fix_give_up") in edges
+    assert ("video_generator", "asset_fetch") in edges, "回环后必须重跑 QC"
 
 
 def test_qc_never_reaches_end_directly():
@@ -91,7 +105,8 @@ def test_notify_final_is_reachable_from_every_video_terminal():
     """防止某条路径既不发回调也不终止（任务卡 queued 只能等看门狗兜底）。"""
     g = compiled_graph.get_graph()
     edges = {(e.source, e.target) for e in g.edges}
-    # 视频链路的两个终端必须都能到 notify_final
+    # 视频链路的所有终端都必须能汇到 notify_final
     assert ("qc_checker", "notify_final") in edges or ("qc_checker", "fix_looping") in edges
-    assert ("fix_looping", "notify_final") in edges
+    assert ("fix_give_up", "notify_final") in edges
     assert "notify_final" in g.nodes
+    assert "fix_give_up" in g.nodes

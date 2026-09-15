@@ -167,3 +167,41 @@ async def test_storyboard_is_sent_as_json(monkeypatch):
     assert parsed[0]["prompt_en"] == "a cat"
     # ensure_ascii=False：中文不能变成 \uXXXX（Java 侧 TEXT 列存原文）
     assert "\\u" not in calls[0]["storyboard"]
+
+
+@pytest.mark.asyncio
+async def test_give_up_reason_is_reported_to_user(monkeypatch):
+    """自动修复失败时，用户必须知道「系统自己修过 N 轮」而不是以为没人管。"""
+    calls = _spy(monkeypatch)
+    state = {
+        "session_id": "n8",
+        "video_urls": ["http://a/0.mp4"],
+        "qc_report": _qc(False, failed=[1], shots=[{"index": 1, "error": "画面质检未通过"}]),
+        "fix_give_up": True,
+        "fix_give_up_reason": "已自动修复 3 轮仍有 1 镜未通过质检",
+    }
+
+    await nf.notify_final_node(state)
+    await asyncio.sleep(0)
+
+    msg = calls[0]["error_message"]
+    assert calls[0]["status"] == "completed", "已通过镜仍可用 → 不标 failed"
+    assert "未通过质检" in msg
+    assert "自动修复 3 轮" in msg
+
+
+@pytest.mark.asyncio
+async def test_give_up_reason_used_alone_when_no_qc_summary(monkeypatch):
+    calls = _spy(monkeypatch)
+    state = {
+        "session_id": "n9",
+        "video_urls": ["http://a/0.mp4"],
+        "fix_give_up": True,
+        "fix_give_up_reason": "会话已中止（任务被删除或重新生成）",
+    }
+
+    await nf.notify_final_node(state)
+    await asyncio.sleep(0)
+
+    assert calls[0]["error_message"] == "会话已中止（任务被删除或重新生成）"
+    assert len(calls[0]["error_message"]) < 512

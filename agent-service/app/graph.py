@@ -21,6 +21,8 @@
 无限画布模式说明：用户上传 N 张图片并逐段描述内容（segments），
 每段生成几秒小视频，最后由 synthesizer 用 ffmpeg 拼接成一条长视频。
 """
+import logging
+
 from langgraph.graph import END, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -35,11 +37,54 @@ from app.nodes.synthesizer import synthesizer_node
 from app.nodes.image_slideshow import image_slideshow_node
 from app.nodes.qc import qc_checker_node
 from app.nodes.notify_final import notify_final_node
+from app.nodes.fix_looping import fix_looping_node
+
+logger = logging.getLogger(__name__)
 
 
-def _fix_looping_node(state: CreativeSessionState) -> dict:
-    """Fix looping 节点（Phase 2 stub）：暂直接返回，后续接入修复逻辑。"""
-    return {"status": state.get("status", None)}
+def _fix_route(state: CreativeSessionState) -> str:
+    """fix_looping 之后：继续修（回到 video_generator）还是放弃（去终态通知）。
+
+    ⚠️ 这里**只读结论，不做二次判断**。闸门逻辑集中在
+    `nodes/fix_looping.decide_repair()` —— 两处各写一份必然漂移，
+    而漂移的代价很重（两种都实测到过）：
+
+    - 节点空转 + 路由仍 retry → **无限循环**
+      （`GraphRecursionError: Recursion limit of 10007`）
+    - 节点改了 storyboard 才被路由否决 → **幽灵轮次**，多余 `fix_hint`
+      随 segments_json 污染 Java 侧的段重生基线
+    """
+    return "give_up" if state.get("fix_give_up") else "retry"
+
+
+async def _fix_give_up_node(state: CreativeSessionState) -> dict:
+    """放弃自动修复：把「修过但没修好」如实记下来，交给 notify_final 上报。
+
+    **不标 failed**：已通过的镜仍是可用产物（与 synthesizer 的降级哲学一致）。
+    Java 侧会收到 `completed` + error_message 说明未通过情况。
+    """
+    from app import events
+
+    session_id = state["session_id"]
+    rounds = len(state.get("fix_history") or [])
+    qc_report = state.get("qc_report") or {}
+    failed = list(qc_report.get("failed_shots") or [])
+    # 优先用 decide_repair 给出的具体原因（成本闸门 / 轮次用尽 / 已中止），
+    # 它比这里重新拼一句更准确 —— 避免又出现「两处各写一份」的漂移。
+    if state.get("fix_aborted"):
+        reason = "会话已中止（任务被删除或重新生成）"
+    elif rounds:
+        reason = (f"{state.get('fix_give_up_reason') or ''}"
+                  f"（已自动修复 {rounds} 轮，仍有 {len(failed)} 镜未通过质检）").lstrip("（")
+    else:
+        reason = (state.get("fix_give_up_reason")
+                  or f"有 {len(failed)} 镜未通过质检，未做自动修复")
+
+    logger.warning("fix_give_up: session=%s %s", session_id, reason)
+    await events.emit(session_id, "node_completed",
+                      {"node_id": "fix_give_up", "summary": f"放弃修复：{reason}"})
+
+    return {"fix_give_up": True, "fix_give_up_reason": reason}
 
 
 def _entry_route(state: CreativeSessionState) -> str:
@@ -104,7 +149,8 @@ graph.add_node("asset_fetch", asset_fetch_node)
 graph.add_node("qc_checker", qc_checker_node)
 graph.add_node("synthesizer", synthesizer_node)
 graph.add_node("image_slideshow", image_slideshow_node)
-graph.add_node("fix_looping", _fix_looping_node)  # Phase 2 stub（B 批次重写为真循环）
+graph.add_node("fix_looping", fix_looping_node)
+graph.add_node("fix_give_up", _fix_give_up_node)
 graph.add_node("notify_final", notify_final_node)
 
 # === 入口路由 ===
@@ -152,11 +198,14 @@ graph.add_conditional_edges(
     {"qc_passed": "notify_final", "qc_failed": "fix_looping"},
 )
 
-# fix_looping 暂时直达终态通知（B 批次会改成条件边：
-# retry → video_generator 继续修，give_up → notify_final）。
-# 现在必须保留这条出边 —— 否则 QC 失败的任务既不发回调也不终止，
-# Java 侧只能等看门狗兜底成 interrupted。
-graph.add_edge("fix_looping", "notify_final")
+# fix_looping → 条件边：失败镜可修复则回到 video_generator 继续修（B1/B2 的真循环），
+# 否则走 fix_give_up 收尾。四道闸门见 _fix_route。
+graph.add_conditional_edges(
+    "fix_looping",
+    _fix_route,
+    {"retry": "video_generator", "give_up": "fix_give_up"},
+)
+graph.add_edge("fix_give_up", "notify_final")
 
 # 图的唯一终态出口：恰好发一次完成回调（A9）
 graph.add_edge("notify_final", END)

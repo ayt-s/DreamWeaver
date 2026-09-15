@@ -74,6 +74,14 @@ async def notify_final_node(state: CreativeSessionState) -> dict:
         # 先取 QC 结论；QC 没跑（画布模式等）时退回生成阶段的错误
         error_message = _summarize(qc_report) or video_error
 
+    # 自动修复失败时补上「修过几轮」——用户需要知道系统自己试过、不是没管
+    if state.get("fix_give_up"):
+        give_up_reason = str(state.get("fix_give_up_reason") or "").strip()
+        if give_up_reason:
+            error_message = (
+                f"{error_message}；{give_up_reason}" if error_message else give_up_reason
+            )
+
     # storyboard 必须以 JSON 字符串带回 Java —— Java 侧据此写 segments_json，
     # 而 segments_json 是「按段重生」的输入源。丢掉它等于废掉段重生功能。
     # （Java 只在 segments_json 为空时才写入，重复回调不会覆盖已有配置）

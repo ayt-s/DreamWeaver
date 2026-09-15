@@ -19,6 +19,19 @@ from app.gateway.agnes import gateway  # noqa: F401 —— 测试 fixture 依赖
 logger = logging.getLogger(__name__)
 
 
+def _effective_prompt(shot: dict) -> str:
+    """提交时用的实际提示词 = 原始 prompt_en + 本轮修正后缀（fix_hint）。
+
+    **为什么分开存**：`storyboard` 会被 `notify_final` 当作 `segments_json` 交给 Java，
+    那是「按段重生」的输入基线。把修正后缀直接追加进 `prompt_en` 会污染这个基线，
+    而且每轮修复都会再叠加一次、prompt 持续膨胀漂移。
+    所以 `fix_looping` 只写 `fix_hint`（覆盖式），拼接发生在这里。
+    """
+    base = str(shot.get("prompt_en") or "")
+    hint = str(shot.get("fix_hint") or "")
+    return f"{base}{hint}" if hint else base
+
+
 async def video_generator_node(state: CreativeSessionState) -> dict:
     from app import events
     await events.emit(state["session_id"], "node_entered",
@@ -27,7 +40,7 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
     video_ids: list[str] = list(state.get("video_ids", []))
     trace = list(state.get("trace", []))
 
-    # 断点恢复：跳过已完成的镜次，不再重复提交
+    # 断点恢复：`done` 之前的镜次已有 URL，默认跳过不重复提交。
     done = len(video_urls)
 
     # 按镜次索引落位（复用段与新生段都写入对应索引），避免交错时顺序错乱。
@@ -38,7 +51,14 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
     # 收集所有 Future 和对应的 shot 信息
     pending_shots: list[tuple[int, str, asyncio.Future]] = []
 
-    for idx, shot in enumerate(state["storyboard"][done:], start=done):
+    for idx, shot in enumerate(state["storyboard"]):
+        # 断点恢复跳过：该索引已有 URL 且**未被标记为待重生** → 不重复提交。
+        #
+        # ⚠️ `regenerate` 必须能越过这个跳过，否则整个自愈循环是空转：
+        #   fix_looping 只清 existing_video_url，但重生轮里 `done = len(video_urls)`
+        #   仍是满的 → 失败镜被这里永远跳过（实测修复轮 0 次提交、0 次重生）。
+        if idx < done and not shot.get("regenerate"):
+            continue
         # Java 侧已无人认领该会话（任务被重新生成/删除）→ 立刻停止后续提交，
         # 否则每一段都是一次白烧的 agnes 调用（回调会被 Java 按 session_id 丢弃）
         if abort.is_aborted(state["session_id"]):
@@ -74,7 +94,7 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
         await events.emit(state["session_id"], "tool_called",
                           {"tool_name": "generate_video", "shot_index": idx})
         result = await generate_video_tool(
-            prompt=shot["prompt_en"],
+            prompt=_effective_prompt(shot),
             seconds=shot["seconds"],
             mode=shot.get("mode", "text"),
             aspect_ratio=shot["aspect_ratio"],

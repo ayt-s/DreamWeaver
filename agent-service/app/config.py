@@ -85,6 +85,14 @@ class Settings:
     # 让 Java 侧重武装看门狗 TTL（把「固定截止时间」变成「空闲超时」）
     heartbeat_interval_s: int = int(_env("AGENT_HEARTBEAT_INTERVAL_S", "60"))
 
+    # === fix_looping 镜级自愈（B1）===
+    # 修正后缀策略（决定失败镜重生时是否追加按原因映射的修正指令）：
+    #   off        不带后缀，原样重生
+    #   mechanism  总是带按原因映射的后缀（如模糊→steady shot/slow camera）
+    #   random50   50/50 随机 —— B0 阶段 3 的在线 A/B：零额外成本地从真实流量
+    #              得到「后缀有没有用」的答案，fix_history[*].used_hint 记录分组
+    fix_hint_mode: str = _env("AGENT_FIX_HINT_MODE", "random50")
+
     @property
     def headers(self) -> dict:
         return {

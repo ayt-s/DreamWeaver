@@ -79,6 +79,21 @@ class CreativeSessionState(TypedDict):
     fix_round: NotRequired[int]
     max_fix_rounds: NotRequired[int]
     fix_history: NotRequired[list]
+    # fix_looping 检测到会话已中止（用户删任务 / 全量重生后心跳回 tracked=false）
+    # → 立即放弃修复，不再自动重生（否则每轮都是白烧的 agnes 调用）
+    fix_aborted: NotRequired[bool]
+    # 修复轮次用尽（节点在 fix_round + 1 > max_fix_rounds 时置位且不改动 storyboard）。
+    # ⚠️ 必须有这个显式标记：若只靠路由比较 fix_round，节点空转 + 路由仍 retry
+    #    会形成**无限循环**（重生没发生 → QC 不变 → 再回来）——
+    #    实测表现为 GraphRecursionError: Recursion limit of 10007。
+    fix_exhausted: NotRequired[bool]
+    # 放弃修复（fix_give_up 节点置位）+ 人类可读原因，由 notify_final 上报给 Java
+    fix_give_up: NotRequired[bool]
+    fix_give_up_reason: NotRequired[str]
+    # 视频生成阶段的逐段错误摘要（video_generator 写入，notify_final 兜底使用）
+    video_error: NotRequired[str]
+    # notify_final 已完成终态通知（防重复上报的标记 + 便于测试断言）
+    final_notified: NotRequired[bool]
 
     # === 审计 ===
     trace: NotRequired[list]
