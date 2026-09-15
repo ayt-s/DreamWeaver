@@ -183,10 +183,17 @@ export default function TaskCard({ task }: TaskCardProps) {
           <p className="mt-1 flex items-center gap-2 truncate text-xs text-slate-500" title={task.sessionId}>
             <span>会话 {shortSessionId(task.sessionId)}</span>
             {(() => {
-              const d = formatDuration(task.completedAt, task.createdAt);
+              // 起点优先取生成打点（Agent 受理时刻）→ 得到实际生成耗时；
+              // 无打点（历史数据/中断后迟到完成）才回退提交时间，并在 title 里说明口径差异
+              const startedAt = task.startedAt ?? task.createdAt;
+              const d = formatDuration(task.completedAt, startedAt);
               return d ? (
                 <span
-                  title="从提交到生成完成的耗时（不含内容时长）"
+                  title={
+                    task.startedAt
+                      ? '从 Agent 受理到生成完成的实际生成耗时（不含排队与中断等待，不含内容时长）'
+                      : '从提交到完成的总历时（含排队与中断等待；该任务缺少生成打点）'
+                  }
                   className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600"
                 >
                   <Clock className="h-2.5 w-2.5" />

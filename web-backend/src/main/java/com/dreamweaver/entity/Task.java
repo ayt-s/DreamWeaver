@@ -54,6 +54,14 @@ public class Task {
     /** 重生覆盖前的旧 result_json（回滚用） */
     private String prevResultJson;
 
+    /**
+     * 本轮生成起点：Agent 受理（回写 session_id）的时刻；新建 / 全量重生 / 段重生都会重新打点，
+     * 非终态回退（interrupted/queued）清零。
+     * 画廊「耗时」= completed_at - started_at（排队等待、停机、中断空档不计入）；
+     * 与 created_at 区分——created_at 是「首次提交时刻」，语义不同，不可混用。
+     */
+    private LocalDateTime startedAt;
+
     /** 终态完成/失败时间；与 updated_at 区分——自动重试器刷新 updated_at 时不覆盖此字段 */
     private LocalDateTime completedAt;
 

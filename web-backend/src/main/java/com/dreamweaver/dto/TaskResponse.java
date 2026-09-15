@@ -42,6 +42,9 @@ public class TaskResponse {
      *  Jackson 序列化为 "draft"；Boolean isDraft 生成 getIsDraft()，序列化为 "isDraft"，与前端对齐 */
     private Boolean isDraft;
 
+    /** 本轮生成起点（ISO 格式）：Agent 受理时刻；前端算「实际生成耗时」用 */
+    private String startedAt;
+
     /** 终态完成/失败时间（ISO 格式）；前端展示任务耗时 */
     private String completedAt;
 

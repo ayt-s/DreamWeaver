@@ -49,14 +49,16 @@ export const STATUS_LABELS: Record<string, string> = {
 };
 
 /**
- * 格式化任务耗时（completedAt - createdAt）。
- * completedAt 为 ISO 字符串（如 "2026-09-06T12:04:14"），created 为毫秒时间戳。
+ * 格式化任务耗时（completedAt - 起始时刻）。
+ * 起始时刻优先传 startedAt（本轮生成起点 = Agent 受理时刻），这样得到的是「实际生成耗时」，
+ * 不含排队等待、服务停机、中断重试的空档；startedAt 缺失（历史数据 / 中断后迟到完成）
+ * 才回退 createdAt，此时结果含等待，调用方文案要说明。
  * 返回如 "5 分 23 秒"；参数缺失或异常返回 null。
  */
-export function formatDuration(completedAt: string | undefined, createdAt: string | undefined): string | null {
-  if (!completedAt || !createdAt) return null;
+export function formatDuration(completedAt: string | undefined, startedAt: string | undefined): string | null {
+  if (!completedAt || !startedAt) return null;
   const end = new Date(completedAt).getTime();
-  const start = new Date(createdAt).getTime();
+  const start = new Date(startedAt).getTime();
   if (!end || !start || isNaN(end) || isNaN(start)) return null;
   const ms = end - start;
   if (ms < 0) return null;
@@ -98,6 +100,8 @@ export interface TaskResponse {
   isDraft?: boolean;
   /** 段配置 JSON 字符串（有值时支持按段重生） */
   segmentsJson?: string;
+  /** 本轮生成起点（ISO 格式）：Agent 受理时刻；算「实际生成耗时」用，缺失时回退 createdAt */
+  startedAt?: string;
   /** 终态完成/失败时间（ISO 格式） */
   completedAt?: string;
   /** 任务创建时间（ISO 格式） */

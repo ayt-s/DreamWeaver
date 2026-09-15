@@ -141,13 +141,18 @@ public class NotifyServiceImpl implements NotifyService {
             updated = taskMapper.updateById(task);
         } else if ("queued".equals(toStatus) || "interrupted".equals(toStatus)) {
             // Agent 重启恢复后回退报到（interrupted → queued）或显式报中断：
-            // 非终态回退，不写 completed_at、不覆盖已聚合的产物字段，只回写状态与提示
+            // 非终态回退，不写 completed_at、不覆盖已聚合的产物字段，只回写状态与提示。
+            // 两个时间戳都必须显式清空：过去只「不写」completed_at，导致 failed 写过的
+            // 旧值残留（实测 id=36：status=queued 却带着 completed_at=09-14 23:42:22，
+            // 画廊显示「耗时 2 秒 · 排队中」自相矛盾）；started_at 一并清零，等重跑重新打点。
             String warn = request.getError_message();
             String errorToStore = (warn != null && !warn.isBlank()) ? warn : null;
             updated = taskMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<com.dreamweaver.entity.Task>()
                     .eq(com.dreamweaver.entity.Task::getId, task.getId())
                     .eq(com.dreamweaver.entity.Task::getVersion, task.getVersion())
                     .set(com.dreamweaver.entity.Task::getStatus, toStatus)
+                    .set(com.dreamweaver.entity.Task::getCompletedAt, null)
+                    .set(com.dreamweaver.entity.Task::getStartedAt, null)
                     .set(com.dreamweaver.entity.Task::getErrorMessage, errorToStore)
                     .set(com.dreamweaver.entity.Task::getUpdatedAt, LocalDateTime.now())
                     .setSql("version = version + 1"));

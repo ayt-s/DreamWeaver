@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS creative_task (
     shot_index    INT          DEFAULT 0 COMMENT '当前分镜索引',
     error_message VARCHAR(512) DEFAULT NULL,
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at    DATETIME     DEFAULT NULL COMMENT '本轮生成起点（Agent 受理时刻）；画廊耗时 = completed_at - started_at',
     updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     completed_at  DATETIME     DEFAULT NULL COMMENT 'terminal completion time; distinct from updated_at',
     version       INT          NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',

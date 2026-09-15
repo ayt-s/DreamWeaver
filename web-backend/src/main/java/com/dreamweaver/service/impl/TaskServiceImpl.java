@@ -183,6 +183,9 @@ public class TaskServiceImpl implements TaskService {
                 .set(com.dreamweaver.entity.Task::getImageUrls, null)
                 .set(com.dreamweaver.entity.Task::getErrorMessage, null)
                 .set(com.dreamweaver.entity.Task::getCompletedAt, null)
+                // 计时打点清零：本轮重新派发时由 dispatchToAgent 重新写 started_at，
+                // 否则派发失败会把上一次的生成耗时留在画廊上（耗时口径见 phase8_migration.sql）
+                .set(com.dreamweaver.entity.Task::getStartedAt, null)
                 // 全量重生成 → 旧产物存 prev_result_json 供回滚，段配置失效一并清空
                 .set(com.dreamweaver.entity.Task::getPrevResultJson, original.getResultJson())
                 .set(com.dreamweaver.entity.Task::getSegmentsJson, null)
@@ -365,6 +368,10 @@ public class TaskServiceImpl implements TaskService {
             String sessionId = (String) agentResp.getData().get("session_id");
             task.setSessionId(sessionId);
             task.setStatus("queued");
+            // 生成计时起点：Agent 已受理本轮生成（拿到 session_id）。
+            // 画廊「耗时」= completed_at - started_at，排队等待/停机/中断空档都不计入。
+            // 新建、全量重生、段重生三条链路都汇聚到此处，一处理即可全覆盖。
+            task.setStartedAt(LocalDateTime.now());
             // 内存态清空旧产物/错误：updateById 的 NOT_NULL 策略会忽略 null，
             // 但会把 entity 里残留的旧值（regenerate 时加载的）重新写回——必须先置 null 挡掉
             task.setErrorMessage(null);
@@ -527,6 +534,7 @@ public class TaskServiceImpl implements TaskService {
                 .set(com.dreamweaver.entity.Task::getResultJson, null)
                 .set(com.dreamweaver.entity.Task::getErrorMessage, null)
                 .set(com.dreamweaver.entity.Task::getCompletedAt, null)
+                .set(com.dreamweaver.entity.Task::getStartedAt, null)
                 .set(com.dreamweaver.entity.Task::getPrevResultJson, original.getResultJson())
                 .set(com.dreamweaver.entity.Task::getSegmentsJson, newSegmentsJson)
                 .set(com.dreamweaver.entity.Task::getUpdatedAt, LocalDateTime.now()));
@@ -608,6 +616,9 @@ public class TaskServiceImpl implements TaskService {
         resp.setPrompt(task.getPrompt());
         // Lombok @Data 对 Boolean isDraft 生成 getIsDraft()/setIsDraft()
         resp.setIsDraft(task.getIsDraft() != null && task.getIsDraft() == 1);
+        if (task.getStartedAt() != null) {
+            resp.setStartedAt(task.getStartedAt().toString());
+        }
         if (task.getCompletedAt() != null) {
             resp.setCompletedAt(task.getCompletedAt().toString());
         }
