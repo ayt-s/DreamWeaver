@@ -66,6 +66,9 @@ class CreativeSessionState(TypedDict):
     assets: NotRequired[list]
     video_urls: NotRequired[list]
     video_ids: NotRequired[list]
+    # asset_fetch 落到本地的分段视频路径（list[str]，与 video_urls 同长同序；
+    # 下载失败的索引为 "" 占位。QC 只能检本地文件，agnes 直链检不了）
+    local_video_paths: NotRequired[list]
     image_urls: NotRequired[list]
     # synthesizer 拼接后的长视频 URL（画布模式产物）
     final_video_url: NotRequired[str]
