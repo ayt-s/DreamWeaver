@@ -455,6 +455,11 @@ async def get_task(session_id: str) -> ApiResponse:
             "final_video_url": state.get("final_video_url"),
             "image_urls": state.get("image_urls"),
             "error_message": state.get("error_message"),
+            # 质检报告（A7）：逐镜结果 {passed, total_shots, failed_shots, shots[], reason}
+            # 前端 TrajectoryPanel 按 3s 轮询本接口，据此渲染逐镜质检明细。
+            # 画廊卡片上的「N/M 镜未通过质检」走 Java 的 error_message
+            # （notify_final 已把汇总写进去），所以这里只服务轨迹面板的明细展示。
+            "qc_report": state.get("qc_report"),
         }
     )
 

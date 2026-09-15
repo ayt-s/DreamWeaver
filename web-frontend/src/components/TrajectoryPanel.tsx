@@ -2,10 +2,11 @@ import { useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTaskEvents } from '../hooks/useTaskEvents';
 import { getTask } from '../api/tasks';
+import { agentTaskState, type QcReport } from '../api/agent';
 import { useTaskStore } from '../store/taskStore';
 import { parseResultUrls } from '../types/task';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Video, CheckCircle, XCircle, Clock, AlertCircle } from 'lucide-react';
+import { Video, CheckCircle, XCircle, Clock, AlertCircle, ScanSearch } from 'lucide-react';
 import { statusLabel } from '../types/task';
 
 const NODE_NAMES: Record<string, string> = {
@@ -15,8 +16,10 @@ const NODE_NAMES: Record<string, string> = {
   canvas_storyboarder: '画布分镜',
   image_generator: '图像生成',
   video_generator: '视频生成',
+  asset_fetch: '产物本地化',
   qc_checker: '质量检查',
   synthesizer: '多镜拼接',
+  notify_final: '任务收尾',
   fix_looping: '修复重试',
 };
 
@@ -55,6 +58,17 @@ export default function TrajectoryPanel() {
   // 中断任务在前端视为已停下：不再显示「Agent 正在创作中…」的假进行中提示；
   // 但仍保留 3s 轮询，以便后端迟到的 completed 回调把它复活时能自动刷出来。
   const isHalted = isDone || task?.status === 'interrupted';
+
+  // 逐镜质检明细：只在 agent 的 state 里，Java 任务详情只带一句汇总（notify_final 写入）。
+  // 任务停下后不再轮询（QC 结果不会再变）；agent 未启动/会话过期时静默为 null。
+  const { data: agentState } = useQuery({
+    queryKey: ['agentState', sseSessionId],
+    queryFn: () => (sseSessionId ? agentTaskState(sseSessionId) : null),
+    refetchInterval: sseSessionId && !isHalted ? 3000 : false,
+    enabled: sseSessionId != null,
+    retry: false,
+  });
+  const qcReport = agentState?.qc_report ?? null;
   if (isDone && task && !recordedIds.current.has(task.id)) {
     recordedIds.current.add(task.id);
     addCompletedTask(task);
@@ -128,6 +142,7 @@ export default function TrajectoryPanel() {
       {task && !isLoading && (
         <>
           <TaskStatusLine task={task} />
+          <QcReportBlock qc={qcReport} />
 
           <div className="mt-6 space-y-2">
             {events.map((ev, i) => (
@@ -198,6 +213,64 @@ export default function TrajectoryPanel() {
           </motion.div>
         )}
       </AnimatePresence>
+    </motion.div>
+  );
+}
+
+/**
+ * 逐镜质检结果（A7）。
+ *
+ * 数据来源是 agent 的 `/v1/tasks/{id}`（`qc_report`），不是 Java 的任务详情 ——
+ * Java 侧只有 `notify_final` 写入的一句汇总（`error_message`），
+ * 逐镜原因（哪一镜、什么原因）只有 agent 知道。
+ *
+ * `qc` 为 null 表示**没跑质检**（图片任务 / 合成视频），与「质检通过」是两件事，
+ * 所以此处不渲染任何东西，而不是渲染「全部通过」。
+ */
+export function QcReportBlock({ qc }: { qc: QcReport | null }) {
+  if (!qc) return null;
+
+  const failed = qc.failed_shots ?? [];
+  const total = qc.total_shots ?? qc.shots?.length ?? 0;
+  const passedCount = total - failed.length;
+  const ok = qc.passed;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -10 }}
+      animate={{ opacity: 1, y: 0 }}
+      data-testid="qc-report"
+      className={
+        'mb-4 rounded-lg border px-4 py-3 text-sm ' +
+        (ok
+          ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+          : 'border-amber-200 bg-amber-50 text-amber-800')
+      }
+    >
+      <div className="flex items-center gap-2">
+        <ScanSearch className="h-5 w-5 shrink-0" />
+        <span className="font-medium">
+          质检：{passedCount}/{total} 镜通过
+        </span>
+      </div>
+      {!ok && failed.length > 0 && (
+        <ul className="mt-2 space-y-1 pl-7 text-xs">
+          {failed.map((idx) => {
+            const shot = (qc.shots ?? []).find((s) => s.index === idx);
+            return (
+              <li key={idx}>
+                第 {idx + 1} 镜：{shot?.error || '未通过'}
+                {shot?.duration != null && shot.duration > 0 && (
+                  <span className="text-amber-600/80">
+                    （实测 {shot.duration.toFixed(1)}s
+                    {shot.duration_expected != null ? ` / 期望 ${shot.duration_expected}s` : ''}）
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </motion.div>
   );
 }

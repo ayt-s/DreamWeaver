@@ -88,6 +88,68 @@ def test_get_task_response_format(client, monkeypatch):
     assert body["data"]["status"] == "video_generating"
 
 
+def _base_session(sid: str) -> dict:
+    return {
+        "session_id": sid,
+        "user_id": "test-user",
+        "raw_prompt": "测试",
+        "status": TaskStatus.COMPLETED,
+        "brief": {}, "script": [], "storyboard": [],
+        "video_urls": [], "trace": [],
+        "fix_round": 0, "max_fix_rounds": 3, "fix_history": [],
+        "error_message": None, "created_at": 0, "updated_at": 0,
+    }
+
+
+def test_get_task_exposes_qc_report(client):
+    """GET /v1/tasks/{id} 必须返回逐镜 qc_report（A7）。
+
+    这是质检明细**唯一**的出口：画廊卡片上的汇总走 Java 的 error_message
+    （notify_final 写进去的一句话），逐镜原因只能从这里取。
+    """
+    from app.main import _sessions
+    state = _base_session("test-qc-001")
+    state["qc_report"] = {
+        "passed": False,
+        "total_shots": 2,
+        "failed_shots": [1],
+        "shots": [
+            {"index": 0, "passed": True, "error": "", "blur_frame_ratio": 0.0},
+            {"index": 1, "passed": False, "error": "画面质检未通过（模糊帧比例 90%）",
+             "blur_frame_ratio": 0.9},
+        ],
+        "reason": "1/2 镜未通过质检",
+    }
+    _sessions["test-qc-001"] = state
+
+    resp = client.get("/v1/tasks/test-qc-001")
+    assert resp.status_code == 200
+    qc = resp.json()["data"]["qc_report"]
+
+    assert qc["passed"] is False
+    assert qc["total_shots"] == 2
+    assert qc["failed_shots"] == [1]
+    assert qc["shots"][1]["error"]
+    # 回归护栏：跳过字段绝不能复活（它是 QC 从未生效的元凶）
+    assert "skipped" not in qc
+    assert all("skipped" not in s for s in qc["shots"])
+
+
+def test_get_task_qc_report_is_null_when_not_run(client):
+    """QC 未跑的链路（图片任务 / 合成视频）→ qc_report 为 null，而不是缺字段。
+
+    前端据此区分「没质检」与「质检通过」，缺字段会让两者混淆。
+    """
+    from app.main import _sessions
+    _sessions["test-qc-002"] = _base_session("test-qc-002")
+
+    resp = client.get("/v1/tasks/test-qc-002")
+    data = resp.json()["data"]
+
+    assert "qc_report" in data
+    assert data["qc_report"] is None
+
+
 def test_scheduler_snapshot_endpoint(client):
     """GET /v1/scheduler 返回执行中/排队中的快照结构。"""
     resp = client.get("/v1/scheduler")
