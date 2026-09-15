@@ -67,6 +67,43 @@ _AGNES_ERROR_CN = {
 }
 
 
+def _describe_transport_error(e: httpx.TransportError) -> str:
+    """把传输层异常翻译成**可诊断**的中文。
+
+    为什么要专门做这个（2026-09-15 实测踩到）：
+
+    1. 原实现是 `f"网络异常 {e}"`，而 **httpx 的异常 `str(e)` 常常是空串** ——
+       线上真实看到的错误就是 `视频提交所有 provider 都失败…：[intl] 网络异常 `
+       （后面什么都没有），完全无法定位，为此白查了一轮「是不是网络/代理问题」。
+    2. `httpx.ReadTimeout` 也是 `TransportError`。而**agnes 免费额度只有 RPM 限制**，
+       平台排队时提交请求的慢响应会以读超时出现 —— 一律说成「网络异常」会把人带偏。
+
+    所以这里必须带**异常类型名**，并按超时 / 连接 / 协议分开表述。
+    """
+    kind = type(e).__name__
+    detail = str(e).strip()
+    # 顺序有讲究：ConnectTimeout 同时是「超时」和「连接错误」，但它的病因是
+    # **连不上**（网络/DNS/代理），不是排队等响应 —— 必须先判它，
+    # 否则会把它说成「平台排队」，反而把人带偏。
+    if isinstance(e, httpx.ConnectTimeout):
+        hint = "连接超时（连不上平台：本机网络 / DNS / 代理，或平台不可达）"
+    elif isinstance(e, httpx.ReadTimeout):
+        hint = "读超时（等平台响应超时；平台排队/限流时常见，未必是网络故障）"
+    elif isinstance(e, httpx.WriteTimeout):
+        hint = "写超时（请求体没发完）"
+    elif isinstance(e, httpx.PoolTimeout):
+        hint = "连接池超时（并发请求挤满，非平台问题）"
+    elif isinstance(e, httpx.TimeoutException):
+        hint = "请求超时"
+    elif isinstance(e, httpx.ConnectError):
+        hint = "连接失败（本机网络 / DNS / 代理，或平台不可达）"
+    elif isinstance(e, httpx.ProtocolError):
+        hint = "协议错误（响应被截断或代理干扰）"
+    else:
+        hint = "传输层异常"
+    return f"{hint} [{kind}]" + (f" {detail}" if detail else "（异常无文本信息）")
+
+
 class VideoSubmitGate:
     """全局视频提交节流门：两次 /videos 提交至少间隔 interval_s（对齐 agnes 视频 RPM≈2/分）。
 
@@ -313,12 +350,18 @@ class AgnesGateway:
                 try:
                     resp = await client._client.post("/videos", json=payload)
                 except httpx.TransportError as e:
-                    last_reason = f"[{provider_name}] 网络异常 {e}"
+                    # 超时多半是平台排队（agnes 免费额度只有 RPM 限制），
+                    # 用与 5xx 同量级的长退避；真·连接失败几次之后会如实抛出。
+                    # 原实现对所有 TransportError 一律 `5 * attempt`（5~25s），
+                    # 对「队列要几分钟才消化」的排队场景明显偏短。
+                    is_timeout = isinstance(e, httpx.TimeoutException)
+                    base_wait = min(30 * attempt, 60) if is_timeout else 5 * attempt
+                    wait = base_wait * (1 + random.uniform(-0.2, 0.2))
+                    last_reason = f"[{provider_name}] {_describe_transport_error(e)}"
                     if attempt == attempts_per_provider:
                         break
-                    wait = 5 * attempt
-                    logger.warning("视频提交[%s]网络异常，%ds 后重试 (%d/%d)",
-                                   provider_name, wait, attempt, attempts_per_provider)
+                    logger.warning("视频提交[%s]%s，%.1fs 后重试 (%d/%d)",
+                                   provider_name, last_reason, wait, attempt, attempts_per_provider)
                     await asyncio.sleep(wait)
                     continue
 

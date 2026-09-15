@@ -22,3 +22,6 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "real_gateway_method: 故意调用真实 Agnes 网关方法（测试自备假 HTTP 客户端，不出网）",
+]

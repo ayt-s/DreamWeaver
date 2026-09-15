@@ -35,7 +35,7 @@ def _quiet_side_effects(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _forbid_real_agnes_calls(monkeypatch):
+def _forbid_real_agnes_calls(monkeypatch, request):
     """禁止测试打真实 Agnes API：任何忘了注入替身的调用直接报错。
 
     **为什么必须有（2026-09-15 实测踩到）**：`app/nodes/video.py` 与
@@ -43,14 +43,24 @@ def _forbid_real_agnes_calls(monkeypatch):
     只 patch 其中一处时另一处仍会打真实 API。症状是**测试挂住**
     （等 503 退避重试，实测 31.2s × 6 次），严重时会真的提交任务烧额度。
     这条夹具让这类遗漏立刻以 AssertionError 暴露，而不是静默打网络。
+
+    **逃生门**：标了 `@pytest.mark.real_gateway_method` 的测试是**故意**调用真实
+    网关方法的（目的是验证方法自身的分支/文案，例如视频提交失败的报错是否可定位），
+    前提是它自己已经把 HTTP 客户端换成替身 —— 仍然不出网。
+    见 `tests/test_gateway_error_messages.py`。
     """
+    if request.node.get_closest_marker("real_gateway_method"):
+        return
+
     from app.gateway.agnes import AgnesGateway
 
     def _boom(name: str):
         def _raise(*args, **kwargs):
             raise AssertionError(
                 f"测试调用了真实 Agnes 网关的 {name}()：请注入替身。"
-                f"注意 app.nodes.* 与 app.tools.* 各有自己的 gateway 引用，两处都要 patch"
+                f"注意 app.nodes.* 与 app.tools.* 各有自己的 gateway 引用，两处都要 patch。"
+                f"若确实要测真实方法的自身逻辑（且已把 HTTP 客户端换成替身），"
+                f"加 @pytest.mark.real_gateway_method 标注"
             )
         return _raise
 
