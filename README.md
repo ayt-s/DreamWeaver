@@ -3,6 +3,56 @@
 > 用户一句话需求 → AI 导演 Agent 自动产出短视频成片。
 > 「剧本 → 分镜 → 提示词 → 素材生成 → 视频生成 → 质检 → 修正」完整 Agent 闭环。
 
+## 🚀 快速开始
+
+### 0. 前置依赖
+
+- Python ≥ 3.11、Java 17、Node ≥ 18
+- MySQL 8 —— 建库 `dreamweaver`，建表脚本 `web-backend/src/main/resources/db/init.sql`
+- Redis —— **可选**：用于 agent 会话快照与 Java 看门狗；agent 侧连不上会静默降级为纯内存，不阻塞启动
+
+### 1. 配置环境变量（必需）
+
+```bash
+cd agent-service
+cp .env.example .env
+# 编辑 .env，至少填两项：
+#   AGNES_API_KEY   获取地址：https://platform.agnes-ai.com/ → Settings → API Keys
+#   JAVA_NOTIFY_URL Phase 2 回调目标，如 http://localhost:8080（不填则不回写 Java 侧状态）
+# 可选：AGNES_API_KEY_cn 走国内端点（同家供应商多账号扩容）
+```
+
+### 2. 启动模型侧（agent-service）
+
+```bash
+cd agent-service
+python -m venv .venv
+# Windows: .venv\Scripts\activate   |   Linux/macOS: source .venv/bin/activate
+pip install -e ".[dev]"
+uvicorn app.main:app --reload --port 8000
+```
+
+### 3. 启动业务侧（web-backend）
+
+```bash
+cd web-backend
+./mvnw spring-boot:run
+```
+
+### 4. 启动前端（web-frontend）
+
+```bash
+cd web-frontend
+npm install
+npm run dev   # 打开 http://localhost:5173
+```
+## 🔒 安全说明
+
+- API Key 只存于 `agent-service/.env`（已 gitignore），前端与 Java 均不接触
+- 密钥全部环境变量注入，`.env.example` 提供模板与获取指引
+- 回调幂等：乐观锁 + 状态机转移表 + 终态检查三重防护
+- 回调失联不丢数据：本地 JSONL 兜底 + 结构化补拉端点，Java 恢复后主动 `sync-fallback`
+
 ## ✨ 项目亮点
 
 - **多 Agent 协作编排**：LangGraph 状态图驱动的创作流水线（需求解析 → 剧本 → 分镜 → 生成 → 质检 → 修正），每个 checkpoint 全量写入 Redis 快照，进程重启自动恢复活跃会话
@@ -63,49 +113,6 @@ React (5173)
 旁路依赖：MySQL 8（业务数据）· Redis（会话快照 / TTL 看门狗）· 本地 ffmpeg（兜底合成）
 ```
 
-## 🚀 快速开始
-
-### 0. 前置依赖
-
-- Python ≥ 3.11、Java 17、Node ≥ 18
-- MySQL 8 —— 建库 `dreamweaver`，建表脚本 `web-backend/src/main/resources/db/init.sql`
-- Redis —— **可选**：用于 agent 会话快照与 Java 看门狗；agent 侧连不上会静默降级为纯内存，不阻塞启动
-
-### 1. 配置环境变量（必需）
-
-```bash
-cd agent-service
-cp .env.example .env
-# 编辑 .env，至少填两项：
-#   AGNES_API_KEY   获取地址：https://platform.agnes-ai.com/ → Settings → API Keys
-#   JAVA_NOTIFY_URL Phase 2 回调目标，如 http://localhost:8080（不填则不回写 Java 侧状态）
-# 可选：AGNES_API_KEY_cn 走国内端点（同家供应商多账号扩容）
-```
-
-### 2. 启动模型侧（agent-service）
-
-```bash
-cd agent-service
-python -m venv .venv
-# Windows: .venv\Scripts\activate   |   Linux/macOS: source .venv/bin/activate
-pip install -e ".[dev]"
-uvicorn app.main:app --reload --port 8000
-```
-
-### 3. 启动业务侧（web-backend）
-
-```bash
-cd web-backend
-./mvnw spring-boot:run
-```
-
-### 4. 启动前端（web-frontend）
-
-```bash
-cd web-frontend
-npm install
-npm run dev   # 打开 http://localhost:5173
-```
 
 ## 📁 项目结构
 
@@ -173,9 +180,4 @@ cd web-frontend && npm run test && npm run lint
 - 分阶段进度：`docs/phase2-progress-report.md`、`docs/phase3-delegation-summary.md`、`docs/final-progress-report.md`
 - ⚠️ 文档中的「评测集 + 失败样本回放」为**规划项**，尚未落地（当前已实现的是双层 QC + `fix_looping` 失败回流 + 修正后缀在线 A/B）
 
-## 🔒 安全说明
 
-- API Key 只存于 `agent-service/.env`（已 gitignore），前端与 Java 均不接触
-- 密钥全部环境变量注入，`.env.example` 提供模板与获取指引
-- 回调幂等：乐观锁 + 状态机转移表 + 终态检查三重防护
-- 回调失联不丢数据：本地 JSONL 兜底 + 结构化补拉端点，Java 恢复后主动 `sync-fallback`
