@@ -106,6 +106,23 @@ class Settings:
     log_dir: str = _env("AGENT_LOG_DIR", "").strip() or "data/logs"
     log_level: str = _env("AGENT_LOG_LEVEL", "INFO").strip().upper() or "INFO"
 
+    # === 可观测性：LangSmith（P0-2 架包，批次 H）===
+    # **默认关闭**。关闭时 `utils.observability.traced` 直接透传，不 import langsmith、
+    # 零开销 —— 上报失败绝不能影响主流程。
+    #
+    # 为什么需要它：本项目 LLM 调用是**裸 httpx**（gateway/agnes.py），
+    # LangGraph 的自动 tracing 只覆盖图结构事件（节点/边），**捕获不到节点内部的
+    # httpx 调用**。所以提示词/模型/重试这些细节必须手动包一层。
+    #
+    # ⚠️ 本机需 Clash 代理才能到 api.smith.langchain.com（LangSmith SDK 认
+    # HTTP_PROXY/HTTPS_PROXY 环境变量）。
+    langsmith_tracing: bool = _env(
+        "LANGSMITH_TRACING", "0").strip().lower() in ("1", "true", "yes", "on")
+    # 项目名（LangSmith 网页上的分组）
+    langsmith_project: str = _env("LANGSMITH_PROJECT", "dreamweaver-agent").strip()
+    # 自定义端点（自建 / 代理转发用；空则用 SDK 默认）
+    langsmith_endpoint: str = _env("LANGSMITH_ENDPOINT", "").strip()
+
     @property
     def headers(self) -> dict:
         return {

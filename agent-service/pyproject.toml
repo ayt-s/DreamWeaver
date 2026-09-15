@@ -15,6 +15,10 @@ dependencies = [
     "openai>=1.40",
     # 会话持久化（显式 Redis 快照 + 启动恢复，见 app/session_store.py）
     "redis>=5",
+    # 可观测性（P0-2 架包，批次 H）：LLM 出口的手动 tracing。
+    # 显式声明 —— 之前它只是 langchain-core 的传递依赖，随时可能消失。
+    # 默认关闭（LANGSMITH_TRACING=0），关闭时不 import、零开销。
+    "langsmith>=0.12",
 ]
 
 [project.optional-dependencies]
