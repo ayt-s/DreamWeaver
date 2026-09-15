@@ -95,7 +95,12 @@ def _entry_route(state: CreativeSessionState) -> str:
     图片重生特殊处理：文生图/漫剧任务带 segments 时，直接跳到 image_generator
     （跳过 canvas_storyboarder），因为图片任务不需要 storyboard 翻译环节。
     图片合成视频：slideshow 非空且带图片列表时直达 slideshow 节点（不消耗 agnes 额度）。
+    直出图：画布节点「一键文生图」带了 direct_image 标记时，跳过需求解析/剧本/分镜，
+    直达 image_generator（由节点内部短路，按 prompt 出 N 张候选）。不短路的话 LLM 会把
+    「一镜一 prompt」重新拆成多镜，一次任务产出多张用不上的图（实测 5 张/3 张）。
     """
+    if state.get("direct_image"):
+        return "direct_image"
     if state.get("slideshow") and state.get("slideshow_images"):
         return "slideshow"
     if state.get("segments"):
@@ -193,7 +198,9 @@ for _name, _fn in _NODE_FUNCS.items():
 graph.set_conditional_entry_point(
     _entry_route,
     {"canvas": "canvas_storyboarder", "standard": "requirement_parser",
-     "image_rework": "image_generator", "slideshow": "image_slideshow"},
+     "image_rework": "image_generator", "slideshow": "image_slideshow",
+     # 直出图复用 image_generator 节点（节点内部短路，不走 storyboard 循环）
+     "direct_image": "image_generator"},
 )
 
 # === 标准链路 ===

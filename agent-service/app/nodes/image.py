@@ -246,6 +246,62 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
             "status": TaskStatus.COMPLETED if non_empty_urls else TaskStatus.FAILED,
         }
 
+    # ---- 直出图（画布节点「一键文生图」）：跳过流水线，按 prompt 直接出 N 张候选 ----
+    #
+    # 为什么连续请求 N 次而不是一次请求 n 张：agnes 的 /images/generations 只认
+    # model + prompt（塞未知字段会被 400 拒，negative_prompt 就是这么被发现的），
+    # 所以"多候选"只能靠同 prompt 多次请求拿到。
+    # 与 standard 路径的区别：不会经过 requirement_parser/script_writer/storyboarder，
+    # 因此不会出现「一镜的 prompt 被 LLM 拆成多镜、白生成一堆用不上的图」。
+    if state.get("direct_image"):
+        sid = state["session_id"]
+        count = max(1, min(5, int(state.get("image_count") or 1)))
+        prompt = str(state.get("raw_prompt") or "").strip()
+        logger.info("直出图模式: 候选 %d 张 | prompt=%.60s", count, prompt)
+        direct_urls: list[str] = []
+        for k in range(count):
+            if abort.is_aborted(sid):
+                logger.warning("会话 %s 已中止，停止后续直出图（已出 %d 张）", sid, len(direct_urls))
+                break
+            await events.emit(sid, "tool_called",
+                              {"tool_name": "generate_image", "shot_index": k})
+            start = time.time()
+            try:
+                got = await gateway.generate_image(prompt=prompt, model=settings.image_model)
+            except Exception as exc:  # 单张失败不影响其余候选
+                logger.warning("直出图第 %d 张失败: %s", k + 1, exc)
+                got = []
+            latency_ms = int((time.time() - start) * 1000)
+            if got:
+                direct_urls.append(got[0])
+            trace = trace_util.append(
+                trace, trace_util.shot("image_generator", k),
+                trace_util.STATUS_OK if got else trace_util.STATUS_FAILED,
+                elapsed_ms=latency_ms)
+        await events.emit(sid, "node_completed",
+                          {"node_id": "image_generator",
+                           "summary": f"直出图 {len(direct_urls)}/{count} 张候选"})
+        # ⚠️ 回调必须在这里发：text_image 模式的图路由是 text_done → END，
+        # **不经过 notify_final**，漏了这一步任务会永远停在 pending
+        if direct_urls:
+            # storyboard 传空：直出图没有分镜，Java 侧不会覆盖已有 segments_json
+            await _finish_text_image(sid, [], direct_urls)
+        else:
+            from app.callback.java_notify import notify_java_completion
+            asyncio.create_task(
+                notify_java_completion(
+                    session_id=sid,
+                    status="failed",
+                    error_message=f"文生图全部失败（{count} 张候选均未生成）",
+                )
+            )
+            await events.emit(sid, "failed", {})
+        return {
+            "image_urls": direct_urls,
+            "trace": trace,
+            "status": TaskStatus.ASSET_GENERATING,
+        }
+
     # ---- 文生图模式：storyboard 逐镜生成 ----
     if not storyboard:
         logger.warning("image_generator: storyboard 为空，跳过")

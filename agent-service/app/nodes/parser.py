@@ -22,8 +22,13 @@ BRIEF_TEMPLATE = """
   "style": "风格（如科技感/温馨/商务）",
   "duration_seconds": "期望时长（4-12）",
   "audience": "目标受众",
-  "mood": "情绪基调"
+  "mood": "情绪基调",
+  "plot_outline": "剧情主线：按顺序列出用户需求里的 3~6 个关键事件（人物+做了什么+结果），每条一句话，必须忠实于用户原文；用户需求里没有具体剧情（如只给了「做个奶茶广告」这类主题）时填空字符串"
 }}
+
+⚠️ plot_outline 必须来自用户需求本身，**不得自行创作人物与事件**：
+用户给了小说章节/故事梗概时，这里就是他那些人物和事件的浓缩，
+丢了它下游剧本节点只能自由发挥，产出会与原文无关（2026-09-15 实测事故）。
 """
 
 
@@ -31,7 +36,8 @@ def validate_brief(raw: str) -> dict:
     data = parse_llm_json(raw)
     if not isinstance(data, dict):
         raise ValueError(f"Brief 解析结果不是对象: {str(data)[:200]}")
-    for key in ("theme", "style", "duration_seconds", "audience", "mood"):
+    # plot_outline 缺失时补空串（下游剧本模板据此决定是否加剧情强约束）
+    for key in ("theme", "style", "duration_seconds", "audience", "mood", "plot_outline"):
         if key not in data:
             data[key] = ""
     return data

@@ -14,8 +14,12 @@ from app.utils.json_utils import parse_llm_json
 
 logger = logging.getLogger(__name__)
 
-SCRIPT_TEMPLATE_VERSION = "script_v1.1"
+SCRIPT_TEMPLATE_VERSION = "script_v1.2"
 
+# v1.2（2026-09-15）：注入 plot_outline + 镜头多样化要求。
+# 此前 Brief 只带主题/风格/时长/受众/情绪，用户给的剧情（小说章节等）在
+# requirement_parser 那一步就被压没了 → 剧本节点只能自由发挥，
+# 产出与原文无关（实测：给《长生烬》第一章，出的是「修士渡劫被烤鸡腿砸头」）。
 SCRIPT_TEMPLATE = """
 根据以下 Brief 创作短视频剧本：
 
@@ -24,7 +28,7 @@ Style: {style}
 Duration: {duration_seconds}秒
 Audience: {audience}
 Mood: {mood}
-{shot_count_line}
+{plot_outline_line}{shot_count_line}
 
 输出分镜列表（JSON 数组，总时长控制在 {duration_seconds} 秒内），每镜包含：
 - shot_id: 镜头编号
@@ -32,9 +36,9 @@ Mood: {mood}
 - camera: 镜头运动（推/拉/摇/移/固定）+ 景别（远景/全景/中景/近景/特写）+ 机位（平视/俯拍/仰拍/航拍/过肩）
 - duration: 该镜时长（秒，4~12 之间的整数）
 - style_note: 风格提示（光照/色调/质感）
-
+{camera_variety_line}{render_safety_line}
 要求：各镜 duration 之和必须等于 {duration_seconds} 秒（不要多也不要少）。
-只输出 JSON 数组，不要其他内容。
+{plot_outline_rule}只输出 JSON 数组，不要其他内容。
 """
 
 
@@ -72,12 +76,38 @@ async def script_writer_node(state: CreativeSessionState) -> dict:
     shot_count_line = ""
     if shot_count:
         shot_count_line = f"Shot count: {shot_count}（必须恰好 {shot_count} 个镜头，不多不少）"
+    # 剧情主线：非空时注进模板并附强约束（人物/事件不得替换）
+    # LLM 有时把多事件返回成数组（模板里写的是字符串），两种形式都要接住
+    outline_raw = brief.get("plot_outline")
+    if isinstance(outline_raw, list):
+        outline = "；\n".join(str(x).strip() for x in outline_raw if str(x).strip())
+    else:
+        outline = str(outline_raw or "").strip()
     prompt = SCRIPT_TEMPLATE.format(
         theme=brief.get("theme", ""),
         style=brief.get("style", ""),
         duration_seconds=brief.get("duration_seconds", "5"),
         audience=brief.get("audience", ""),
         mood=brief.get("mood", ""),
+        plot_outline_line=(
+            f"剧情主线（严格按顺序展开这些关键事件）：\n{outline}\n" if outline else ""
+        ),
+        # 镜头同质化会让画面像复读（实测：4 镜全「中景+平视+缓推」画面很雷同）
+        camera_variety_line=(
+            "镜头语言要求：各镜的景别/机位/运镜要有变化（如远景交代环境、特写抓情绪、"
+            "俯拍或跟拍制造动感），避免连续多镜重复同一组合。\n"
+        ),
+        # 画面可拍性：实测最常崩的两类镜头都出在「物件与人物身体贴合/悬浮」
+        # （烤鸡腿悬在头顶、鸡骨与头皮融在一起）——分镜阶段就别写这种镜头
+        render_safety_line=(
+            "画面可拍性（重要）：只写视频模型能真实渲染的镜头——不要让物体悬浮在半空、"
+            "附着或嵌进人物身体，不要让多物体重叠粘连，避免要求展示细小文字；"
+            "夸张/荒诞的情节用可实现的载体表达（人物表情、肢体动作、道具掉落翻倒）。\n"
+        ),
+        plot_outline_rule=(
+            "硬约束：人物、关键事件与结局必须与上面的剧情主线一致——可以补充画面细节与"
+            "台词，但不得替换人物、不得改动事件、不得自创主线。\n" if outline else ""
+        ),
         shot_count_line=shot_count_line,
     )
     raw = await _llm_json_with_retry(prompt, session_id=state["session_id"], temperature=0.3)
