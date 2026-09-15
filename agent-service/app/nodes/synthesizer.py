@@ -15,6 +15,7 @@
 """
 import asyncio
 import logging
+from pathlib import Path
 
 from app.state import CreativeSessionState, TaskStatus
 from app.utils.media import concat_videos, download, local_url, session_dir
@@ -58,15 +59,29 @@ async def synthesizer_node(state: CreativeSessionState) -> dict:
         return {"status": TaskStatus.COMPLETED, "final_video_url": ""}
 
     shot_dir = session_dir(session_id)
+    # 优先复用 asset_fetch 已下载的本地文件（画布模式下载次数 2 → 1）
+    local_raw = list(state.get("local_video_paths") or [])
     local_files = []
+    reused = 0
     try:
         for i, url in enumerate(video_urls):
+            candidate = ""
+            if i < len(local_raw) and local_raw[i]:
+                candidate = str(local_raw[i]).strip()
+            if candidate and Path(candidate).exists() and Path(candidate).stat().st_size > 0:
+                local_files.append(Path(candidate))
+                reused += 1
+                logger.info("synthesizer: 复用本地产物 %s", Path(candidate).name)
+                continue
+            # 缺失/占位空串/磁盘上已被清理 → 回落下载（兼容旧快照与恢复场景）
             dest = shot_dir / f"seg_{i:03d}.mp4"
             await download(url, dest)
             local_files.append(dest)
             await events.emit(session_id, "progress",
                               {"progress": int((i + 1) / len(video_urls) * 50), "phase": "下载分段"})
             logger.info("synthesizer: 下载分段 %d/%d → %s", i + 1, len(video_urls), dest.name)
+        if reused:
+            logger.info("synthesizer: 共复用 %d/%d 段本地产物", reused, len(video_urls))
 
         final_mp4 = shot_dir / "final.mp4"
         ok = await concat_videos(local_files, final_mp4)
