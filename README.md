@@ -178,6 +178,6 @@ cd web-frontend && npm run test && npm run lint
 - 架构审查：`docs/DreamWeaver-架构审查.md`
 - 状态机回调设计：`docs/references/state-machine-callback-design.md`
 - 分阶段进度：`docs/phase2-progress-report.md`、`docs/phase3-delegation-summary.md`、`docs/final-progress-report.md`
-- ⚠️ 文档中的「评测集 + 失败样本回放」为**规划项**，尚未落地（当前已实现的是双层 QC + `fix_looping` 失败回流 + 修正后缀在线 A/B）
+- ⚠️ 文档中的「评测集 + 失败样本回放」为**规划项**，个人项目尚未落地
 
 
