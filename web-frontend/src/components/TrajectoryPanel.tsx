@@ -33,6 +33,9 @@ const EVENT_NAMES: Record<string, string> = {
   interrupted: '流程中断',
   completed: '创作完成',
   failed: '创作失败',
+  // 服务端事件缓冲被 ring 淘汰、客户端漏掉了一段时补发的提示（F2）。
+  // 必须展示：静默缺一段轨迹是最难排查的那类问题。
+  replay_gap: '轨迹有缺口',
 };
 
 export default function TrajectoryPanel() {

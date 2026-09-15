@@ -28,7 +28,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -195,6 +195,21 @@ def _parse_segments(raw: str | None) -> list:
         return []
 
 
+def _release_session(session_id: str) -> None:
+    """会话保留期（1 小时）结束：释放内存态 + 事件总线。
+
+    两样都要放，否则长期运行会无界增长：
+    - `_sessions`：每会话一份完整 state（含 storyboard / video_urls / trace）
+    - `events` 总线：每会话一个 `deque(maxlen=500)` 事件缓冲
+
+    保留期设为 1 小时是有意的：任务结束后用户仍会回看轨迹（含 SSE 重放），
+    过期才释放。
+    """
+    _sessions.pop(session_id, None)
+    asyncio.get_running_loop().create_task(events.clear(session_id))
+    logger.debug("会话 %s 保留期结束，已释放内存态与事件总线", session_id)
+
+
 async def _run_session(state: CreativeSessionState) -> None:
     """后台执行 LangGraph。由 SessionScheduler 调用（有界并发）。"""
     config = {"configurable": {"thread_id": state["session_id"]}}
@@ -228,11 +243,11 @@ async def _run_session(state: CreativeSessionState) -> None:
         if result is None:
             result = state
         _sessions[state["session_id"]] = result
-        # 轨迹完成事件 + 清理总线（节点可能已发过 completed，重复无害）
+        # 轨迹完成事件（节点可能已发过 completed，重复无害）
         await events.emit(state["session_id"], "completed", {})
-        # 会话保留 1 小时用于查轨迹，之后释放，防止 _sessions 无限增长（内存泄漏）
+        # 会话保留 1 小时用于查轨迹，之后释放，防止 _sessions / _buses 无界增长
         asyncio.get_running_loop().call_later(
-            3600, _sessions.pop, state["session_id"], None)
+            3600, _release_session, state["session_id"])
         settled = True
     except Exception as exc:  # 节点异常 → 记 FAILED，不裸崩后台任务
         # 异常 str() 可能为空（如部分 asyncio 异常），兜底用异常类型名；
@@ -253,9 +268,9 @@ async def _run_session(state: CreativeSessionState) -> None:
             )
         )
         # 不 re-raise：避免 "Task exception was never retrieved" 日志污染
-        # 会话保留 1 小时用于查轨迹，之后释放，防止 _sessions 无限增长（内存泄漏）
+        # 会话保留 1 小时用于查轨迹，之后释放，防止 _sessions / _buses 无界增长
         asyncio.get_running_loop().call_later(
-            3600, _sessions.pop, state["session_id"], None)
+            3600, _release_session, state["session_id"])
         settled = True
     finally:
         # 会话收尾：无论成功/失败/被取消都先停心跳。
@@ -427,24 +442,59 @@ async def scheduler_snapshot() -> ApiResponse:
 
 
 @app.get("/v1/tasks/{session_id}/events")
-async def task_events(session_id: str):
-    """SSE 轨迹事件流：节点实时发射 node/tool/progress 事件。"""
-    queue = await events.subscribe(session_id)
+async def task_events(session_id: str, request: Request):
+    """SSE 轨迹事件流：节点实时发射 node/tool/progress 事件。
+
+    **支持断线重连补漏**（F2）：浏览器 EventSource 重连时会自动带上
+    `Last-Event-ID` 请求头，据此把断连期间错过的事件补发，再接上实时流。
+    （也接受 `?last_event_id=` 便于 curl / 测试手动指定。）
+    """
+    last_event_id = _parse_last_event_id(
+        request.headers.get("last-event-id") or request.query_params.get("last_event_id")
+    )
+    replay, bus = await events.subscribe(session_id, last_event_id)
 
     async def generator():
         try:
-            # 每 15s 发一次心跳注释行，防止代理超时断连
+            # 1) 先补历史（首次订阅时为空，因为「没人看就不缓冲」）
+            cursor = last_event_id or 0
+            for event in replay:
+                cursor = max(cursor, event["event_id"])
+                yield events.sse_format(event)
+
+            # 2) 再等后续新事件。⚠️ yield 必须在锁外 ——
+            #    在 cond 里 yield 会把 emit() 的 notify 卡住（客户端慢 = 节点写日志被阻塞）
             while True:
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                async with bus.cond:
+                    pending = bus.since(cursor)
+                    if not pending:
+                        try:
+                            await asyncio.wait_for(
+                                bus.cond.wait(), timeout=events.HEARTBEAT_SECONDS)
+                        except asyncio.TimeoutError:
+                            pass
+                        pending = bus.since(cursor)
+                if not pending:
+                    yield ": heartbeat\n\n"   # 注释行，防止代理超时断连
+                    continue
+                for event in pending:
+                    cursor = event["event_id"]
                     yield events.sse_format(event)
-                except asyncio.TimeoutError:
-                    yield ": heartbeat\n\n"
         finally:
-            # 消费者断开 → 清理总线
+            # 只减消费者计数，**不销毁缓冲** —— 否则刷新页面就没法补漏了
             await events.unsubscribe(session_id)
 
     return StreamingResponse(generator(), media_type="text/event-stream")
+
+
+def _parse_last_event_id(raw: str | None) -> int | None:
+    """解析 `Last-Event-ID`。非数字/缺失一律当「从头开始」。"""
+    if not raw:
+        return None
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
 
 
 @app.get("/v1/tasks/{session_id}", response_model=ApiResponse)
