@@ -34,7 +34,7 @@ public class TaskServiceImpl implements TaskService {
     private final AgentServiceProperties agentServiceProperties;
     private final WebClient.Builder webClientBuilder;
     private final StuckTaskWatchdog stuckTaskWatchdog;
-    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    private final TaskJsonCodec taskJsonCodec;
 
     /** 终态集合：可直接删除 / 可重新生成 */
     private static final Set<String> TERMINAL_STATUSES = Set.of("completed", "failed", "expired");
@@ -166,11 +166,11 @@ public class TaskServiceImpl implements TaskService {
         request.setGenType(original.getGenType());
         request.setUserId(original.getUserId() == null ? null : String.valueOf(original.getUserId()));
         // 还原精细控制参数（风格/负面词/时间轴/元素绑定），否则重生成会丢设定
-        applyGenParamsJson(original.getGenParamsJson(), request);
+        taskJsonCodec.applyGenParamsJson(original.getGenParamsJson(), request);
         // 用户在画廊「编辑参数」里改过的值覆盖历史值（非空字段才覆盖）
         int overridden = applyOverride(override, request);
         // 覆盖后重新序列化：落库让下一次重生成（无论走哪个入口）都带上新值
-        String genParamsJson = buildGenParamsJson(request);
+        String genParamsJson = taskJsonCodec.buildGenParamsJson(request);
 
         // 同一任务原地重新生成：清空旧产物与错误，保留 id/prompt/genType/userId，
         // 重新走 提交→排队→生成→回调 链路（不再创建新任务 id）
@@ -250,8 +250,7 @@ public class TaskServiceImpl implements TaskService {
         }
         try {
             java.util.List<java.util.Map<String, Object>> segs =
-                    new com.fasterxml.jackson.databind.ObjectMapper().readValue(
-                            segmentsJson, new com.fasterxml.jackson.core.type.TypeReference<java.util.List<java.util.Map<String, Object>>>() {});
+                    taskJsonCodec.parseSegments(segmentsJson);
             for (java.util.Map<String, Object> seg : segs) {
                 Object u = seg.get("image_url");
                 if (u == null) {
@@ -284,7 +283,7 @@ public class TaskServiceImpl implements TaskService {
         // 段配置落库：重生时取此作为输入源（未勾选段复用已有视频、勾选段重新生成）
         task.setSegmentsJson(request.getSegments());
         // 精细控制参数落库：regenerate 从 entity 重建请求时需要还原
-        task.setGenParamsJson(buildGenParamsJson(request));
+        task.setGenParamsJson(taskJsonCodec.buildGenParamsJson(request));
         task.setCreatedAt(LocalDateTime.now());
         task.setUpdatedAt(LocalDateTime.now());
         taskMapper.insert(task);
@@ -466,12 +465,12 @@ public class TaskServiceImpl implements TaskService {
         }
 
         // 1. 解析段配置 + 已有产物 URL
-        List<Map<String, Object>> segs = parseSegments(original.getSegmentsJson());
+        List<Map<String, Object>> segs = taskJsonCodec.parseSegments(original.getSegmentsJson());
         boolean isImageTask = "text_image".equals(original.getGenType())
                 || "comic_video".equals(original.getGenType());
         List<String> existingUrls = isImageTask
-                ? parseImageUrls(original.getImageUrls())
-                : parseResultUrls(original.getResultJson());
+                ? taskJsonCodec.parseImageUrls(original.getImageUrls())
+                : taskJsonCodec.parseResultUrls(original.getResultJson());
         // 图片任务的已有产物即 existingUrls，无需重复解析；视频任务用不到该列表
         List<String> existingImageUrls = isImageTask
                 ? existingUrls
@@ -518,7 +517,7 @@ public class TaskServiceImpl implements TaskService {
             log.warn("重生成段：以下段缺少可复用历史产物，已自动补入重生列表 id={} 补重生段={}",
                     id, effectiveRework);
         }
-        String newSegmentsJson = toJsonString(out);
+        String newSegmentsJson = taskJsonCodec.toJsonString(out);
 
         // 3. 重置任务为 pending（旧产物存 prev_result_json 供回滚），段配置更新为最新版
         taskMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<com.dreamweaver.entity.Task>()
@@ -538,7 +537,7 @@ public class TaskServiceImpl implements TaskService {
         request.setUserId(original.getUserId() == null ? null : String.valueOf(original.getUserId()));
         request.setSegments(newSegmentsJson);
         // 全局精细控制参数还原（段级 camera/负面词已随 segments_json 落库）
-        applyGenParamsJson(original.getGenParamsJson(), request);
+        taskJsonCodec.applyGenParamsJson(original.getGenParamsJson(), request);
         log.info("重生成段: id={} 重生成段={} 复用段={}", id, effectiveRework,
                 segs.size() - effectiveRework.size());
         return dispatchToAgent(taskMapper.selectById(id), request);
@@ -550,8 +549,8 @@ public class TaskServiceImpl implements TaskService {
         if (task == null || task.getSegmentsJson() == null || task.getSegmentsJson().isBlank()) {
             return new java.util.ArrayList<>();
         }
-        List<Map<String, Object>> segs = parseSegments(task.getSegmentsJson());
-        List<String> urls = parseResultUrls(task.getResultJson());
+        List<Map<String, Object>> segs = taskJsonCodec.parseSegments(task.getSegmentsJson());
+        List<String> urls = taskJsonCodec.parseResultUrls(task.getResultJson());
         List<Map<String, Object>> out = new java.util.ArrayList<>();
         for (int i = 0; i < segs.size(); i++) {
             Map<String, Object> seg = new java.util.HashMap<>(segs.get(i));
@@ -559,7 +558,7 @@ public class TaskServiceImpl implements TaskService {
             seg.put("existing_video_url", i < urls.size() ? urls.get(i) : "");
             // 图片任务（文生图/漫剧）：existing_image_url 来自 image_urls 字段
             if ("text_image".equals(task.getGenType()) || "comic_video".equals(task.getGenType())) {
-                List<String> imageUrls = parseImageUrls(task.getImageUrls());
+                List<String> imageUrls = taskJsonCodec.parseImageUrls(task.getImageUrls());
                 seg.put("existing_image_url", i < imageUrls.size() ? imageUrls.get(i) : "");
             }
             // 段列表 UI 用：参考图缩略图取首张（reference_images 为 List<String>）
@@ -576,139 +575,6 @@ public class TaskServiceImpl implements TaskService {
             out.add(seg);
         }
         return out;
-    }
-
-    /** 解析提交时落库的段配置 JSON 数组 */
-    private List<Map<String, Object>> parseSegments(String json) {
-        try {
-            return objectMapper.readValue(json,
-                    new com.fasterxml.jackson.core.type.TypeReference<List<Map<String, Object>>>() {});
-        } catch (Exception e) {
-            log.warn("解析 segments_json 失败: {}", e.getMessage());
-            return new java.util.ArrayList<>();
-        }
-    }
-
-    /**
-     * 把可灵式精细控制参数序列化为 JSON 落库。
-     * 全空时返回 null（不写无意义的 {} 占位，便于判断「是否配置过」）。
-     */
-    private String buildGenParamsJson(CreateTaskRequest request) {
-        boolean empty = (request.getStylePrompt() == null || request.getStylePrompt().isBlank())
-                && (request.getNegativePrompt() == null || request.getNegativePrompt().isBlank())
-                && request.getTotalSeconds() == null
-                && request.getShotCount() == null
-                && (request.getShotLanguage() == null || request.getShotLanguage().isBlank())
-                && (request.getReferenceBindings() == null || request.getReferenceBindings().isBlank());
-        if (empty) {
-            return null;
-        }
-        Map<String, Object> params = new java.util.LinkedHashMap<>();
-        params.put("stylePrompt", request.getStylePrompt());
-        params.put("negativePrompt", request.getNegativePrompt());
-        params.put("totalSeconds", request.getTotalSeconds());
-        params.put("shotCount", request.getShotCount());
-        params.put("shotLanguage", request.getShotLanguage());
-        params.put("referenceBindings", request.getReferenceBindings());
-        try {
-            return objectMapper.writeValueAsString(params);
-        } catch (Exception e) {
-            log.warn("序列化 gen_params_json 失败: {}", e.getMessage());
-            return null;
-        }
-    }
-
-    /** 从落库的 gen_params_json 还原精细控制参数到请求体（regenerate / rework 共用）。 */
-    private void applyGenParamsJson(String genParamsJson, CreateTaskRequest request) {
-        if (genParamsJson == null || genParamsJson.isBlank()) {
-            return;
-        }
-        try {
-            Map<String, Object> params = objectMapper.readValue(genParamsJson,
-                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
-            request.setStylePrompt(asText(params.get("stylePrompt")));
-            request.setNegativePrompt(asText(params.get("negativePrompt")));
-            request.setTotalSeconds(asInt(params.get("totalSeconds")));
-            request.setShotCount(asInt(params.get("shotCount")));
-            request.setShotLanguage(asText(params.get("shotLanguage")));
-            request.setReferenceBindings(asText(params.get("referenceBindings")));
-        } catch (Exception e) {
-            log.warn("解析 gen_params_json 失败: {}", e.getMessage());
-        }
-    }
-
-    private static String asText(Object value) {
-        return value == null ? null : String.valueOf(value);
-    }
-
-    private static Integer asInt(Object value) {
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof Number) {
-            return ((Number) value).intValue();
-        }
-        try {
-            return Integer.valueOf(String.valueOf(value).trim());
-        } catch (NumberFormatException e) {
-            return null;
-        }
-    }
-
-    /** 解析 result_json 为各分段视频 URL。
-     *
-     * 格式有两种：
-     * - 拼接成功：[final.mp4, seg0, seg1, ...]（首元素是本地成片 /v1/files/**，丢弃）
-     * - 拼接失败：[seg0, seg1, ...]（synthesizer 兜底透传，无成片，全部保留）
-     * 判定依据与前端 finalVideoUrl 一致：仅本地静态目录路径才算成片。
-     */
-    private List<String> parseResultUrls(String json) {
-        if (json == null || json.isBlank()) {
-            return new java.util.ArrayList<>();
-        }
-        try {
-            List<String> urls = objectMapper.readValue(json,
-                    new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {});
-            if (urls.isEmpty()) {
-                return new java.util.ArrayList<>();
-            }
-            String first = urls.get(0) == null ? "" : urls.get(0).trim();
-            boolean hasFinalVideo = first.startsWith("/v1/files/") || first.endsWith("/final.mp4");
-            if (hasFinalVideo && urls.size() > 1) {
-                // 有拼接成片：首元素是成片，丢弃它，只返回分段视频
-                return new java.util.ArrayList<>(urls.subList(1, urls.size()));
-            }
-            // 拼接失败：首元素也是分段视频，全部返回
-            return new java.util.ArrayList<>(urls);
-        } catch (Exception e) {
-            log.warn("解析 result_json 失败: {}", e.getMessage());
-            return new java.util.ArrayList<>();
-        }
-    }
-
-    /** 解析 image_urls JSON 为图片 URL 列表（容错同 parseResultUrls） */
-    private List<String> parseImageUrls(String json) {
-        if (json == null || json.isBlank()) {
-            return new java.util.ArrayList<>();
-        }
-        try {
-            List<String> urls = objectMapper.readValue(json,
-                    new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {});
-            return new java.util.ArrayList<>(urls);
-        } catch (Exception e) {
-            log.warn("解析 image_urls 失败: {}", e.getMessage());
-            return new java.util.ArrayList<>();
-        }
-    }
-
-    /** JSON 序列化（段配置数组落库用）；失败返回空数组字符串，避免阻断提交 */
-    private String toJsonString(java.util.List<?> list) {
-        try {
-            return objectMapper.writeValueAsString(list);
-        } catch (Exception e) {
-            log.error("序列化段配置失败", e);
-            return "[]";
-        }
     }
 
     @Override
