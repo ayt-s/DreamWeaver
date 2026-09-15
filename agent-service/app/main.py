@@ -48,7 +48,7 @@ from app.controller.internal_api import router as internal_router
 app = FastAPI(title="DreamWeaver Agent Service", version="0.2.0")
 register_exception_handlers(app)
 
-# 本地产物静态目录（与 nodes/synthesizer.py OUTPUT_ROOT 对应）：
+# 本地产物静态目录（与 app/utils/media.py 的 output_root() 对应）：
 # /v1/files/<session>/final.mp4 → web-frontend vite 代理 /v1 → 8000，可直接 <video> 播放
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data" / "outputs"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

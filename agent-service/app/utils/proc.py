@@ -6,7 +6,7 @@ Windows 上以 `--reload` 启动 uvicorn 时，其 loop factory 会以
 SelectorEventLoop 不支持 `asyncio.create_subprocess_exec`（直接抛
 `NotImplementedError`，且 **异常消息为空字符串**）。
 
-后果：synthesizer 的 `_probe_duration` / xfade 拼接、image_slideshow 的图片转片段
+后果：synthesizer 的时长探测 / xfade 拼接、image_slideshow 的图片转片段
 全部失败；异常又被节点的兜底分支吞掉，用户看到的是「任务 completed 但没有成片、
 也没有任何错误提示」——排查成本极高。
 

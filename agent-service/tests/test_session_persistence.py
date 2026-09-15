@@ -758,8 +758,8 @@ async def test_full_chain_recovery_zero_cost_resume(monkeypatch):
 
     monkeypatch.setattr(video_mod, "generate_video_tool", _fake_tool)
     monkeypatch.setattr(video_mod, "poller", _ResultFuturePoller())
-    monkeypatch.setattr(syn_mod, "_download", _fake_download)
-    monkeypatch.setattr(syn_mod, "_concat_videos", _fake_concat)
+    monkeypatch.setattr(syn_mod, "download", _fake_download)
+    monkeypatch.setattr(syn_mod, "concat_videos", _fake_concat)
 
     result = await graph.compiled_graph.ainvoke(
         state, config={"configurable": {"thread_id": state["session_id"]}})

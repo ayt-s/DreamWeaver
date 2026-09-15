@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.nodes.synthesizer import FFMPEG_EXE, _concat_videos, _probe_duration  # noqa: E402
+from app.utils.media import concat_videos, ffmpeg_exe, probe_duration  # noqa: E402
 from app.utils.proc import run_command  # noqa: E402
 
 
@@ -68,7 +68,7 @@ def test_concat_under_selector_loop(tmp_path, selector_loop):
     for i, color in enumerate(colors):
         clip = tmp_path / f"clip_{i}.mp4"
         gen = asyncio.run(run_command([
-            FFMPEG_EXE, "-y",
+            ffmpeg_exe(), "-y",
             "-f", "lavfi", "-i", f"color=c={color}:s=64x64:d=1:r=15",
             "-pix_fmt", "yuv420p", str(clip),
         ], timeout=120))
@@ -77,9 +77,9 @@ def test_concat_under_selector_loop(tmp_path, selector_loop):
         clips.append(clip)
 
     async def _main():
-        dur = await _probe_duration(clips[0])
+        dur = await probe_duration(clips[0])
         out = tmp_path / "final.mp4"
-        ok = await _concat_videos(clips, out)
+        ok = await concat_videos(clips, out)
         return dur, ok, out
 
     duration, ok, final = asyncio.run(_main())

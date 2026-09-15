@@ -13,14 +13,15 @@ from pathlib import Path
 
 from app.callback.java_notify import notify_java_completion
 from app.config import settings
-from app.nodes.synthesizer import (
-    OUTPUT_ROOT,
-    FFMPEG_EXE,
-    _concat_videos,
-    _download,
-    _probe_duration,
-)
 from app.state import CreativeSessionState, TaskStatus
+from app.utils.media import (
+    concat_videos,
+    download,
+    ffmpeg_exe,
+    local_url,
+    probe_duration,
+    session_dir,
+)
 from app.utils.proc import run_command
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ async def _image_to_clip(img_path: Path, dest: Path, seconds: float) -> bool:
         f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={OUT_W}x{OUT_H}:fps=30"
     )
     cmd = [
-        FFMPEG_EXE, "-y",
+        ffmpeg_exe(), "-y",
         "-loop", "1", "-i", str(img_path),
         "-t", str(seconds),
         "-vf", vf,
@@ -85,8 +86,7 @@ async def image_slideshow_node(state: CreativeSessionState) -> dict:
         await events.emit(session_id, "failed", {})
         return {"status": TaskStatus.FAILED, "trace": trace}
 
-    out_dir = OUTPUT_ROOT / session_id
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = session_dir(session_id)
 
     # 1. 下载图片 + 逐张转视频片段
     clips: list[Path] = []
@@ -98,7 +98,7 @@ async def image_slideshow_node(state: CreativeSessionState) -> dict:
         dest = out_dir / f"clip_{i:03d}.mp4"
         img_path = out_dir / f"img_{i:03d}"
         try:
-            await _download(url, img_path, timeout=180)
+            await download(url, img_path, timeout=180)
         except Exception as exc:
             logger.warning("下载第 %d 张图片失败: %s", i, exc)
             continue
@@ -130,7 +130,7 @@ async def image_slideshow_node(state: CreativeSessionState) -> dict:
     final_path = out_dir / "final.mp4"
     await events.emit(session_id, "progress",
                       {"phase": f"拼接 {len(clips)} 段为长视频"})
-    ok = await _concat_videos(clips, final_path)
+    ok = await concat_videos(clips, final_path)
     if not ok:
         msg = "视频拼接失败"
         logger.error("image_slideshow 拼接失败")
@@ -140,8 +140,8 @@ async def image_slideshow_node(state: CreativeSessionState) -> dict:
         await events.emit(session_id, "failed", {})
         return {"status": TaskStatus.FAILED, "trace": trace}
 
-    final_url = f"/v1/files/{session_id}/final.mp4"
-    duration = await _probe_duration(final_path)
+    final_url = local_url(session_id)
+    duration = await probe_duration(final_path)
     logger.info("image_slideshow: %d 张图 → %s (%.1fs, %d bytes)",
                 len(clips), final_url, duration, final_path.stat().st_size)
 

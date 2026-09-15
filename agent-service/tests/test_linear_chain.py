@@ -209,8 +209,8 @@ async def test_canvas_segments_pipeline(monkeypatch):
                 f.write(b"FAKEMP4")
             return True
 
-    monkeypatch.setattr(syn_mod, "_download", _fake_download)
-    monkeypatch.setattr(syn_mod, "_concat_videos", _fake_concat)
+    monkeypatch.setattr(syn_mod, "download", _fake_download)
+    monkeypatch.setattr(syn_mod, "concat_videos", _fake_concat)
 
     state: CreativeSessionState = {
         "session_id": "test-canvas",
