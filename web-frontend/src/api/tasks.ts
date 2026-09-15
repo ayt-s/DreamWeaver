@@ -22,8 +22,10 @@ export async function listTasks(params: {
   size?: number;
   genType?: GenType | '';
   draft?: DraftFilter;
+  /** true = 连画布素材（source=canvas_asset）一起返回；画廊不传，画布素材面板传 true */
+  includeAssets?: boolean;
 }): Promise<TaskListResponse> {
-  const { page = 1, size = 10, genType = '', draft = '' } = params;
+  const { page = 1, size = 10, genType = '', draft = '', includeAssets = false } = params;
   return unwrap(
     client.get('/tasks', {
       params: {
@@ -32,6 +34,7 @@ export async function listTasks(params: {
         genType: genType || undefined,
         // '' = 不筛；'final' -> false；'draft' -> true
         draft: draft === '' ? undefined : draft === 'draft',
+        includeAssets: includeAssets || undefined,
       },
     }),
   );
@@ -62,6 +65,12 @@ export interface RegenerateParams {
   shotLanguage?: string;
   /** 元素语义绑定 JSON 字符串：[{name, imageIndex}] */
   referenceBindings?: string;
+}
+
+// 拼接成片：把该任务的多段视频按顺序拼成一条长视频（标准模式此前没有入口）
+// 纯本地 ffmpeg，不消耗生成额度；后端幂等（已有成片直接返回）
+export async function concatTask(id: number): Promise<TaskResponse> {
+  return unwrap(client.post(`/tasks/${id}/concat`));
 }
 
 // 重新生成历史作品（仅终态任务可发起；同一任务原地重跑，不产生新 id）

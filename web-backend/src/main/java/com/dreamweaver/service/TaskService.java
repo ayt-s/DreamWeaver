@@ -16,8 +16,14 @@ public interface TaskService {
     /** 查询任务状态 */
     TaskResponse getTask(Long id);
 
-    /** 任务分页列表（倒序，含 genType 分类 + draft 草稿筛选，供画廊页展示） */
-    TaskListResponse listTasks(int page, int size, String genType, Boolean draft);
+    /**
+     * 任务分页列表（倒序，含 genType 分类 + draft 草稿筛选，供画廊页展示）。
+     *
+     * @param includeAssets 是否包含画布素材（source=canvas_asset）。画廊传 false——
+     *                      一键文生图会在草稿区刷出 N 个素材任务，它们不是作品；
+     *                      画布的「从历史作品选取」面板传 true。
+     */
+    TaskListResponse listTasks(int page, int size, String genType, Boolean draft, boolean includeAssets);
 
     /**
          * 删除历史作品。
@@ -55,4 +61,10 @@ public interface TaskService {
 
     /** 切换草稿标记：isDraft=true 移入草稿区，false 移出（成品区） */
     TaskResponse setDraft(Long id, boolean isDraft);
+
+    /**
+     * 拼接成片：把该任务已生成的 N 段视频拼成一条长视频（标准模式此前没有用户入口）。
+     * 纯本地 ffmpeg，不消耗生成额度；幂等（已有成片直接返回）。
+     */
+    TaskResponse concatTask(Long id);
 }

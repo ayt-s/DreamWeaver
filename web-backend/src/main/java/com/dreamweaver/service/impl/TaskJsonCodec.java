@@ -159,6 +159,31 @@ public class TaskJsonCodec {
         }
     }
 
+    /**
+     * 解析 `result_json` **原始**数组（不剔除成片首项）。坏数据返回空列表。
+     *
+     * <p>给「是否已经拼接过」这类判断用：{@link #parseResultUrls} 会把
+     * {@code [final, seg0, ...]} 的成片丢掉，看不到首项就判断不了幂等。
+     */
+    public List<String> parseRawResultUrls(String json) {
+        if (json == null || json.isBlank()) {
+            return new ArrayList<>();
+        }
+        try {
+            List<String> urls = objectMapper.readValue(json, new TypeReference<List<String>>() {});
+            return urls == null ? new ArrayList<>() : new ArrayList<>(urls);
+        } catch (Exception e) {
+            log.warn("解析 result_json（raw）失败: {}", e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+    /** `result_json` 首项是否已是拼接成片（人工拼接入口的幂等判断） */
+    public boolean hasFinalVideo(String json) {
+        List<String> urls = parseRawResultUrls(json);
+        return !urls.isEmpty() && isFinalVideo(urls.get(0));
+    }
+
     /** 解析 `image_urls` JSON 为图片 URL 列表（容错同 {@link #parseResultUrls}） */
     public List<String> parseImageUrls(String json) {
         if (json == null || json.isBlank()) {

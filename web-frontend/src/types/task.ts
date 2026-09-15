@@ -249,6 +249,15 @@ export interface CreateTaskRequest {
   shotLanguage?: string;
   /** 元素语义绑定 JSON 字符串：[{name, imageIndex}]，imageIndex 1-based */
   referenceBindings?: string;
+  /**
+   * 直出图（画布节点「一键文生图」）：true 时 agent 跳过需求解析/剧本/分镜，直接出图。
+   * 不传的话单镜 prompt 会被 LLM 重新拆镜 —— 一个节点白生成一堆用不上的图。
+   */
+  directImage?: boolean;
+  /** 直出图候选张数（1~5，默认 1）：同 prompt 多次请求，产出多张供人选一张 */
+  imageCount?: number;
+  /** 产物来源：默认 default（进画廊）；canvas_asset = 画布素材（画廊默认过滤） */
+  source?: string;
 }
 
 // === 可灵式结构化运镜（与 agent prompting.py 白名单严格对齐） ===

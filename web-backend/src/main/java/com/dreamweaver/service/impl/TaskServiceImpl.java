@@ -53,7 +53,8 @@ public class TaskServiceImpl implements TaskService {
     }
 
     @Override
-    public TaskListResponse listTasks(int page, int size, String genType, Boolean draft) {
+    public TaskListResponse listTasks(int page, int size, String genType, Boolean draft,
+            boolean includeAssets) {
         int safePage = Math.max(page, 1);
         int safeSize = Math.min(Math.max(size, 1), 50);
         boolean hasTypeFilter = genType != null && !genType.isBlank();
@@ -64,11 +65,16 @@ public class TaskServiceImpl implements TaskService {
                 new LambdaQueryWrapper<Task>()
                         .eq(hasTypeFilter, Task::getGenType, genType)
                         .eq(hasDraftFilter, Task::getIsDraft, draftFlag)
+                        // 默认把画布素材排除在作品画廊之外（includeAssets=true 时才带上）
+                        .and(!includeAssets, w -> w.isNull(Task::getSource)
+                                .or().ne(Task::getSource, "canvas_asset"))
         );
         List<TaskResponse> list = taskMapper.selectList(
                 new LambdaQueryWrapper<Task>()
                         .eq(hasTypeFilter, Task::getGenType, genType)
                         .eq(hasDraftFilter, Task::getIsDraft, draftFlag)
+                        .and(!includeAssets, w -> w.isNull(Task::getSource)
+                                .or().ne(Task::getSource, "canvas_asset"))
                         .orderByDesc(Task::getId)
                         .last("LIMIT " + safeSize + " OFFSET " + ((long) (safePage - 1) * safeSize))
         ).stream().map(this::toResponse).toList();
@@ -306,6 +312,9 @@ public class TaskServiceImpl implements TaskService {
         task.setUserId(request.getUserId() == null || request.getUserId().isBlank() ? null : Long.valueOf(request.getUserId()));
         task.setStatus("pending");
         task.setGenType(request.getGenType() != null ? request.getGenType() : "text_video");
+        // 来源标记：默认 default（进画廊）；画布素材传 canvas_asset（画廊过滤）
+        task.setSource(request.getSource() == null || request.getSource().isBlank()
+                ? "default" : request.getSource().trim());
         // 段配置落库：重生时取此作为输入源（未勾选段复用已有视频、勾选段重新生成）
         task.setSegmentsJson(request.getSegments());
         // 精细控制参数落库：regenerate 从 entity 重建请求时需要还原
@@ -360,6 +369,11 @@ public class TaskServiceImpl implements TaskService {
         }
         if (request.getShotLanguage() != null && !request.getShotLanguage().isBlank()) {
             body.put("shot_language", request.getShotLanguage());
+        }
+        // 直出图：画布节点「一键文生图」专用，跳过 agent 侧流水线直接出图
+        if (request.getDirectImage() != null && request.getDirectImage()) {
+            body.put("direct_image", Boolean.TRUE);
+            body.put("image_count", request.getImageCount() == null ? 1 : request.getImageCount());
         }
         if (request.getReferenceBindings() != null && !request.getReferenceBindings().isBlank()) {
             body.put("reference_bindings", request.getReferenceBindings());
@@ -432,6 +446,73 @@ public class TaskServiceImpl implements TaskService {
             return "Agent 任务队列繁忙，请稍后重试";
         }
         return "Agent 服务处理失败，请稍后重试";
+    }
+
+    /**
+     * 拼接成片：把该任务的 N 段视频拼成一条长视频（标准模式此前没有任何用户入口）。
+     *
+     * <p>此前拼接能力只服务于两条自动链路——画布模式（segments → synthesizer）、
+     * 图片合成视频（image_slideshow）；「一句话生成」出来的分段只能平铺看，
+     * 用户点不到「拼成一条」。这里补上入口：调 Agent 的
+     * {@code POST /v1/tasks/{sessionId}/concat}，把返回的本地产物 URL 插到
+     * {@code result_json} 首位（前端 {@code finalVideoUrl()} 按 {@code /v1/files/}
+     * 前缀识别成片，插首位即自动切成「成片 + 分段缩略」布局）。
+     *
+     * <p>不消耗 agnes 额度（纯本地 ffmpeg），且幂等：已有成片直接返回。
+     */
+    @Override
+    @Transactional
+    public TaskResponse concatTask(Long id) {
+        Task task = taskMapper.selectById(id);
+        if (task == null) {
+            throw new IllegalArgumentException("任务不存在（id=" + id + "）");
+        }
+        if (!TERMINAL_STATUSES.contains(task.getStatus())) {
+            throw new IllegalArgumentException(
+                    "仅已终态的任务可拼接成片（当前=" + task.getStatus() + "）");
+        }
+        if (taskJsonCodec.hasFinalVideo(task.getResultJson())) {
+            return toResponse(task);
+        }
+        List<String> segments = taskJsonCodec.parseResultUrls(task.getResultJson());
+        if (segments.size() < 2) {
+            throw new IllegalArgumentException("分段不足 2 个，无需拼接成片");
+        }
+        if (task.getSessionId() == null || task.getSessionId().isBlank()) {
+            throw new IllegalArgumentException("任务未关联 Agent 会话，无法拼接成片");
+        }
+        String finalUrl = callAgentConcat(task.getSessionId());
+        List<String> merged = new java.util.ArrayList<>();
+        merged.add(finalUrl);
+        merged.addAll(segments);
+        taskMapper.update(null,
+                new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<Task>()
+                        .eq(Task::getId, id)
+                        .set(Task::getResultJson, taskJsonCodec.toJsonString(merged))
+                        .set(Task::getUpdatedAt, LocalDateTime.now()));
+        log.info("拼接成片: id={} 段数={} finalUrl={}", id, segments.size(), finalUrl);
+        return toResponse(taskMapper.selectById(id));
+    }
+
+    /** 调 Agent 拼接端点，返回本地产物 URL（agent 侧落 final.mp4 到会话目录） */
+    private String callAgentConcat(String sessionId) {
+        try {
+            CommonResult<?> resp = webClientBuilder.build()
+                    .post()
+                    .uri(agentServiceProperties.getBaseUrl() + "/v1/tasks/" + sessionId + "/concat")
+                    .retrieve()
+                    .bodyToMono(CommonResult.class)
+                    .block(java.time.Duration.ofMinutes(5));
+            Object data = resp == null ? null : resp.getData();
+            Object url = (data instanceof Map<?, ?> m) ? m.get("final_url") : null;
+            if (url == null || String.valueOf(url).isBlank()) {
+                throw new IllegalStateException("Agent 未返回成片 URL");
+            }
+            return String.valueOf(url);
+        } catch (Exception e) {
+            log.warn("调 Agent 拼接失败 sessionId={}: {}", sessionId, e.getMessage());
+            throw new IllegalArgumentException(friendlyAgentErrorMessage(e));
+        }
     }
 
     @Override

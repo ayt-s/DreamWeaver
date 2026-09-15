@@ -26,7 +26,7 @@ import {
   cachedImageUrl,
   formatDuration,
 } from '../types/task';
-import { deleteTask, regenerateTask, setTaskDraft } from '../api/tasks';
+import { concatTask, deleteTask, regenerateTask, setTaskDraft } from '../api/tasks';
 import SegmentManager from './SegmentManager';
 import SlideshowPanel from './SlideshowPanel';
 import ParamEditDialog from './ParamEditDialog';
@@ -128,6 +128,13 @@ export default function TaskCard({ task }: TaskCardProps) {
   // 草稿/成品切换：仅终态任务可切换（后端限制），切换后刷新画廊列表
   const draftMutation = useMutation({
     mutationFn: () => setTaskDraft(task.id, !isDraft),
+    onSuccess: refreshList,
+  });
+
+  // 拼接成片：标准模式（无成片）的分段视频，一键拼成一条长视频
+  // 不消耗生成额度（后端跑本地 ffmpeg），成功后列表刷新即变成「成片 + 分段缩略」布局
+  const concatMutation = useMutation({
+    mutationFn: () => concatTask(task.id),
     onSuccess: refreshList,
   });
 
@@ -275,15 +282,42 @@ export default function TaskCard({ task }: TaskCardProps) {
             // 标准模式（无拼接成片）：沿用平铺布局
             if (!finalUrl) {
               return (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {segs.map((url, i) => (
-                    <div
-                      key={`${task.id}-${i}-${url}`}
-                      className="overflow-hidden rounded-xl border border-slate-200 bg-black"
-                    >
-                      <video src={url} controls preload="metadata" className="aspect-video w-full" />
+                <div className="space-y-3">
+                  {/* 多段时给「拼成一条」的入口：此前只有画布模式自动拼接，标准模式只能平铺看 */}
+                  {isTerminal && segs.length >= 2 && (
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[11px] text-slate-400">
+                        {segs.length} 段独立视频，可按顺序拼成一条成片
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => concatMutation.mutate()}
+                        disabled={concatMutation.isPending}
+                        title="按顺序用交叉淡化过渡拼成一条长视频；纯本地 ffmpeg，不消耗生成额度"
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[11px] font-medium text-violet-600 transition-colors hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 disabled:hover:bg-transparent"
+                      >
+                        <Film className="h-3.5 w-3.5" />
+                        {concatMutation.isPending ? '拼接中…' : '拼接成片'}
+                      </button>
                     </div>
-                  ))}
+                  )}
+                  {concatMutation.isError && (
+                    <p className="text-[11px] text-red-600">
+                      {concatMutation.error instanceof Error
+                        ? concatMutation.error.message
+                        : '拼接失败，请稍后重试'}
+                    </p>
+                  )}
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {segs.map((url, i) => (
+                      <div
+                        key={`${task.id}-${i}-${url}`}
+                        className="overflow-hidden rounded-xl border border-slate-200 bg-black"
+                      >
+                        <video src={url} controls preload="metadata" className="aspect-video w-full" />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               );
             }

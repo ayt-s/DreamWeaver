@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app import abort, events, session_store
 from app.errors import AppError, friendly_error_message, register_exception_handlers
@@ -105,6 +105,12 @@ class CreateVideoTaskRequest(BaseModel):
     shot_language: Optional[str] = None
     # 元素语义绑定 JSON：[{name, image_index}]，image_index 1-based（<Picture N>）
     reference_bindings: Optional[str] = None
+    # 直出图（画布节点「一键文生图」）：跳过需求解析/剧本/分镜，直接按 prompt 出图。
+    # 不设这个开关的话，「一镜一 prompt」会被 LLM 重新拆镜 → 一次任务产出多张
+    # 不同画面的图（实测 5 张 / 3 张），前端只用得上第 1 张，其余白花额度。
+    direct_image: Optional[bool] = False
+    # 直出图候选张数（1~5）；同一 prompt 多次请求，产出多个候选供人选一张
+    image_count: Optional[int] = 1
 
 
 class CreateVideoTaskResponse(BaseModel):
@@ -391,6 +397,9 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
         # 全局运镜倾向：白名单清洗（防脏值进提示词）
         "shot_language": normalize_camera_spec(_parse_json_obj(req.shot_language, "shot_language")),
         "reference_bindings": _parse_json_list(req.reference_bindings, "reference_bindings"),
+        # 直出图：跳过流水线直接出图；候选张数夹紧到 1~5
+        "direct_image": bool(req.direct_image),
+        "image_count": max(1, min(5, int(req.image_count or 1))),
         "status": TaskStatus.QUEUED,
         "fix_round": 0,
         "max_fix_rounds": 3,
@@ -485,6 +494,120 @@ async def task_events(session_id: str, request: Request):
             await events.unsubscribe(session_id)
 
     return StreamingResponse(generator(), media_type="text/event-stream")
+
+
+@app.post("/v1/tasks/{session_id}/concat", response_model=ApiResponse)
+async def concat_task_videos(session_id: str) -> ApiResponse:
+    """把已生成的分段视频拼接成一条成片（标准模式补上人工拼接入口）。
+
+    背景：标准模式（无 segments）产出的是 N 个分段 URL，画廊只平铺展示；
+    拼接能力此前只服务于画布模式的自动流程（synthesizer）与图片合成视频
+    （image_slideshow），用户拿不到「把我这几段拼成一条」的入口。
+
+    复用同一套本地工具：分段已由 asset_fetch 落在 `data/outputs/<sid>/seg_*.mp4`，
+    直接 xfade 拼接；本地缺失时按 state.video_urls 下载兜底（老会话/目录被清理）。
+    幂等：final.mp4 已存在且不早于最后一个分段 → 直接返回，不重复编码。
+    不消耗 agnes 额度（纯本地 ffmpeg）。
+    """
+    from app.utils.media import concat_videos, download, local_url, probe_duration, session_dir
+
+    state = _sessions.get(session_id)
+    if not state:
+        state = (await session_store.load_state(session_id)) or {}
+
+    d = session_dir(session_id)
+    final = d / "final.mp4"
+
+    def _clips() -> list:
+        return sorted(p for p in d.glob("seg_*.mp4") if p.stat().st_size > 0)
+
+    clips = _clips()
+    if len(clips) < 2 and state.get("video_urls"):
+        # 本地不全 → 按 video_urls 顺序补下载（已是本地产物的跳过）
+        for i, u in enumerate(state.get("video_urls") or []):
+            if not u or str(u).startswith("/v1/files/"):
+                continue
+            dest = d / f"seg_{i:03d}.mp4"
+            if dest.exists() and dest.stat().st_size > 0:
+                continue
+            try:
+                await download(str(u), dest)
+            except Exception as exc:
+                logger.warning("concat 下载分段失败 sid=%s idx=%s: %s", session_id, i, exc)
+        clips = _clips()
+
+    if len(clips) < 2:
+        raise AppError("可拼接的分段不足 2 个", status_code=409)
+
+    if (final.exists() and final.stat().st_size > 0
+            and final.stat().st_mtime >= clips[-1].stat().st_mtime):
+        return ApiResponse(code=0, message="ok", data={
+            "session_id": session_id,
+            "final_url": local_url(session_id),
+            "segment_count": len(clips),
+            "duration": await probe_duration(final),
+            "cached": True,
+        })
+
+    ok = await concat_videos(clips, final)
+    if not ok:
+        raise AppError("视频拼接失败", status_code=500)
+
+    duration = await probe_duration(final)
+    logger.info("concat 拼接成片 sid=%s 段数=%s 时长=%.1fs", session_id, len(clips), duration)
+    return ApiResponse(code=0, message="ok", data={
+        "session_id": session_id,
+        "final_url": local_url(session_id),
+        "segment_count": len(clips),
+        "duration": duration,
+        "cached": False,
+    })
+
+
+class TextGenerateRequest(BaseModel):
+    """画布文本节点的「AI 生成/改写」请求。"""
+
+    instruction: str = Field(default="", description="用户意图，如「扩写成画面提示词」")
+    context: str = Field(default="", description="现有文本（可空，作为改写对象）")
+
+
+@app.post("/v1/text/generate", response_model=ApiResponse)
+async def text_generate(req: TextGenerateRequest) -> ApiResponse:
+    """单轮文本生成：给画布文本节点补内容 / 改写内容。
+
+    与 `/v1/agent/chat` 的区别：**不**走对话循环、不挂画布工具，一次 LLM 调用返回纯文本。
+    场景是「在节点里点一下就出一段提示词」这种高频轻操作 —— 走 chat 会带上工具循环和历史，
+    又慢又容易返回寒暄。
+    """
+    from app.config import settings
+    from app.gateway.agnes import gateway
+
+    instruction = (req.instruction or "").strip()
+    context = (req.context or "").strip()
+    if not instruction and not context:
+        raise AppError("instruction 与 context 不能同时为空", status_code=422)
+
+    system = (
+        "你是短视频分镜的画面描述助手。根据用户意图输出一段可直接用于 AI 生成画面的中文提示词。"
+        "只输出提示词正文：不要解释、不要引号、不要 markdown、不要分点列举。"
+        "100~200 字，包含主体 + 动作 + 场景 + 光线氛围 + 镜头感；"
+        "不要写文字/水印/畸变类负面描述（负面词另走 negative_prompt）。"
+    )
+    user_msg = (
+        f"用户意图：{instruction or '把下面的内容改写成更适合 AI 生成画面的提示词'}\n"
+        f"现有内容：{context or '（空，请新写）'}"
+    )
+    try:
+        raw = await gateway.chat(f"{system}\n\n{user_msg}",
+                                 model=settings.text_model, temperature=0.7)
+    except Exception as exc:
+        logger.error("文本生成失败: %s", exc, exc_info=True)
+        raise AppError("文本生成失败，请稍后重试", status_code=500, retryable=True)
+
+    text = (raw or "").strip()
+    if not text:
+        raise AppError("文本模型返回空内容", status_code=500, retryable=True)
+    return ApiResponse(code=0, message="ok", data={"text": text})
 
 
 def _parse_last_event_id(raw: str | None) -> int | None:

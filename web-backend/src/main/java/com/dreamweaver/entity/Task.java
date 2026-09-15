@@ -32,6 +32,14 @@ public class Task {
     /** 生成类型：text_video(纯文本视频)/image_video(图生视频)/text_image(文生图) */
     private String genType;
 
+    /**
+     * 产物来源标记，用于把「素材」和「作品」分开：
+     * {@code default} = 用户主动创作（进画廊）；{@code canvas_asset} = 画布节点的
+     * 一键文生图素材（画廊默认过滤——一次批量会在草稿区刷出 N 个任务，
+     * 而它们是中间素材不是成品）。列早已存在，本次才接线。
+     */
+    private String source;
+
     /** 用户原始需求 */
     private String prompt;
 

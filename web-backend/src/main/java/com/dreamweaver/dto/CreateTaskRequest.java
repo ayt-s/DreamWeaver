@@ -41,6 +41,23 @@ public class CreateTaskRequest {
      */
     private String slideshowImages;
 
+    /**
+     * 直出图（画布节点的「一键文生图」）：true 时 agent 跳过需求解析/剧本/分镜，
+     * 直接按 prompt 出图。不传的话「一镜一 prompt」会被 LLM 重新拆镜——
+     * 一次任务产出多张不同画面的图（实测 5 张/3 张），前端只用得上第 1 张，其余白花额度。
+     */
+    private Boolean directImage;
+
+    /** 直出图候选张数（1~5，默认 1）：同一 prompt 多次请求，产出多个候选供人选一张 */
+    private Integer imageCount;
+
+    /**
+     * 产物来源：{@code default}（默认，进画廊）/ {@code canvas_asset}（画布素材，画廊过滤）。
+     * 画布节点的一键文生图必须传 canvas_asset，否则一次批量会在草稿区刷出 N 个任务。
+     */
+    @Size(max = 32, message = "source 过长（≤32）")
+    private String source;
+
     /** 图片合成视频：单张停留秒数（1~10，默认 3） */
     private Double slideSeconds;
 

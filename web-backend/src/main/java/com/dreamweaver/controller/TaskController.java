@@ -36,8 +36,10 @@ public class TaskController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "10") int size,
             @RequestParam(required = false) String genType,
-            @RequestParam(required = false) Boolean draft) {
-        return CommonResult.ok(taskService.listTasks(page, size, genType, draft));
+            @RequestParam(required = false) Boolean draft,
+            // 画布「从历史作品选取」需要素材（source=canvas_asset），画廊不需要
+            @RequestParam(defaultValue = "false") boolean includeAssets) {
+        return CommonResult.ok(taskService.listTasks(page, size, genType, draft, includeAssets));
     }
 
     /** 删除历史作品（仅终态；非终态返回 400） */
@@ -73,6 +75,16 @@ public class TaskController {
             @PathVariable Long id,
             @RequestParam(defaultValue = "true") boolean draft) {
         return CommonResult.ok(taskService.setDraft(id, draft));
+    }
+
+    /**
+     * 拼接成片：把该任务的分段视频按顺序拼成一条长视频。
+     * 标准模式（一句话生成）此前只有平铺的分段，没有任何拼接入口；
+     * 纯本地 ffmpeg，不消耗生成额度，重复调用幂等。
+     */
+    @PostMapping("/{id}/concat")
+    public CommonResult<TaskResponse> concatTask(@PathVariable Long id) {
+        return CommonResult.ok(taskService.concatTask(id));
     }
 
     /** 穿帮段重新生成：勾选段重生（可改提示词）+ 其余段复用 + 重新拼接成片 */
