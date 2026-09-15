@@ -1,4 +1,6 @@
 """Phase 4 P0 图像生成节点测试：逐镜生图 + 回填 reference_images + mode 切换。"""
+import json
+
 import pytest
 
 from app.nodes.image import image_generator_node
@@ -52,9 +54,13 @@ async def test_image_generator_per_shot():
     # 状态更新
     assert result["status"] == TaskStatus.ASSET_GENERATING
 
-    # 审计 trace
+    # 审计 trace：极简三元组（批次 C1）。
+    # 本用例**直调节点**（没走图），所以只有逐张条目，没有图层 `_traced` 补的节点级条目。
     trace = result["trace"]
     assert len(trace) == 2
-    for t in trace:
-        assert t["tool_name"] == "generate_image"
-        assert t["latency_ms"] >= 0
+    for i, t in enumerate(trace, start=1):
+        assert t["node"] == f"image_generator#{i}", "逐张条目应带 1-based 序号后缀"
+        assert set(t) == {"node", "status", "elapsed_ms"}
+        assert t["elapsed_ms"] >= 0
+    # 核心约束：提示词正文绝不能进 state（原实现把 cn_description 放进 params.prompt）
+    assert "猫咪跳跃" not in json.dumps(trace, ensure_ascii=False)

@@ -69,6 +69,24 @@ export interface QcReport {
   reason: string;
 }
 
+/**
+ * 极简轨迹条目（agent `state.trace`，批次 C1/C3）。
+ *
+ * **只有三个字段，且不含提示词正文** —— LLM 调用级细节（提示词/模型/重试）走
+ * LangSmith，不进 state。别指望从这里拿到 prompt：那是刻意的决定
+ * （每个 checkpoint 都会全量进 Redis 快照，正文写两遍没有收益）。
+ *
+ * `node` 可能是节点级（`video_generator`），也可能带 1-based 序号
+ * （`video_generator#2`，表示第 2 镜/第 2 张）。序号是逐镜进度唯一的信息载体。
+ * `elapsed_ms === 0` 表示这是一条**进度标记**而非带耗时的条目
+ * （视频镜次是批量等待的，等多久无法归因到单镜）。
+ */
+export interface TraceEntry {
+  node: string;
+  status: string;
+  elapsed_ms: number;
+}
+
 export interface AgentTaskState {
   session_id: string;
   status: string;
@@ -76,6 +94,8 @@ export interface AgentTaskState {
   error_message?: string | null;
   /** QC 未跑的链路（图片任务 / 合成视频）为 null —— 与「质检通过」区分开 */
   qc_report?: QcReport | null;
+  /** 链路轨迹快照；缺失时为 `[]`（后端已保证不是 null） */
+  trace?: TraceEntry[] | null;
 }
 
 /**

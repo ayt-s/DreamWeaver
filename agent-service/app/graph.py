@@ -21,11 +21,14 @@
 无限画布模式说明：用户上传 N 张图片并逐段描述内容（segments），
 每段生成几秒小视频，最后由 synthesizer 用 ffmpeg 拼接成一条长视频。
 """
+import functools
 import logging
+import time
 
 from langgraph.graph import END, StateGraph
 
 from app.state import CreativeSessionState, TaskStatus
+from app.utils import trace as trace_util
 from app.nodes.parser import requirement_parser_node
 from app.nodes.script import script_writer_node
 from app.nodes.storyboard import storyboarder_node, canvas_storyboarder_node
@@ -136,21 +139,55 @@ def _asset_route(state: CreativeSessionState) -> str:
     return "qc"
 
 
+def _traced(name: str, fn):
+    """把节点包一层：自动往 `state["trace"]` 记一条 `{node, status, elapsed_ms}`。
+
+    **为什么在图层统一包，而不是让每个节点自己 append（批次 C1）**：
+
+    - 逐个手写必然漏 —— 原来 13 个节点里**只有 3 个**埋了点，`trace` 根本连不成链路；
+    - 以后新增节点会**自动**获得埋点，不需要记得加；
+    - 「节点级条目」的口径只有一处，不会漂移成有人写 `status="success"`、
+      有人写 `"ok"`。
+
+    逐镜/逐张的细粒度条目仍由节点自己写 —— 只有它们知道序号与单件耗时。
+
+    ⚠️ 节点若在 delta 里返回了自己的 `trace`（含逐镜条目），必须在**它那份**上追加：
+    LangGraph 对返回的键是「替换」语义，追加到旧 state 的列表上会被整份丢掉。
+    """
+    @functools.wraps(fn)
+    async def wrapper(state: CreativeSessionState) -> dict:
+        t0 = time.time()
+        out = await fn(state)
+        if not isinstance(out, dict):
+            return out
+        base = out.get("trace") or state.get("trace")
+        status = (trace_util.STATUS_FAILED
+                  if out.get("status") == TaskStatus.FAILED else trace_util.STATUS_OK)
+        out["trace"] = trace_util.append(base, name, status, t0)
+        return out
+    return wrapper
+
+
 graph = StateGraph(CreativeSessionState)
 
-graph.add_node("requirement_parser", requirement_parser_node)
-graph.add_node("script_writer", script_writer_node)
-graph.add_node("storyboarder", storyboarder_node)
-graph.add_node("canvas_storyboarder", canvas_storyboarder_node)
-graph.add_node("image_generator", image_generator_node)
-graph.add_node("video_generator", video_generator_node)
-graph.add_node("asset_fetch", asset_fetch_node)
-graph.add_node("qc_checker", qc_checker_node)
-graph.add_node("synthesizer", synthesizer_node)
-graph.add_node("image_slideshow", image_slideshow_node)
-graph.add_node("fix_looping", fix_looping_node)
-graph.add_node("fix_give_up", _fix_give_up_node)
-graph.add_node("notify_final", notify_final_node)
+# 唯一的节点注册表：全部经 `_traced` 包装（见其 docstring 说明为什么在图层统一做）
+_NODE_FUNCS = {
+    "requirement_parser": requirement_parser_node,
+    "script_writer": script_writer_node,
+    "storyboarder": storyboarder_node,
+    "canvas_storyboarder": canvas_storyboarder_node,
+    "image_generator": image_generator_node,
+    "video_generator": video_generator_node,
+    "asset_fetch": asset_fetch_node,
+    "qc_checker": qc_checker_node,
+    "synthesizer": synthesizer_node,
+    "image_slideshow": image_slideshow_node,
+    "fix_looping": fix_looping_node,
+    "fix_give_up": _fix_give_up_node,
+    "notify_final": notify_final_node,
+}
+for _name, _fn in _NODE_FUNCS.items():
+    graph.add_node(_name, _traced(_name, _fn))
 
 # === 入口路由 ===
 graph.set_conditional_entry_point(

@@ -15,6 +15,7 @@ from app.state import CreativeSessionState, TaskStatus
 from app.tools.video import generate_video_tool
 from app.poller import poller
 from app.gateway.agnes import gateway  # noqa: F401 —— 测试 fixture 依赖本模块的 gateway 属性
+from app.utils import trace as trace_util
 
 logger = logging.getLogger(__name__)
 
@@ -70,14 +71,8 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
         if existing:
             url_by_index[idx] = existing
             id_by_index[idx] = f"reused-{idx}"
-            trace.append({
-                "tool_name": "reuse_video",
-                "params": {"shot_index": idx},
-                "result": {"video_url": existing, "video_id": f"reused-{idx}"},
-                "latency_ms": 0,
-                "timestamp": int(time.time()),
-                "retry_count": 0,
-            })
+            trace = trace_util.append(
+                trace, trace_util.shot("video_generator", idx), trace_util.STATUS_REUSED)
             await events.emit(state["session_id"], "progress",
                               {"phase": f"复用第 {idx + 1} 段（跳过重生）"})
             continue
@@ -124,18 +119,8 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
             if isinstance(result, Exception):
                 msg = str(result)
                 error_msgs.append(msg)
-                trace.append({
-                    "tool_name": "generate_video",
-                    "params": {
-                        "prompt": state["storyboard"][idx]["prompt_en"],
-                        "seconds": state["storyboard"][idx]["seconds"],
-                        "shot_index": idx,
-                    },
-                    "result": {"error": msg},
-                    "latency_ms": 0,
-                    "timestamp": int(time.time()),
-                    "retry_count": 0,
-                })
+                trace = trace_util.append(
+                    trace, trace_util.shot("video_generator", idx), trace_util.STATUS_FAILED)
                 await events.emit(
                     state["session_id"], "error",
                     {"error": msg, "shot_index": idx}
@@ -146,21 +131,8 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
                 # 会话持久化：该段确认完成 → 落 progress.done（恢复时按索引复用）
                 await session_store.mark_done(
                     state["session_id"], idx, result["video_url"], result["video_id"])
-                trace.append({
-                    "tool_name": "generate_video",
-                    "params": {
-                        "prompt": state["storyboard"][idx]["prompt_en"],
-                        "seconds": state["storyboard"][idx]["seconds"],
-                        "shot_index": idx,
-                    },
-                    "result": {
-                        "video_url": result["video_url"],
-                        "video_id": result["video_id"],
-                    },
-                    "latency_ms": 0,
-                    "timestamp": int(time.time()),
-                    "retry_count": 0,
-                })
+                trace = trace_util.append(
+                    trace, trace_util.shot("video_generator", idx), trace_util.STATUS_OK)
 
     # 按镜次索引顺序重建，保证 video_urls / video_ids 与 storyboard 索引严格对齐
     video_urls = [url_by_index[i] for i in sorted(url_by_index)]
@@ -177,6 +149,11 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
     video_error = _format_error_msgs(error_msgs)
     if video_error:
         logger.warning("video_generator 存在失败镜次: %s", video_error)
+
+    # 注意：本节点**不写**节点级条目 —— 图层 `_traced()` 会统一补一条带真实耗时的
+    # `video_generator`。这里的逐镜条目只是**进度标记**（elapsed_ms=0）：
+    # 所有镜次是批量 gather 的，等多久是整批一起等，给每条都填整批耗时会让
+    # 10 镜任务显示成 10 个 90s，是假的归因。
 
     return {
         "video_urls": video_urls,

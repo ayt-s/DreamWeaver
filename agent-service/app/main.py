@@ -540,6 +540,10 @@ async def get_task(session_id: str) -> ApiResponse:
             # 画廊卡片上的「N/M 镜未通过质检」走 Java 的 error_message
             # （notify_final 已把汇总写进去），所以这里只服务轨迹面板的明细展示。
             "qc_report": state.get("qc_report"),
+            # 极简轨迹（批次 C3）：`[{node, status, elapsed_ms}]`。
+            # TrajectoryPanel 现在只靠 SSE 画进度，SSE 断线/刷新页面后一片空白；
+            # 有这份快照就能一直画出「节点 + 状态 + 耗时」时间线（顺带缓解 F 的丢事件）。
+            "trace": state.get("trace") or [],
         }
     )
 

@@ -8,6 +8,7 @@
 5. 无限画布模式（segments）：逐段生视频 → synthesizer 拼接长视频
 """
 import asyncio
+import json
 
 import pytest
 
@@ -150,16 +151,26 @@ async def test_linear_chain_with_image_gen():
     assert len(result["video_urls"]) == 2
     assert all(u.startswith("http://mock/") for u in result["video_urls"])
 
-    # 6. 审计 trace：generate_image + generate_video 记录
-    image_audits = [t for t in result["trace"] if t["tool_name"] == "generate_image"]
-    video_audits = [t for t in result["trace"] if t["tool_name"] == "generate_video"]
+    # 6. 审计 trace：极简三元组（批次 C1）。逐镜/逐张条目带 1-based 序号后缀，
+    #    节点级条目（图层 `_traced` 统一补的）没有后缀 —— 用后缀区分这两类。
+    per_shot = [t for t in result["trace"] if "#" in t["node"]]
+    image_audits = [t for t in per_shot if t["node"].startswith("image_generator#")]
+    video_audits = [t for t in per_shot if t["node"].startswith("video_generator#")]
     assert len(image_audits) == 2
     assert len(video_audits) == 2
+    # 7. 逐镜粒度可区分（原来靠 params.shot_index，现在体现在 node 名上）
+    assert sorted(t["node"] for t in video_audits) == ["video_generator#1", "video_generator#2"]
 
-    # 7. 检查 video audit 包含正确的参数
-    for va in video_audits:
-        assert va["params"]["shot_index"] in [0, 1]
-        assert va["params"]["seconds"] in ["5", "4"]
+    # 8. **链路完整**：图层为每个走过的节点都补了节点级条目
+    node_names = {t["node"] for t in result["trace"]}
+    for expected in ("requirement_parser", "script_writer", "storyboarder",
+                     "image_generator", "video_generator", "qc_checker", "notify_final"):
+        assert expected in node_names, f"{expected} 缺少节点级轨迹：{sorted(node_names)}"
+
+    # 9. 每条都只有三个键 —— 尤其不能含提示词正文（原实现在 params.prompt 里带正文）
+    for t in result["trace"]:
+        assert set(t) == {"node", "status", "elapsed_ms"}, f"trace 条目形状被改坏: {t}"
+    assert "slow camera push-in" not in json.dumps(result["trace"], ensure_ascii=False)
 
 
 @pytest.mark.asyncio
@@ -190,9 +201,9 @@ async def test_text_image_only_no_video():
     assert all(u.startswith("http://mock/image/") for u in result["image_urls"])
     assert not result.get("video_urls")
 
-    # 3. trace 里有 generate_image、绝无 generate_video
-    image_audits = [t for t in result["trace"] if t["tool_name"] == "generate_image"]
-    video_audits = [t for t in result["trace"] if t["tool_name"] == "generate_video"]
+    # 3. trace 里有逐张 image 轨迹、绝无逐镜 video 轨迹（节点级条目也算 —— 见批次 C1）
+    image_audits = [t for t in result["trace"] if t["node"].startswith("image_generator#")]
+    video_audits = [t for t in result["trace"] if t["node"].startswith("video_generator")]
     assert len(image_audits) == 2
     assert len(video_audits) == 0
 

@@ -150,6 +150,45 @@ def test_get_task_qc_report_is_null_when_not_run(client):
     assert data["qc_report"] is None
 
 
+def test_get_task_exposes_slim_trace(client):
+    """GET /v1/tasks/{id} 必须返回极简 trace（批次 C3）。
+
+    这是轨迹时间线的**唯一数据源**：TrajectoryPanel 原只靠 SSE，刷新页面/断线后
+    就一片空白；有了快照就能随时重画「节点 + 状态 + 耗时」。
+    """
+    from app.main import _sessions
+    state = _base_session("test-trace-001")
+    state["trace"] = [
+        {"node": "requirement_parser", "status": "ok", "elapsed_ms": 320},
+        {"node": "video_generator#1", "status": "ok", "elapsed_ms": 0},
+        {"node": "video_generator", "status": "ok", "elapsed_ms": 88000},
+        {"node": "qc_checker", "status": "failed", "elapsed_ms": 1200},
+    ]
+    _sessions["test-trace-001"] = state
+
+    resp = client.get("/v1/tasks/test-trace-001")
+    assert resp.status_code == 200
+    trace = resp.json()["data"]["trace"]
+
+    assert len(trace) == 4
+    assert trace[0] == {"node": "requirement_parser", "status": "ok", "elapsed_ms": 320}
+    # 逐镜条目（带 # 序号）与节点级条目都在，前端据此区分渲染
+    assert trace[1]["node"] == "video_generator#1"
+    assert {"node", "status", "elapsed_ms"} == set(trace[-1])
+
+
+def test_get_task_trace_defaults_to_empty_list(client):
+    """没有 trace 的会话返回 `[]` 而不是 null —— 前端不必再判空。"""
+    from app.main import _sessions
+    _sessions["test-trace-002"] = _base_session("test-trace-002")
+
+    resp = client.get("/v1/tasks/test-trace-002")
+    data = resp.json()["data"]
+
+    assert "trace" in data
+    assert data["trace"] == []
+
+
 def test_scheduler_snapshot_endpoint(client):
     """GET /v1/scheduler 返回执行中/排队中的快照结构。"""
     resp = client.get("/v1/scheduler")

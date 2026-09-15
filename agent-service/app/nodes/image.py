@@ -15,6 +15,7 @@ from app.config import settings
 from app.gateway.agnes import gateway
 from app import abort
 from app.state import CreativeSessionState, TaskStatus
+from app.utils import trace as trace_util
 
 logger = logging.getLogger(__name__)
 
@@ -193,14 +194,12 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
             urls = await gateway.generate_image(prompt=cn, model=settings.image_model)
             latency_ms = int((time.time() - start) * 1000)
 
-            trace.append({
-                "tool_name": "generate_image",
-                "params": {"prompt": cn, "segment_index": i, "model": settings.image_model},
-                "result": {"image_urls": urls},
-                "latency_ms": latency_ms,
-                "timestamp": int(time.time()),
-                "retry_count": 0,
-            })
+            # 逐张真耗时（这里是顺序生成，耗时能归因到具体一张；与 video 的批量
+            # gather 不同，那边逐镜只能当进度标记）
+            trace = trace_util.append(
+                trace, trace_util.shot("image_generator", i),
+                trace_util.STATUS_OK if urls else trace_util.STATUS_FAILED,
+                elapsed_ms=latency_ms)
 
             if urls:
                 url_by_index[i] = urls[0]
@@ -289,14 +288,10 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
         else:
             image_urls.append("")  # 生成失败，占位保持索引对齐
 
-        trace.append({
-            "tool_name": "generate_image",
-            "params": {"prompt": prompt_en, "shot_index": idx, "model": settings.image_model},
-            "result": {"image_urls": urls},
-            "latency_ms": latency_ms,
-            "timestamp": int(time.time()),
-            "retry_count": 0,
-        })
+        trace = trace_util.append(
+            trace, trace_util.shot("image_generator", idx),
+            trace_util.STATUS_OK if urls else trace_util.STATUS_FAILED,
+            elapsed_ms=latency_ms)
 
     await events.emit(session_id, "node_completed",
                       {"node_id": "image_generator",

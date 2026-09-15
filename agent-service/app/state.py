@@ -2,6 +2,10 @@
 from typing import TypedDict, NotRequired
 from enum import Enum
 
+# 转发导出：trace 的键白名单与写入助手都住在 utils.trace（那里有详细口径说明）。
+# 放在这里是为了让「state 里 trace 是什么形状」这件事在字段旁边就能看到。
+from app.utils.trace import TRACE_KEYS, TRACE_MAX  # noqa: F401
+
 
 class TaskStatus(str, Enum):
     PENDING = "pending"
@@ -16,16 +20,6 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     EXPIRED = "expired"
-
-
-class GenerationTrace(TypedDict):
-    """每次工具调用的完整审计记录。"""
-    tool_name: str
-    params: dict
-    result: dict
-    latency_ms: int
-    timestamp: int
-    retry_count: int
 
 
 class CreativeSessionState(TypedDict):
@@ -96,6 +90,10 @@ class CreativeSessionState(TypedDict):
     final_notified: NotRequired[bool]
 
     # === 审计 ===
+    # 极简轨迹：`[{node, status, elapsed_ms}]`（键白名单 = TRACE_KEYS，上限 TRACE_MAX）。
+    # ⚠️ 只允许经 `app.utils.trace.append()` 写入 —— 手写会绕过白名单，
+    #    历史上就是因为手写才把 `prompt_en` 正文写进了快照（P0-4 / 批次 C1）。
+    #    LLM 调用级细节（提示词、模型、重试）走 LangSmith，不进 state。
     trace: NotRequired[list]
     error_message: NotRequired[str]
 

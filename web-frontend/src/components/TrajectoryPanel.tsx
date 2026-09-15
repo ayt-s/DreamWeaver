@@ -2,7 +2,7 @@ import { useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTaskEvents } from '../hooks/useTaskEvents';
 import { getTask } from '../api/tasks';
-import { agentTaskState, type QcReport } from '../api/agent';
+import { agentTaskState, type QcReport, type TraceEntry } from '../api/agent';
 import { useTaskStore } from '../store/taskStore';
 import { parseResultUrls } from '../types/task';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -19,8 +19,10 @@ const NODE_NAMES: Record<string, string> = {
   asset_fetch: '产物本地化',
   qc_checker: '质量检查',
   synthesizer: '多镜拼接',
+  image_slideshow: '图片合成视频',
   notify_final: '任务收尾',
   fix_looping: '修复重试',
+  fix_give_up: '放弃修复',
 };
 
 const EVENT_NAMES: Record<string, string> = {
@@ -72,6 +74,9 @@ export default function TrajectoryPanel() {
     retry: false,
   });
   const qcReport = agentState?.qc_report ?? null;
+  // 链路轨迹（批次 C3）：SSE 断线/刷新后事件列表是空的，这份快照仍能画出
+  // 「节点 + 状态 + 耗时」。后端保证是数组（没有时给 []）。
+  const traceEntries: TraceEntry[] = agentState?.trace ?? [];
   if (isDone && task && !recordedIds.current.has(task.id)) {
     recordedIds.current.add(task.id);
     addCompletedTask(task);
@@ -146,6 +151,7 @@ export default function TrajectoryPanel() {
         <>
           <TaskStatusLine task={task} />
           <QcReportBlock qc={qcReport} />
+          <TraceTimeline entries={traceEntries} />
 
           <div className="mt-6 space-y-2">
             {events.map((ev, i) => (
@@ -172,7 +178,8 @@ export default function TrajectoryPanel() {
             ))}
           </div>
 
-          {!events.length && !isHalted && (
+          {/* 有轨迹快照时不再显示「正在创作中…」的假空白 —— 我们已经有数据可画 */}
+          {!events.length && !traceEntries.length && !isHalted && (
             <motion.p
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -218,6 +225,69 @@ export default function TrajectoryPanel() {
       </AnimatePresence>
     </motion.div>
   );
+}
+
+/**
+ * 链路轨迹时间线（批次 C3）。
+ *
+ * **为什么需要它**：面板原先完全依赖 SSE 事件流；刷新页面/SSE 断线后事件列表是空的，
+ * 面板对一条**正在生成或已跑完**的任务显示一片空白（甚至显示「正在创作中…」的假空白）。
+ * 轨迹来自 `GET /v1/tasks/{id}` 的 `trace` 快照（每 3s 轮询），所以随时能重画。
+ *
+ * 条目有两类，用 `node` 里有没有 `#` 区分：
+ * - 节点级（`video_generator`）：由图层统一补，**带真实耗时**
+ * - 逐镜/逐张级（`video_generator#2`）：由节点自己写，编号 1-based，是**进度标记**
+ *
+ * `elapsed_ms === 0` 表示这条是进度标记而不是耗时条目（视频镜次是批量等待的，
+ * 单镜耗时无法归因），此时**不显示**耗时 —— 显示 `0ms` 会让人以为没花时间。
+ */
+export function TraceTimeline({ entries }: { entries: TraceEntry[] }) {
+  if (!entries?.length) return null;
+
+  return (
+    <div className="mt-6" data-testid="trace-timeline">
+      <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">
+        链路轨迹（来自状态快照，刷新后仍在）
+      </h3>
+      <ol className="space-y-1">
+        {entries.map((entry, i) => {
+          const [base, seq] = entry.node.split('#');
+          const label = NODE_NAMES[base] ?? base;
+          const isFailed = entry.status === 'failed';
+          return (
+            <li
+              key={`${entry.node}-${i}`}
+              className="flex items-center gap-2 rounded border border-slate-100 bg-slate-50/60 px-3 py-1 text-xs"
+            >
+              <span className={isFailed ? 'text-red-500' : 'text-emerald-500'}>
+                {isFailed ? '✕' : entry.status === 'reused' ? '↺' : '✓'}
+              </span>
+              <span className={isFailed ? 'text-red-700' : 'text-slate-700'}>
+                {label}
+                {seq ? ` · 第 ${seq} 个` : ''}
+              </span>
+              <span className="ml-auto flex items-center gap-2">
+                {entry.status === 'reused' && (
+                  <span className="text-slate-400">复用</span>
+                )}
+                {entry.elapsed_ms > 0 && (
+                  <span className="font-mono text-slate-400">
+                    {formatElapsed(entry.elapsed_ms)}
+                  </span>
+                )}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`;
 }
 
 /**

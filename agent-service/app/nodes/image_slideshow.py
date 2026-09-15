@@ -14,6 +14,7 @@ from pathlib import Path
 from app.callback.java_notify import notify_java_completion
 from app.config import settings
 from app.state import CreativeSessionState, TaskStatus
+from app.utils import trace as trace_util
 from app.utils.media import (
     concat_videos,
     download,
@@ -108,14 +109,9 @@ async def image_slideshow_node(state: CreativeSessionState) -> dict:
         if not await _image_to_clip(img_path, dest, seconds):
             continue
         clips.append(dest)
-        trace.append({
-            "tool_name": "image_to_clip",
-            "params": {"image_url": url, "seconds": seconds},
-            "result": {"clip": dest.name},
-            "latency_ms": int((time.time() - t0) * 1000),
-            "timestamp": int(time.time()),
-            "retry_count": 0,
-        })
+        trace = trace_util.append(
+            trace, trace_util.shot("image_slideshow", i), trace_util.STATUS_OK,
+            elapsed_ms=int((time.time() - t0) * 1000))
 
     if len(clips) < 2:
         msg = f"可用图片不足 2 张（仅 {len(clips)} 张），无法合成视频"
