@@ -35,3 +35,8 @@ agent-service/data/
 
 # 本地上传图片（运行时产生，不入库）
 web-backend/uploads/
+
+# 本地 Hermes 计划与临时文件（不入库）
+.hermes/
+# 密钥/模板备份文件（易误提交，不入库）
+*.bak
