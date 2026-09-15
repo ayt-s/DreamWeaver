@@ -22,7 +22,9 @@ mybatis-plus:
   mapper-locations: classpath*:mapper/*.xml
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    # 刻意不开 log-impl：默认（no-logging）不打 SQL。
+    # 生产/常态下每条 SQL 都打 stdout 会淹没真正的业务日志，也有开销。
+    # 本地要看 SQL → 加 `--spring.profiles.active=dev`（见 application-dev.yml）。
 
 dreamweaver:
   agent-service:
@@ -43,7 +45,14 @@ app:
     enabled: true
     interval-ms: 60000
     min-age-seconds: 180
-    max-attempts: 3
+    # ⚠️ 这里原先写的是 `max-attempts: 3` —— **那个键从来没被读过**。
+    # TaskAutoRetryer 实际读的是下面两个按类型区分的键，缺失时用**代码默认值**：
+    #   max-video-attempts 默认 1（视频贵且慢，只给 1 次）
+    #   max-image-attempts 默认 3
+    # 所以旧配置会让人以为「视频会重试 3 次」，实际只重试 1 次。现显式写出两个键，
+    # 配置即真相，不再依赖代码里的默认值（默认值改了配置看不出差异，也是隐患）。
+    max-video-attempts: 1
+    max-image-attempts: 3
     video-spacing-seconds: 90
     image-spacing-seconds: 30
     max-video-per-sweep: 1
