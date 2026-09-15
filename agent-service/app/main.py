@@ -501,12 +501,17 @@ def _parse_last_event_id(raw: str | None) -> int | None:
 async def get_task(session_id: str) -> ApiResponse:
     """查询会话状态。
 
-    **内存未命中时回落 Redis 快照**（F1）：内存态 `_sessions` 在会话终态后
-    保留 1 小时就释放（`_release_session`），而 Redis 快照的 TTL 更长 ——
-    原先这里直接 404，前端 `TrajectoryPanel` 每 3s 轮询就会变成永久报错，
-    即使数据其实还在 Redis 里。
+    **内存未命中时回落 Redis 快照**（F1）。
 
-    命中快照时顺手回填内存，后续轮询就走快路径。
+    ⚠️ 能触发这条回落的场景比第一版注释写的窄，别误会：
+    - 「**正常跑完**」的任务，`_run_session` 的 finally 在 `settled=True` 时会
+      `delete_session()` **主动删掉快照** → 1 小时后内存也释放 → 查它是 404，
+      而且**这是正确行为**（数据确实没了，F1 也变不出东西）
+    - 「**被杀 / 被取消**」的会话才会保留快照（`settled=False`，给 recovery 用）。
+      这类快照的 TTL 长于内存保留期，且**进程重启后 `_sessions` 里从来没有它** ——
+      这才是 F1 真正修好的场景：原先一律 404，现在能查到。
+
+    命中快照时顺手回填内存：前端 `TrajectoryPanel` 每 3s 轮询，不回填就会反复打 Redis。
     """
     state = _sessions.get(session_id)
     if not state:
