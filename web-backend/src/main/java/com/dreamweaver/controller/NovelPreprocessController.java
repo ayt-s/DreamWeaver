@@ -69,12 +69,14 @@ public class NovelPreprocessController {
      * body 可选：携带角色/场景锚定图 → 落库到 canvas_project.character_refs/scene_refs。
      */
     @PostMapping("/{id}/to-canvas")
-    public CommonResult<CanvasProjectView> toCanvas(
+    public CommonResult<com.dreamweaver.dto.ToCanvasResult> toCanvas(
             @PathVariable Long id,
             @RequestBody(required = false) com.dreamweaver.dto.CanvasSyncRequest body) {
         return CommonResult.ok(service.saveToCanvas(
                 id,
                 body == null ? null : body.getCharacterRefs(),
-                body == null ? null : body.getSceneRefs()));
+                body == null ? null : body.getSceneRefs(),
+                body != null && Boolean.TRUE.equals(body.getForce()),
+                body != null && Boolean.TRUE.equals(body.getSaveAsNew())));
     }
 }

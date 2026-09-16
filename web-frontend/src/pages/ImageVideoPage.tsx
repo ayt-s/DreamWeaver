@@ -53,6 +53,7 @@ import {
   saveProject,
   deleteProject,
   type CanvasProjectView,
+  type SaveCanvasResult,
 } from '../api/canvas';
 import { generateText } from '../api/agent';
 import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
@@ -106,6 +107,12 @@ interface VideoNodeData {
 type GraphNode = Node<any>;
 
 const RATIO_PRESETS = ['16:9', '9:16', '1:1', '4:3', '3:4'];
+/** 归一化 prompt：剥掉 [角色锚]/[镜头] 等方括号块并压缩空白。
+ *  回填已生成图时只在**精确匹配失败**才用它 —— 用户随手改个标点，
+ *  整段 [角色锚] 就变了，精确匹配会直接失效（图其实还在库里）。 */
+const normalizePrompt = (s: string) =>
+  (s || '').replace(/\[[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim();
+
 // 文本节点原来的下拉（一句话生成剧本 / 文生图 / 文生视频 / 图片反推提示词）已移除：
 // 四项全是 disabled 的占位（过度设计），而真正缺的「调文本模型补内容」反而没有。
 // 现在文本节点 = textarea + AI 生成/改写按钮；data.mode 仅为兼容老画布数据保留。
@@ -634,6 +641,11 @@ export default function CanvasPage() {
   const navigate = useNavigate();
   // URL ?anchorRefs 携带从小说转画布时生成的角色/场景锚定图
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // 乐观锁：本地持有的画布版本号。保存时回传；版本不符 = 画布已被别处修改（多标签/多设备），
+  // 后端不写入并回传服务端现状，由用户决定保留哪一份。
+  // ⚠️ 每次保存成功都必须把它更新为返回值，否则下一次保存必然误报「冲突」。
+  const versionRef = useRef(0);
   const anchorRefsParam = searchParams.get('anchorRefs');
   const anchorRefs = useMemo(() => {
     if (!anchorRefsParam) return null;
@@ -736,6 +748,7 @@ export default function CanvasPage() {
   // 保存锚定图到当前项目（无项目先新建）
   const saveAnchorsToProject = async (charRefs: Record<string, string>, sceneRefs: Record<string, string>) => {
     let id = currentProjectId;
+    const isNewProject = id === null;
     if (id === null) {
       const name = projectName.trim() || `画布 ${new Date().toLocaleTimeString()}`;
       const p = await createProject(name);
@@ -746,10 +759,17 @@ export default function CanvasPage() {
     }
     const charJson = Object.keys(charRefs).length > 0 ? JSON.stringify(charRefs) : undefined;
     const sceneJson = Object.keys(sceneRefs).length > 0 ? JSON.stringify(sceneRefs) : undefined;
-    await saveProject(id, {
+    const res = await saveProject(id, {
       characterRefs: charJson,
       sceneRefs: sceneJson,
+      // 新建项目版本为 0；已存在项目用本地版本，避免把别人的并发改动静默覆盖
+      version: isNewProject ? 0 : versionRef.current,
     });
+    if (res.conflict) {
+      window.alert('画布已在别处被修改，锚定图未保存。请刷新页面后重试。');
+      return;
+    }
+    versionRef.current = res.canvas?.version ?? versionRef.current + 1;
     // 更新本地 projects 缓存，让面板切换项目时能看到
     setProjects((ps) => ps.map((x) => (x.id === id ? { ...x, characterRefs: charJson, sceneRefs: sceneJson } : x)));
   };
@@ -995,6 +1015,7 @@ export default function CanvasPage() {
     const { nodesJson, edgesJson } = serializeCanvas();
     try {
       let id = currentProjectId;
+      const isNewProject = id === null;
       if (id === null) {
         const name = projectName.trim() || `画布 ${new Date().toLocaleTimeString()}`;
         const p = await createProject(name);
@@ -1003,11 +1024,18 @@ export default function CanvasPage() {
         setProjectName(p.name);
         setProjects((ps) => [...ps, p]);
       }
-      await saveProject(id, {
+      const res = await saveProject(id, {
         name: projectName.trim() || undefined,
         nodesJson,
         edgesJson,
+        version: isNewProject ? 0 : versionRef.current,
       });
+      if (res.conflict) {
+        resolveConflict(res, nodesJson, edgesJson);
+        return;
+      }
+      versionRef.current = res.canvas?.version ?? versionRef.current + 1;
+      lastSavedSnapshotRef.current = `${nodesJson}|${edgesJson}`;
       setProjects((ps) =>
         ps.map((p) => (p.id === id ? { ...p, name: projectName.trim() || p.name } : p)),
       );
@@ -1036,6 +1064,7 @@ export default function CanvasPage() {
       }
       setCurrentProjectId(p.id);
       setProjectName(p.name);
+      versionRef.current = p.version ?? 0;   // 乐观锁基线：本页基于这一版编辑
     } catch (e) {
       window.alert(e instanceof Error ? e.message : '加载失败');
     }
@@ -1292,13 +1321,18 @@ export default function CanvasPage() {
         genType: 'text_image',
         includeAssets: true,
       });
-      const byPrompt = new Map<string, string[]>();
+      // 两级索引：精确键优先；归一化键**仅在不冲突时**可用（歧义宁可不填——
+      // 把 A 镜的图填到 B 镜，用户会直接拿去生成视频，比不填更糟）
+      const exact = new Map<string, string[]>();
+      const loose = new Map<string, string[]>();
       for (const t of list) {
         if (t.status !== 'completed') continue;
         const key = (t.prompt || '').trim();
-        if (!key || byPrompt.has(key)) continue;
         const urls = parseImageUrls(t.imageUrls);
-        if (urls.length > 0) byPrompt.set(key, urls);
+        if (!key || urls.length === 0) continue;
+        if (!exact.has(key)) exact.set(key, urls);
+        const nk = normalizePrompt(key);
+        if (nk) loose.set(nk, loose.has(nk) ? [] : urls);
       }
       let filled = 0;
       setNodes((nds) =>
@@ -1306,8 +1340,9 @@ export default function CanvasPage() {
           if (n.type !== 'imageNode') return n;
           const d = n.data as ImageNodeData;
           if ((d.imageUrl || '').trim()) return n;
-          const urls = byPrompt.get((d.prompt || '').trim());
-          if (!urls) return n;
+          const key = (d.prompt || '').trim();
+          const urls = exact.get(key) ?? loose.get(normalizePrompt(key));
+          if (!urls || urls.length === 0) return n;
           filled += 1;
           return { ...n, data: { ...n.data, candidates: urls, imageUrl: urls[0] } };
         }),
@@ -1321,6 +1356,45 @@ export default function CanvasPage() {
   // 不自动保存的后果：一键文生图回填的图片只活在内存里，刷新/服务重启后节点又变回「待生成」。
   // 用「上次快照」比对，避免刚加载完项目就白写一次。
   const lastSavedSnapshotRef = useRef('');
+
+  /** 版本冲突处理：二选一（用我的覆盖 / 放弃我的改动）。自动保存与手动保存共用。 */
+  const resolveConflict = useCallback(
+    (res: SaveCanvasResult, nodesJson: string, edgesJson: string) => {
+      if (currentProjectId === null) return;
+      const useMine = window.confirm(
+        `画布已在别处被修改（服务端版本 ${res.serverVersion ?? '?'}，你手上基于版本 ${versionRef.current}）。\n\n` +
+          `确定 = 用你当前画布上的内容覆盖服务端\n` +
+          `取消 = 放弃你本地的改动，载入服务端最新内容`,
+      );
+      if (useMine) {
+        // 以服务端当前版本为基线重发，一次即可成功
+        versionRef.current = res.serverVersion ?? versionRef.current;
+        saveProject(currentProjectId, { nodesJson, edgesJson, version: versionRef.current })
+          .then((r2) => {
+            if (r2.conflict) {
+              window.alert('仍然冲突，请刷新页面后重试');
+              return;
+            }
+            versionRef.current = r2.canvas?.version ?? versionRef.current + 1;
+            lastSavedSnapshotRef.current = `${nodesJson}|${edgesJson}`;
+            window.alert('已用你本地的内容覆盖服务端');
+          })
+          .catch((e) => window.alert(e instanceof Error ? e.message : '保存失败'));
+        return;
+      }
+      // 放弃本地：直接用冲突响应里带回的服务端内容重载，不必再发一次 GET
+      const serverNodesJson = res.serverNodesJson ?? '';
+      versionRef.current = res.serverVersion ?? 0;
+      if (serverNodesJson) {
+        const parsed = JSON.parse(serverNodesJson);
+        setNodes(Array.isArray(parsed) ? parsed : (parsed.nodes ?? []));
+      }
+      setEdges(JSON.parse(res.serverEdgesJson ?? '[]'));
+      lastSavedSnapshotRef.current = `${serverNodesJson}|${res.serverEdgesJson ?? ''}`;
+      window.alert('已载入服务端最新内容（本地改动已放弃）');
+    },
+    [currentProjectId, setNodes, setEdges],
+  );
   useEffect(() => {
     if (currentProjectId === null) return;
     const { nodesJson, edgesJson } = serializeCanvas();
@@ -1331,16 +1405,22 @@ export default function CanvasPage() {
     }
     if (lastSavedSnapshotRef.current === key) return;
     const timer = setTimeout(() => {
-      saveProject(currentProjectId, { nodesJson, edgesJson })
-        .then(() => {
+      saveProject(currentProjectId, { nodesJson, edgesJson, version: versionRef.current })
+        .then((res) => {
+          if (res.conflict) {
+            // 版本冲突不能静默：可能是另一个标签页改了同一张画布
+            resolveConflict(res, nodesJson, edgesJson);
+            return;
+          }
+          versionRef.current = res.canvas?.version ?? versionRef.current + 1;
           lastSavedSnapshotRef.current = key;
         })
         .catch(() => {
-          /* 静默：自动保存失败不打断操作，顶栏「保存」仍可兜底 */
+          /* 静默：网络类失败不打断操作，顶栏「保存」仍可兜底 */
         });
     }, 1200);
     return () => clearTimeout(timer);
-  }, [nodes, edges, currentProjectId, serializeCanvas]);
+  }, [nodes, edges, currentProjectId, serializeCanvas, resolveConflict]);
 
   // === 成片顺序写进图片节点（画布上显示「第 N 段」）===
   // chain 按 x 坐标排序 → 拖动节点即改顺序；不显示序号用户根本判断不出提交顺序。
@@ -1944,7 +2024,9 @@ export default function CanvasPage() {
                   )}
                   {!batchRunning && backfillCount !== null && (
                     <span className="text-[10px] text-emerald-600">
-                      {backfillCount > 0 ? `已找回 ${backfillCount} 个节点的图` : '没找到匹配的历史图'}
+                      {backfillCount > 0
+                        ? `已找回 ${backfillCount} 个节点的图`
+                        : '没找到匹配的历史图（可点「一键文生图」重新生成）'}
                     </span>
                   )}
                 </>

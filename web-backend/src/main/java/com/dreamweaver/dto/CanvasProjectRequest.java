@@ -30,4 +30,7 @@ public class CanvasProjectRequest {
 
     /** 场景锚定图 JSON（{"场景名": "url"}） */
     private String sceneRefs;
+
+    /** 乐观锁：前端基于的版本号（null = 不校验，兼容不带 version 的旧前端） */
+    private Integer version;
 }

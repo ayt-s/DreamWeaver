@@ -3,6 +3,7 @@ package com.dreamweaver.controller;
 import com.dreamweaver.common.CommonResult;
 import com.dreamweaver.dto.CanvasProjectRequest;
 import com.dreamweaver.dto.CanvasProjectView;
+import com.dreamweaver.dto.SaveCanvasResult;
 import com.dreamweaver.entity.CanvasProject;
 import com.dreamweaver.service.CanvasProjectService;
 import lombok.RequiredArgsConstructor;
@@ -59,12 +60,11 @@ public class CanvasController {
 
     /** 保存画布内容 / 重命名（只更新非空字段） */
     @PutMapping("/{id}")
-    public CommonResult<CanvasProjectView> saveProject(
+    public CommonResult<SaveCanvasResult> saveProject(
             @PathVariable Long id, @RequestBody CanvasProjectRequest req) {
-        CanvasProject p = projectService.saveProject(
+        return CommonResult.ok(projectService.saveProject(
                 id, DEFAULT_USER_ID, req.getName(), req.getNodesJson(), req.getEdgesJson(),
-                req.getCharacterRefs(), req.getSceneRefs());
-        return CommonResult.ok(CanvasProjectView.of(p));
+                req.getCharacterRefs(), req.getSceneRefs(), req.getVersion()));
     }
 
     /** 删除项目 */

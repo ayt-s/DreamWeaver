@@ -15,12 +15,13 @@ public record CanvasProjectView(
         String edgesJson,
         Long parentId,
         String characterRefs,
-        String sceneRefs) {
+        String sceneRefs,
+        Integer version) {
 
     public static CanvasProjectView of(CanvasProject p) {
         return new CanvasProjectView(
                 p.getId(), p.getProjectName(), p.getUpdatedAt(),
                 p.getNodesJson(), p.getEdgesJson(), p.getParentId(),
-                p.getCharacterRefs(), p.getSceneRefs());
+                p.getCharacterRefs(), p.getSceneRefs(), p.getVersion());
     }
 }

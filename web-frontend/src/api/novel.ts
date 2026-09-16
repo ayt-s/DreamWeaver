@@ -1,9 +1,9 @@
 import client, { unwrap } from './client';
 import type {
-  CanvasProjectRef,
   NovelPreprocessRequest,
   NovelProject,
   NovelSegment,
+  ToCanvasResult,
 } from '../types/novel';
 
 /**
@@ -41,16 +41,24 @@ export function updateSegments(
  * 转画布：把分镜落成 canvas project（后端幂等：已绑定画布则复用更新）。
  * 锚定图随请求落库到 canvas_project.character_refs/scene_refs，
  * 这样刷新画布、换设备都还在（此前只靠 URL query + localStorage）。
+ *
+ * 覆盖保护：目标画布已被改过时后端**不写库**，返回 needConfirm；
+ * 用户选「覆盖」传 force=true，选「另存为新画布」传 saveAsNew=true。
  */
 export function toCanvas(
   id: number,
   anchors?: { characters?: Record<string, string>; scenes?: Record<string, string> },
-): Promise<CanvasProjectRef> {
-  const body = anchors
-    ? {
-        characterRefs: JSON.stringify(anchors.characters ?? {}),
-        sceneRefs: JSON.stringify(anchors.scenes ?? {}),
-      }
-    : {};
+  opts?: { force?: boolean; saveAsNew?: boolean },
+): Promise<ToCanvasResult> {
+  const body = {
+    ...(anchors
+      ? {
+          characterRefs: JSON.stringify(anchors.characters ?? {}),
+          sceneRefs: JSON.stringify(anchors.scenes ?? {}),
+        }
+      : {}),
+    ...(opts?.force ? { force: true } : {}),
+    ...(opts?.saveAsNew ? { saveAsNew: true } : {}),
+  };
   return unwrap(client.post(`/novel/${id}/to-canvas`, body));
 }

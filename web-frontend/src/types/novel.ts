@@ -49,3 +49,19 @@ export interface CanvasProjectRef {
   name: string;
   updatedAt?: string;
 }
+
+/**
+ * 「转入画布」结果。
+ * needConfirm=true 表示目标画布已有内容且与本次结果不一致 —— 后端**没有写库**，
+ * 需前端确认后带 force（覆盖）或 saveAsNew（另存为新画布）重发。
+ */
+export interface ToCanvasResult {
+  canvas?: CanvasProjectRef | null;
+  needConfirm: boolean;
+  /** 以下仅在 needConfirm=true 时有值，用于生成确认文案 */
+  canvasId?: number | null;
+  canvasName?: string | null;
+  canvasNodeCount?: number | null;
+  canvasUpdatedAt?: string | null;
+  incomingNodeCount?: number | null;
+}

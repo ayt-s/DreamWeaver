@@ -12,6 +12,21 @@ export interface CanvasProjectView {
   characterRefs?: string | null;
   /** 场景锚定图 JSON（{"场景名": "url"}） */
   sceneRefs?: string | null;
+  /** 乐观锁版本号：保存时回传，冲突时后端拒绝写入 */
+  version?: number;
+}
+
+/**
+ * 保存画布的结果。
+ * conflict=true 表示乐观锁版本不符（画布已在别处被修改），本次未写入，
+ * 并带回服务端现状供前端决定「用我的覆盖」还是「放弃我的改动」。
+ */
+export interface SaveCanvasResult {
+  canvas?: CanvasProjectView | null;
+  conflict: boolean;
+  serverVersion?: number | null;
+  serverNodesJson?: string | null;
+  serverEdgesJson?: string | null;
 }
 
 /** 创建项目（空画布） */
@@ -38,8 +53,10 @@ export function saveProject(
     edgesJson?: string;
     characterRefs?: string;
     sceneRefs?: string;
+    /** 本地基于的版本号；不一致说明画布已被别处修改 → 返回 conflict=true 且不写入 */
+    version?: number;
   },
-): Promise<CanvasProjectView> {
+): Promise<SaveCanvasResult> {
   return unwrap(client.put(`/canvas/${id}`, body));
 }
 

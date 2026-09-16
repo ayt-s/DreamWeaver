@@ -40,8 +40,11 @@ public interface NovelPreprocessService {
 
     /**
      * 把当前分镜同步到画布项目（image/video/compose 网格布局）。
+     * <p>覆盖保护：目标画布已有内容且与本次结果不一致（= 被改过）时，未传
+     * force/saveAsNew 就**不写库**，返回 needConfirm 交前端确认。</p>
      * <p>幂等：项目已绑定画布时复用更新，不再每次新建（此前点 N 次「转入画布」
      * 就在库里留下 N 个同名画布项目）。锚定图随本次一并落库。</p>
      */
-    CanvasProjectView saveToCanvas(Long novelProjectId, String characterRefs, String sceneRefs);
+    com.dreamweaver.dto.ToCanvasResult saveToCanvas(Long novelProjectId, String characterRefs,
+            String sceneRefs, boolean force, boolean saveAsNew);
 }

@@ -1,5 +1,6 @@
 package com.dreamweaver.service;
 
+import com.dreamweaver.dto.SaveCanvasResult;
 import com.dreamweaver.entity.CanvasProject;
 
 import java.util.List;
@@ -19,9 +20,13 @@ public interface CanvasProjectService {
     /** 加载项目完整内容（含 nodes/edges JSON），不存在返回 null */
     CanvasProject getProject(Long id, Long userId);
 
-    /** 保存画布内容 / 重命名（只更新非空字段），返回最新实体 */
-    CanvasProject saveProject(Long id, Long userId, String name, String nodesJson, String edgesJson,
-                             String characterRefs, String sceneRefs);
+    /**
+     * 保存画布内容 / 重命名（只更新非空字段）。
+     * <p>乐观锁：{@code expectedVersion} 非空且与库中不一致时**不写入**，
+     * 返回 {@code conflict=true} 与服务端当前内容，由前端决定覆盖还是放弃。</p>
+     */
+    SaveCanvasResult saveProject(Long id, Long userId, String name, String nodesJson, String edgesJson,
+                                 String characterRefs, String sceneRefs, Integer expectedVersion);
 
     /** 删除项目 */
     void deleteProject(Long id, Long userId);

@@ -25,6 +25,10 @@ import { stripChapterSuffix } from '../utils/projectName';
 
 /** 从 projectName 剥离章节标识 → 小说名。共用工具见 ../utils/projectName.ts */
 
+/** 时间戳文案（本地时区）——用于「转入画布」的覆盖确认框 */
+const fmtTime = (s?: string | null) =>
+  s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '未知';
+
 type Phase = 'input' | 'processing' | 'segments' | 'error';
 
 export default function NovelPage() {
@@ -118,10 +122,34 @@ export default function NovelPage() {
 
       // 步骤 2：转画布并跳转。锚定图随请求落库（URL query 仍带一份作兜底，
       // 让画布页在首次加载时无需等接口即能渲染）
-      const canvas = await toCanvas(project.id, anchorRefsObj ?? undefined);
+      let res = await toCanvas(project.id, anchorRefsObj ?? undefined);
+      if (res.needConfirm) {
+        // 目标画布已有内容且与本次结果不一致（被手工改过，或上次转的是另一版分镜）：
+        // 静默覆盖会吞掉画布上的手工调整，所以先问清楚再写库
+        const pick = window.prompt(
+          `目标画布「${res.canvasName}」已有 ${res.canvasNodeCount} 个节点` +
+            `（最后修改 ${fmtTime(res.canvasUpdatedAt)}）。\n` +
+            `本次转入将写入 ${res.incomingNodeCount} 个节点，会整体覆盖现有画布内容，` +
+            `包括你在画布上的手工调整。\n\n` +
+            `输入 1 = 覆盖现有画布\n` +
+            `输入 2 = 另存为新画布（保留现有版本）\n` +
+            `其它 = 取消`,
+          '',
+        );
+        const v = (pick ?? '').trim();
+        if (v !== '1' && v !== '2') return;
+        res = await toCanvas(project.id, anchorRefsObj ?? undefined, {
+          force: v === '1',
+          saveAsNew: v === '2',
+        });
+      }
+      const canvasId = res.canvas?.id;
+      if (!canvasId) {
+        throw new Error('转入画布失败：后端未返回画布');
+      }
       const url = anchorRefs
-        ? `/canvas?project=${canvas.id}&anchorRefs=${anchorRefs}`
-        : `/canvas?project=${canvas.id}`;
+        ? `/canvas?project=${canvasId}&anchorRefs=${anchorRefs}`
+        : `/canvas?project=${canvasId}`;
       navigate(url);
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e));

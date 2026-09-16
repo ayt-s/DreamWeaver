@@ -1,6 +1,9 @@
 package com.dreamweaver.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.dreamweaver.dto.CanvasProjectView;
+import com.dreamweaver.dto.SaveCanvasResult;
 import com.dreamweaver.entity.CanvasProject;
 import com.dreamweaver.mapper.CanvasProjectMapper;
 import com.dreamweaver.service.CanvasProjectService;
@@ -50,33 +53,56 @@ public class CanvasProjectServiceImpl implements CanvasProjectService {
 
     @Override
     @Transactional
-    public CanvasProject saveProject(Long id, Long userId, String name,
+    public SaveCanvasResult saveProject(Long id, Long userId, String name,
                                      String nodesJson, String edgesJson,
-                                     String characterRefs, String sceneRefs) {
+                                     String characterRefs, String sceneRefs,
+                                     Integer expectedVersion) {
         CanvasProject existing = getProject(id, userId);
         if (existing == null) {
             throw new IllegalArgumentException("画布项目不存在: " + id);
         }
-        CanvasProject patch = new CanvasProject();
-        patch.setId(id);
+        // 用条件更新代替 updateById：expectedVersion 非空时，版本不符就匹配不到任何行，
+        // 于是「读-改-写」之间的并发修改不会像以前那样被静默覆盖。
+        LambdaUpdateWrapper<CanvasProject> w = new LambdaUpdateWrapper<CanvasProject>()
+                .eq(CanvasProject::getId, id);
+        if (expectedVersion != null) {
+            w.eq(CanvasProject::getVersion, expectedVersion);
+        }
         if (name != null && !name.isBlank()) {
-            patch.setProjectName(name.trim());
+            w.set(CanvasProject::getProjectName, name.trim());
         }
         if (nodesJson != null) {
-            patch.setNodesJson(nodesJson);
+            w.set(CanvasProject::getNodesJson, nodesJson);
         }
         if (edgesJson != null) {
-            patch.setEdgesJson(edgesJson);
+            w.set(CanvasProject::getEdgesJson, edgesJson);
         }
         if (characterRefs != null) {
-            patch.setCharacterRefs(characterRefs);
+            w.set(CanvasProject::getCharacterRefs, characterRefs);
         }
         if (sceneRefs != null) {
-            patch.setSceneRefs(sceneRefs);
+            w.set(CanvasProject::getSceneRefs, sceneRefs);
         }
-        mapper.updateById(patch);
-        log.info("画布项目保存: id={} {}", id, name == null ? "" : "rename=" + name);
-        return getProject(id, userId);
+        w.setSql("version = version + 1");
+        int rows = mapper.update(null, w);
+
+        SaveCanvasResult res = new SaveCanvasResult();
+        if (rows == 0 && expectedVersion != null) {
+            // 版本不符 = 画布已被别处修改。顺带把服务端现状返回，前端可直接重载，省一次 GET
+            CanvasProject now = getProject(id, userId);
+            res.setConflict(true);
+            res.setServerVersion(now == null ? null : now.getVersion());
+            res.setServerNodesJson(now == null ? null : now.getNodesJson());
+            res.setServerEdgesJson(now == null ? null : now.getEdgesJson());
+            log.warn("画布保存版本冲突: id={} 期望版本={} 服务端版本={}",
+                    id, expectedVersion, now == null ? null : now.getVersion());
+            return res;
+        }
+        CanvasProject fresh = getProject(id, userId);
+        res.setCanvas(CanvasProjectView.of(fresh));
+        log.info("画布项目保存: id={} {} version={}", id, name == null ? "" : "rename=" + name,
+                fresh == null ? null : fresh.getVersion());
+        return res;
     }
 
     @Override

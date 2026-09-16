@@ -38,6 +38,13 @@ public class CanvasProject {
     /** 场景锚定图 JSON（{"场景名": "url"}） */
     private String sceneRefs;
 
+    /**
+     * 乐观锁版本号：每次保存 +1。
+     * <p>前端保存时回传自己基于的版本；不一致说明画布已被别处修改（多标签/多设备），
+     * 后端拒绝写入并返回服务端现状，由用户决定保留哪一份。</p>
+     */
+    private Integer version;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;

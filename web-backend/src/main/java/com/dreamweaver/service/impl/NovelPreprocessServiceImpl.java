@@ -6,6 +6,7 @@ import com.dreamweaver.dto.NovelProjectResponse;
 import com.dreamweaver.dto.NovelSegment;
 import com.dreamweaver.dto.NovelSegmentUpdateRequest;
 import com.dreamweaver.dto.PreparedStoryboard;
+import com.dreamweaver.dto.ToCanvasResult;
 import com.dreamweaver.entity.CanvasProject;
 import com.dreamweaver.entity.NovelProject;
 import com.dreamweaver.mapper.NovelProjectMapper;
@@ -13,6 +14,7 @@ import com.dreamweaver.service.CanvasProjectService;
 import com.dreamweaver.service.NovelPreprocessService;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import lombok.RequiredArgsConstructor;
@@ -253,7 +255,8 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
 
     @Override
     @Transactional
-    public CanvasProjectView saveToCanvas(Long novelProjectId, String characterRefs, String sceneRefs) {
+    public ToCanvasResult saveToCanvas(Long novelProjectId, String characterRefs, String sceneRefs,
+            boolean force, boolean saveAsNew) {
         NovelProject p = mapper.selectById(novelProjectId);
         if (p == null) {
             throw new IllegalArgumentException("小说项目不存在: " + novelProjectId);
@@ -315,7 +318,9 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
             edges.add(Map.of("id", "e" + i + "-ic", "source", "img" + i, "target", "compose"));
         }
 
-        String nodesJson = safeJson(nodes);
+        // 统一成 {nodes:[...]} 包装（前端 serializeCanvas 也是这个格式）。
+        // 此前写裸数组，两种格式混在库里，外部脚本按 {nodes} 解析就会炸。
+        String nodesJson = "{\"nodes\":" + safeJson(nodes) + "}";
         String edgesJson = safeJson(edges);
 
         // 幂等：项目已绑定画布 → 复用更新；否则新建。
@@ -328,27 +333,97 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
                         p.getId(), p.getCanvasProjectId());
             }
         }
-        if (target == null) {
-            target = canvasProjectService.createProject(p.getProjectName(), DEFAULT_USER_ID);
+        // 覆盖保护：「转入」本身是确定性的（同一份分镜产出同样的 JSON），所以内容不等 =
+        // 画布被改过（手工调整，或上次转的是另一版分镜）。此时静默覆盖会吞掉手工成果。
+        if (target != null && !force && !saveAsNew && !sameJson(target.getNodesJson(), nodesJson)) {
+            log.info("novel -> canvas 需确认覆盖: novelId={} canvasId={} 现有节点={} 本次节点={}",
+                    p.getId(), target.getId(), countNodes(target.getNodesJson()), nodes.size());
+            ToCanvasResult ask = new ToCanvasResult();
+            ask.setNeedConfirm(true);
+            ask.setCanvasId(target.getId());
+            ask.setCanvasName(target.getProjectName());
+            ask.setCanvasNodeCount(countNodes(target.getNodesJson()));
+            ask.setCanvasUpdatedAt(target.getUpdatedAt());
+            ask.setIncomingNodeCount(nodes.size());
+            return ask;
+        }
+
+        if (target == null || saveAsNew) {
+            // 新建 / 另存为新画布（保留原画布不动）
+            target = canvasProjectService.createProject(
+                    saveAsNew ? copyName(p.getProjectName()) : p.getProjectName(),
+                    DEFAULT_USER_ID);
         }
         // 锚定图一并落库：刷新画布/换设备都还在（此前只走 URL query + localStorage）
-        CanvasProject saved = canvasProjectService.saveProject(
-                target.getId(), DEFAULT_USER_ID, p.getProjectName(), nodesJson, edgesJson,
-                characterRefs, sceneRefs);
+        // 名字：普通转入沿用小说名（既有语义）；另存为副本时保留刚生成的副本名 ——
+        // 否则 saveProject 会把它改回小说名，用户分不清哪张是哪张。
+        String canvasName = saveAsNew ? target.getProjectName() : p.getProjectName();
+        // 内部覆盖语义：不传 expectedVersion（版本校验由上层「转入画布」确认框把关）
+        CanvasProjectView saved = canvasProjectService.saveProject(
+                target.getId(), DEFAULT_USER_ID, canvasName, nodesJson, edgesJson,
+                characterRefs, sceneRefs, null).getCanvas();
 
         // 回填 canvasProjectId 关联
         NovelProject patch = new NovelProject();
         patch.setId(p.getId());
-        patch.setCanvasProjectId(saved.getId());
+        patch.setCanvasProjectId(saved.id());
         mapper.updateById(patch);
 
         log.info("novel -> canvas 同步完成: novelId={} canvasId={} nodes={} edges={}",
-                p.getId(), saved.getId(), nodes.size(), edges.size());
+                p.getId(), saved.id(), nodes.size(), edges.size());
 
-        return new CanvasProjectView(
-                saved.getId(), saved.getProjectName(), saved.getUpdatedAt(),
-                saved.getNodesJson(), saved.getEdgesJson(), saved.getParentId(),
-                saved.getCharacterRefs(), saved.getSceneRefs());
+        ToCanvasResult ok = new ToCanvasResult();
+        ok.setCanvas(saved);
+        return ok;
+    }
+
+    /**
+     * 两份 nodesJson 是否一致。
+     * <p>先串比较（快路径），不等再解析成节点数组比较 —— 历史数据是裸数组、
+     * 新数据是 {@code {nodes:[...]}} 包装，格式差异不该被误判成「画布被改过」。</p>
+     */
+    private boolean sameJson(String a, String b) {
+        if (a == null || b == null) return false;
+        if (a.trim().equals(b.trim())) return true;
+        try {
+            return nodesOf(a).equals(nodesOf(b));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 取 nodesJson 里的节点数组（兼容 {nodes:[...]} 与裸数组）。 */
+    private JsonNode nodesOf(String json) throws IOException {
+        JsonNode root = OM.readTree(json);
+        return root.isArray() ? root : root.get("nodes");
+    }
+
+    /** 读画布 nodesJson 的节点数（兼容 {nodes:[...]} 与裸数组两种历史格式）。 */
+    private int countNodes(String nodesJson) {
+        if (nodesJson == null || nodesJson.isBlank()) {
+            return 0;
+        }
+        try {
+            JsonNode root = OM.readTree(nodesJson);
+            JsonNode arr = root.isArray() ? root : root.get("nodes");
+            return arr == null || !arr.isArray() ? 0 : arr.size();
+        } catch (Exception e) {
+            log.warn("画布 nodesJson 解析失败: {}", e.getMessage());
+            return 0;
+        }
+    }
+
+    /** 另存为新画布时的名字：base · 副本 / 副本2 / 副本3…（避开同名）。 */
+    private String copyName(String base) {
+        List<String> names = new ArrayList<>();
+        for (CanvasProject c : canvasProjectService.listProjects(DEFAULT_USER_ID)) {
+            names.add(c.getProjectName());
+        }
+        String name = base + " · 副本";
+        for (int i = 2; names.contains(name) && i < 100; i++) {
+            name = base + " · 副本" + i;
+        }
+        return name;
     }
 
     // ========== 工具方法 ==========
