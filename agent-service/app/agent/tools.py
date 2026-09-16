@@ -536,6 +536,189 @@ def _poll_tasks(task_ids: list[int], wait_seconds: int,
         time.sleep(interval)
 
 
+# === 画布结构工具 ==========================================================
+# 背景：让 LLM 回显整份 nodes 的 save_canvas 已移除 —— 画布 28 个节点 ≈ 12KB JSON，
+# 回显必然丢节点（乐观锁只保证版本对，不保证内容对）。
+# 结构改动因此改为**服务端定点操作**：LLM 只传少量参数，节点/连线的拼装在 Python 侧
+# 完成，并复用同一套乐观锁（version 不符就不写、把服务端现状交回给 LLM）。
+
+
+def _next_image_id(nodes: list) -> str:
+    """挑一个没被占用的图片节点 id（沿用画布既有命名 img0 / img1 / …）。"""
+    used = {str(n.get("id")) for n in nodes}
+    for i in range(500):
+        cand = f"img{i}"
+        if cand not in used:
+            return cand
+    return f"img{len(nodes)}"
+
+
+def _compose_id(nodes: list, edges: list) -> Optional[str]:
+    """找「成片汇点」：约定是 id 为 compose 的节点；没有就取图片节点出边里出现最多的目标。"""
+    ids = {str(n.get("id")) for n in nodes}
+    if "compose" in ids:
+        return "compose"
+    img_ids = {str(n.get("id")) for n in nodes if n.get("type") == "imageNode"}
+    counter: dict[str, int] = {}
+    for e in edges:
+        if str(e.get("source")) in img_ids:
+            tgt = str(e.get("target"))
+            if tgt in ids:
+                counter[tgt] = counter.get(tgt, 0) + 1
+    return max(counter, key=counter.get) if counter else None
+
+
+def _pos(node: dict) -> tuple[float, float]:
+    p = node.get("position") or {}
+    return float(p.get("x") or 0), float(p.get("y") or 0)
+
+
+def add_image_node(canvas_id: int, prompt: str, after_node_id: Optional[str] = None,
+                   ratio: str = "16:9") -> dict:
+    """在画布上新增一个图片节点（先把提示词填好），并自动连到成片节点。
+
+    成片顺序 = 图片节点**从左到右的 x 坐标**，所以新节点默认排在最后；
+    传 after_node_id 可插到某个节点之后（两者 x 相差 340）。
+    """
+    if not prompt or not prompt.strip():
+        return {"error": "prompt 不能为空"}
+    snap = _get_canvas(canvas_id)
+    nodes, edges = snap["nodes"], snap["edges"]
+    imgs = [n for n in nodes if n.get("type") == "imageNode"]
+    xs = [_pos(n)[0] for n in imgs] or [60.0]
+    ys = [_pos(n)[1] for n in imgs] or [60.0]
+
+    if after_node_id:
+        anchor = next((n for n in nodes if str(n.get("id")) == after_node_id), None)
+        if anchor is None:
+            return {"error": f"节点 {after_node_id} 不存在"}
+        ax, ay = _pos(anchor)
+        x, y = ax + 340, ay
+    else:
+        x, y = max(xs) + 340, min(ys)
+
+    new_id = _next_image_id(nodes)
+    nodes.append({
+        "id": new_id, "type": "imageNode", "position": {"x": x, "y": y},
+        "data": {"imageUrl": "", "prompt": prompt.strip(), "ratio": ratio or "16:9"},
+    })
+    sink = _compose_id(nodes, edges)
+    if sink:
+        edges.append({"id": f"{new_id}-ic", "source": new_id, "target": sink})
+
+    res = _save_canvas(canvas_id, nodes, edges, snap["wrapper"], snap["version"])
+    if res.get("conflict"):
+        return _conflict(canvas_id, res, f"新增节点 {new_id}", snap["version"])
+    canvas = res.get("canvas") or {}
+    return {
+        "saved": True,
+        "node_id": new_id,
+        "position": {"x": x, "y": y},
+        "connected_to": sink,
+        "version": canvas.get("version"),
+        "message": (
+            f"已新增图片节点 {new_id}"
+            + (f"（插在 {after_node_id} 之后）" if after_node_id else "（排在最后）")
+            + (f"，并连到成片节点 {sink}" if sink else "")
+            + "。它现在是「待生成」，需要出图才有画面上成片。"
+        ),
+    }
+
+
+def delete_node(canvas_id: int, node_id: str) -> dict:
+    """删除画布上的一个节点，连同它的连线。
+
+    **不允许删成片节点**（compose）：它是所有分段的汇点，删掉整条链就断了。
+    """
+    snap = _get_canvas(canvas_id)
+    nodes, edges = snap["nodes"], snap["edges"]
+    if next((n for n in nodes if str(n.get("id")) == node_id), None) is None:
+        return {"error": f"节点 {node_id} 不存在"}
+    if node_id == _compose_id(nodes, edges):
+        return {"error": "不能删除成片节点（它是所有分段的汇点，删掉整条链就断了）；"
+                         "要减镜请删对应的图片节点"}
+
+    kept_nodes = [n for n in nodes if str(n.get("id")) != node_id]
+    kept_edges = [e for e in edges
+                  if str(e.get("source")) != node_id and str(e.get("target")) != node_id]
+    res = _save_canvas(canvas_id, kept_nodes, kept_edges, snap["wrapper"], snap["version"])
+    if res.get("conflict"):
+        return _conflict(canvas_id, res, f"删除节点 {node_id}", snap["version"])
+    canvas = res.get("canvas") or {}
+    return {
+        "saved": True,
+        "deleted": node_id,
+        "removed_edges": len(edges) - len(kept_edges),
+        "remaining_nodes": len(kept_nodes),
+        "version": canvas.get("version"),
+        "message": f"已删除节点 {node_id} 及它的连线（剩余 {len(kept_nodes)} 个节点）",
+    }
+
+
+def connect_nodes(canvas_id: int, source: str, target: str) -> dict:
+    """在画布上连一条线 source → target（重复连线/自环会被拒绝）。"""
+    if source == target:
+        return {"error": "不能把节点连到自己"}
+    snap = _get_canvas(canvas_id)
+    nodes, edges = snap["nodes"], snap["edges"]
+    ids = {str(n.get("id")) for n in nodes}
+    for nid in (source, target):
+        if nid not in ids:
+            return {"error": f"节点 {nid} 不存在"}
+    for e in edges:
+        if str(e.get("source")) == source and str(e.get("target")) == target:
+            return {"saved": False, "message": f"{source} → {target} 已经连过了（未改动）"}
+
+    edges.append({"id": f"e-{source}-{target}", "source": source, "target": target})
+    res = _save_canvas(canvas_id, nodes, edges, snap["wrapper"], snap["version"])
+    if res.get("conflict"):
+        return _conflict(canvas_id, res, f"连线 {source} → {target}", snap["version"])
+    canvas = res.get("canvas") or {}
+    return {
+        "saved": True,
+        "edge": f"{source} → {target}",
+        "edge_count": len(edges),
+        "version": canvas.get("version"),
+        "message": f"已连线 {source} → {target}",
+    }
+
+
+def reorder_shots(canvas_id: int, node_ids: list[str]) -> dict:
+    """按给定顺序重排分镜（**成片顺序 = 图片节点从左到右的 x 坐标**）。
+
+    只动列出的节点：按 node_ids 的顺序给它们分配递增的 x，y 保持不变（避免上下重叠）。
+    没列出的节点位置不动。
+    """
+    if not node_ids:
+        return {"error": "node_ids 不能为空"}
+    snap = _get_canvas(canvas_id)
+    nodes, edges = snap["nodes"], snap["edges"]
+    by_id = {str(n.get("id")): n for n in nodes}
+    for nid in node_ids:
+        n = by_id.get(str(nid))
+        if n is None:
+            return {"error": f"节点 {nid} 不存在"}
+        if n.get("type") != "imageNode":
+            return {"error": f"节点 {nid} 不是图片节点（只有分镜图片节点有先后顺序）"}
+
+    ordered = [by_id[str(nid)] for nid in node_ids]
+    base = min(_pos(n)[0] for n in ordered)
+    for i, n in enumerate(ordered):
+        x, y = _pos(n)
+        n["position"] = {"x": base + i * 340, "y": y}
+
+    res = _save_canvas(canvas_id, nodes, edges, snap["wrapper"], snap["version"])
+    if res.get("conflict"):
+        return _conflict(canvas_id, res, "重排分镜顺序", snap["version"])
+    canvas = res.get("canvas") or {}
+    return {
+        "saved": True,
+        "order": [str(n.get("id")) for n in ordered],
+        "version": canvas.get("version"),
+        "message": "已按给定顺序重排分镜（" + " → ".join(str(n.get("id")) for n in ordered) + "）",
+    }
+
+
 def list_tasks() -> dict:
     """列出最近的生成任务（含状态、错误消息、结果 URL）。
 

@@ -50,7 +50,10 @@ SYSTEM_PROMPT = """你是 DreamWeaver 画布智能助手，一个帮助用户在
 3. list_tasks() / get_task(task_id) - 查生成任务（get_task 含失败原因，排障先用它）
 改画布：
 4. edit_prompt(canvas_id, node_id, new_prompt) - 改节点提示词（文本节点改 content，其余改 prompt）并立即落库
-5. （没有整体保存画布的工具）—— 改内容一律走 edit_prompt，见下面「不做整份回写」
+5. add_image_node(canvas_id, prompt, after_node_id?) - 新增图片节点（分镜）并自动连到成片
+6. delete_node(canvas_id, node_id) - 删除节点及它的连线（成片节点 compose 不可删）
+7. connect_nodes(canvas_id, source, target) - 连一条线
+8. reorder_shots(canvas_id, node_ids) - 按给定顺序重排分镜（成片顺序 = 图片节点从左到右）
 生成：
 6. generate_images(canvas_id, node_ids, count, dry_run) - 给「有提示词还没图」的图片节点批量出首帧（文生图）
 7. collect_images(canvas_id, task_ids) - 续收此前提交、还在生成中的出图任务
@@ -60,7 +63,11 @@ SYSTEM_PROMPT = """你是 DreamWeaver 画布智能助手，一个帮助用户在
 # 使用规范
 - 用户在消息里会提供 canvas_id；不知道是哪个画布时，先问用户
 - 改提示词：先 read_node 看现状，再 edit_prompt，并说明改了什么
-- **不做整份回写**：不要试图把整份节点数组写回画布（画布 28 个节点 ≈ 12KB JSON，回显必然丢节点）。增删节点/连线/调整顺序请让用户在画布上操作（画布上：悬停节点右上角出现 × 即可删；选中节点后按 Delete 也可；顺序 = 节点从左到右，拖动节点即改顺序），你只负责改提示词
+- **改结构用专用工具，绝不整份回写**：增删节点用 add_image_node / delete_node，连线用
+  connect_nodes，调先后用 reorder_shots（node_ids 按你想要的顺序传）。
+  画布 28 个节点 ≈ 12KB JSON，把整份数组回显回来必然丢节点，所以没有「整体保存」工具。
+  你也可以告诉用户在画布上直接操作：悬停节点右上角的 × 删、选中后按 Delete、拖动即改顺序。
+- 新加的图片节点是「待生成」状态：先提醒用户，用户同意后用 generate_images 出图才有画面上成片
 - **出图必须先报计划**：generate_images 默认 dry_run=True，它会返回清单与总张数（按张计费）。
   把清单和总张数告诉用户，得到同意后才用 dry_run=False 执行；用户没明确同意就不要执行
 - 已经提交过的生成不要重复提交（get_task / list_tasks 能查到）；还在生成中的用 collect_images 续收
@@ -84,6 +91,10 @@ chat_agent: Agent = Agent(
         _tools.read_node,
         _tools.edit_prompt,
         _tools.list_tasks,
+        _tools.add_image_node,
+        _tools.delete_node,
+        _tools.connect_nodes,
+        _tools.reorder_shots,
         _tools.get_task,
         _tools.submit_task,
         _tools.generate_images,
