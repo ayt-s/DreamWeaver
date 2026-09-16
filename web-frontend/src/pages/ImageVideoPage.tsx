@@ -54,6 +54,7 @@ import {
   deleteProject,
   type CanvasProjectView,
   type SaveCanvasResult,
+  getCanvasVersion,
 } from '../api/canvas';
 import { generateText } from '../api/agent';
 import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
@@ -1357,32 +1358,59 @@ export default function CanvasPage() {
   // 用「上次快照」比对，避免刚加载完项目就白写一次。
   const lastSavedSnapshotRef = useRef('');
 
+  /** 自动保存撞版本时的非阻塞横幅（助手也会写画布，阻塞 confirm 会高频打断编辑） */
+  const [conflictBanner, setConflictBanner] = useState<
+    { res: SaveCanvasResult; nodesJson: string; edgesJson: string; localVersion: number } | null
+  >(null);
+
+  // 轻量版本轮询：只取版本号（不拉 JSON）。发现服务端版本更高 = 助手或在另一个标签页
+  // 改了这张画布 → 顶部提示可重载。刻意不自动套用：那会打断正在编辑的你。
+  const { data: versionProbe } = useQuery({
+    queryKey: ['canvas-version', currentProjectId],
+    queryFn: () => getCanvasVersion(currentProjectId as number),
+    enabled: currentProjectId !== null,
+    refetchInterval: 5000,
+  });
+  const externalVersion =
+    versionProbe && versionProbe.version !== undefined && versionProbe.version > versionRef.current
+      ? versionProbe.version
+      : null;
+
+  /** 载入服务端最新内容（提示条「重载最新」/ 放弃本地改动时用） */
+  const reloadFromServer = useCallback(async () => {
+    if (currentProjectId === null) return;
+    const p = await getProject(currentProjectId);
+    const parsed = JSON.parse(p.nodesJson ?? '[]');
+    setNodes(Array.isArray(parsed) ? parsed : (parsed.nodes ?? []));
+    setEdges(JSON.parse(p.edgesJson ?? '[]'));
+    versionRef.current = p.version ?? 0;
+    lastSavedSnapshotRef.current = `${p.nodesJson ?? ''}|${p.edgesJson ?? ''}`;
+  }, [currentProjectId, setNodes, setEdges]);
+
   /** 版本冲突处理：二选一（用我的覆盖 / 放弃我的改动）。自动保存与手动保存共用。 */
-  const resolveConflict = useCallback(
+  /** 用本地内容覆盖服务端：以服务端版本为基线重发，一次即可成功 */
+  const applyLocalOverServer = useCallback(
     (res: SaveCanvasResult, nodesJson: string, edgesJson: string) => {
       if (currentProjectId === null) return;
-      const useMine = window.confirm(
-        `画布已在别处被修改（服务端版本 ${res.serverVersion ?? '?'}，你手上基于版本 ${versionRef.current}）。\n\n` +
-          `确定 = 用你当前画布上的内容覆盖服务端\n` +
-          `取消 = 放弃你本地的改动，载入服务端最新内容`,
-      );
-      if (useMine) {
-        // 以服务端当前版本为基线重发，一次即可成功
-        versionRef.current = res.serverVersion ?? versionRef.current;
-        saveProject(currentProjectId, { nodesJson, edgesJson, version: versionRef.current })
-          .then((r2) => {
-            if (r2.conflict) {
-              window.alert('仍然冲突，请刷新页面后重试');
-              return;
-            }
-            versionRef.current = r2.canvas?.version ?? versionRef.current + 1;
-            lastSavedSnapshotRef.current = `${nodesJson}|${edgesJson}`;
-            window.alert('已用你本地的内容覆盖服务端');
-          })
-          .catch((e) => window.alert(e instanceof Error ? e.message : '保存失败'));
-        return;
-      }
-      // 放弃本地：直接用冲突响应里带回的服务端内容重载，不必再发一次 GET
+      versionRef.current = res.serverVersion ?? versionRef.current;
+      saveProject(currentProjectId, { nodesJson, edgesJson, version: versionRef.current })
+        .then((r2) => {
+          if (r2.conflict) {
+            window.alert('仍然冲突，请刷新页面后重试');
+            return;
+          }
+          versionRef.current = r2.canvas?.version ?? versionRef.current + 1;
+          lastSavedSnapshotRef.current = `${nodesJson}|${edgesJson}`;
+          window.alert('已用你本地的内容覆盖服务端');
+        })
+        .catch((e) => window.alert(e instanceof Error ? e.message : '保存失败'));
+    },
+    [currentProjectId],
+  );
+
+  /** 放弃本地改动：直接用冲突响应里带回的服务端内容重载，省一次 GET */
+  const loadServerContent = useCallback(
+    (res: SaveCanvasResult) => {
       const serverNodesJson = res.serverNodesJson ?? '';
       versionRef.current = res.serverVersion ?? 0;
       if (serverNodesJson) {
@@ -1393,8 +1421,26 @@ export default function CanvasPage() {
       lastSavedSnapshotRef.current = `${serverNodesJson}|${res.serverEdgesJson ?? ''}`;
       window.alert('已载入服务端最新内容（本地改动已放弃）');
     },
-    [currentProjectId, setNodes, setEdges],
+    [setNodes, setEdges],
   );
+
+  /** 手动保存撞版本：这里让用户明确选一次（自动保存走横幅，见上） */
+  const resolveConflict = useCallback(
+    (res: SaveCanvasResult, nodesJson: string, edgesJson: string) => {
+      const useMine = window.confirm(
+        `画布已在别处被修改（服务端版本 ${res.serverVersion ?? '?'}，你手上基于版本 ${versionRef.current}）。\n\n` +
+          `确定 = 用你当前画布上的内容覆盖服务端\n` +
+          `取消 = 放弃你本地的改动，载入服务端最新内容`,
+      );
+      if (useMine) {
+        applyLocalOverServer(res, nodesJson, edgesJson);
+        return;
+      }
+      loadServerContent(res);
+    },
+    [applyLocalOverServer, loadServerContent],
+  );
+
   useEffect(() => {
     if (currentProjectId === null) return;
     const { nodesJson, edgesJson } = serializeCanvas();
@@ -1408,8 +1454,9 @@ export default function CanvasPage() {
       saveProject(currentProjectId, { nodesJson, edgesJson, version: versionRef.current })
         .then((res) => {
           if (res.conflict) {
-            // 版本冲突不能静默：可能是另一个标签页改了同一张画布
-            resolveConflict(res, nodesJson, edgesJson);
+            // 自动保存撞版本：不弹阻塞对话框（助手现在也会写画布，弹窗会高频打断），
+            // 改为顶部横幅，由你决定「用我的覆盖」还是「载入最新」
+            setConflictBanner({ res, nodesJson, edgesJson, localVersion: versionRef.current });
             return;
           }
           versionRef.current = res.canvas?.version ?? versionRef.current + 1;
@@ -2064,6 +2111,49 @@ export default function CanvasPage() {
           </div>
         </main>
       </div>
+      {/* 并发编辑提示：助手或另一个标签页改了同一张画布 —— 非阻塞，不打断编辑 */}
+      {conflictBanner && (
+        <div className="fixed inset-x-0 top-3 z-50 mx-auto flex w-[min(760px,94vw)] items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs text-amber-900 shadow-lg">
+          <span className="flex-1">
+            画布已在别处被修改（服务端版本 {conflictBanner.res.serverVersion ?? '?'}，你手上基于版本
+            {conflictBanner.localVersion}）。你的改动<strong>尚未保存</strong>。
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              applyLocalOverServer(conflictBanner.res, conflictBanner.nodesJson, conflictBanner.edgesJson);
+              setConflictBanner(null);
+            }}
+            className="shrink-0 rounded-lg border border-amber-400 bg-white px-2 py-1 font-medium hover:bg-amber-100"
+          >
+            用我的覆盖
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              loadServerContent(conflictBanner.res);
+              setConflictBanner(null);
+            }}
+            className="shrink-0 rounded-lg border border-amber-400 px-2 py-1 font-medium hover:bg-amber-100"
+          >
+            载入最新
+          </button>
+        </div>
+      )}
+      {externalVersion !== null && !conflictBanner && (
+        <div className="fixed inset-x-0 top-3 z-40 mx-auto flex w-[min(760px,94vw)] items-center gap-3 rounded-xl border border-sky-300 bg-sky-50 px-4 py-2.5 text-xs text-sky-900 shadow-lg">
+          <span className="flex-1">
+            画布已在别处更新（服务端版本 {externalVersion}），你看到的可能不是最新内容。
+          </span>
+          <button
+            type="button"
+            onClick={() => void reloadFromServer()}
+            className="shrink-0 rounded-lg border border-sky-400 bg-white px-2 py-1 font-medium hover:bg-sky-100"
+          >
+            重载最新
+          </button>
+        </div>
+      )}
       <ChatPanel
         open={chatPanelOpen}
         onClose={() => setChatPanelOpen(false)}

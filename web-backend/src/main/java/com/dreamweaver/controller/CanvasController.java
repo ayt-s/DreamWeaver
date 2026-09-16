@@ -3,6 +3,7 @@ package com.dreamweaver.controller;
 import com.dreamweaver.common.CommonResult;
 import com.dreamweaver.dto.CanvasProjectRequest;
 import com.dreamweaver.dto.CanvasProjectView;
+import com.dreamweaver.dto.CanvasVersionView;
 import com.dreamweaver.dto.SaveCanvasResult;
 import com.dreamweaver.entity.CanvasProject;
 import com.dreamweaver.service.CanvasProjectService;
@@ -65,6 +66,19 @@ public class CanvasController {
         return CommonResult.ok(projectService.saveProject(
                 id, DEFAULT_USER_ID, req.getName(), req.getNodesJson(), req.getEdgesJson(),
                 req.getCharacterRefs(), req.getSceneRefs(), req.getVersion()));
+    }
+
+    /**
+     * 轻量版本查询：画布页轮询「别处是否改过」（助手会写画布 / 另一个标签页在编辑）。
+     * 只回版本号与更新时间，**不回 nodes/edges JSON** —— 否则 5s 一次的探活会变成拖库。
+     */
+    @GetMapping("/{id}/version")
+    public CommonResult<CanvasVersionView> getVersion(@PathVariable Long id) {
+        CanvasProject p = projectService.getProject(id, DEFAULT_USER_ID);
+        if (p == null) {
+            throw new IllegalArgumentException("画布项目不存在: " + id);
+        }
+        return CommonResult.ok(CanvasVersionView.of(p));
     }
 
     /** 删除项目 */

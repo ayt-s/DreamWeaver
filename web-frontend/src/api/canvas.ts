@@ -60,6 +60,16 @@ export function saveProject(
   return unwrap(client.put(`/canvas/${id}`, body));
 }
 
+/**
+ * 轻量版本查询（画布页 5s 轮询用）。
+ * 只回版本号/时间，不拉 nodesJson —— 探活不能变成拖库。
+ */
+export function getCanvasVersion(
+  id: number,
+): Promise<{ id: number; version?: number; updatedAt?: string }> {
+  return unwrap(client.get(`/canvas/${id}/version`));
+}
+
 /** 删除项目 */
 export function deleteProject(id: number): Promise<void> {
   return unwrap(client.delete(`/canvas/${id}`));
