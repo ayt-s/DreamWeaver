@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from pydantic_ai import Agent
+from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
@@ -14,11 +15,30 @@ from app.config import settings
 
 
 # Agnes 是 OpenAI 兼容端点
-_provider = OpenAIProvider(
-    api_key=settings.agnes_api_key,
-    base_url=settings.agnes_base_url,
-)
-_model = OpenAIChatModel(settings.text_model, provider=_provider)
+def _build_chat_model():
+    """按端点池构造模型：intl 为主，cn 作 fallback。
+
+    此前硬编码 settings.agnes_api_key/base_url（**只有国际端点**）：intl 报错或额度用尽时
+    画布助手直接不可用，而国内 key 一直闲着。用 FallbackModel 让它在请求失败时自动切换，
+    语义与同一页的「AI 生成」（走 gateway 轮询 cn/intl）对齐——都能用上国内端点。
+    """
+    models = [
+        OpenAIChatModel(
+            settings.text_model,
+            provider=OpenAIProvider(api_key=p["api_key"], base_url=p["base_url"]),
+        )
+        for p in settings.agnes_providers
+    ]
+    if not models:  # 兜底：连 intl 都没配时保持旧行为，至少不在 import 期就崩
+        models = [
+            OpenAIChatModel(
+                settings.text_model,
+                provider=OpenAIProvider(
+                    api_key=settings.agnes_api_key, base_url=settings.agnes_base_url
+                ),
+            )
+        ]
+    return models[0] if len(models) == 1 else FallbackModel(*models)
 
 
 SYSTEM_PROMPT = """你是 DreamWeaver 画布智能助手，一个帮助用户在 AI 视频创作画布中完成编辑、优化和生成的 agent。
@@ -46,7 +66,7 @@ SYSTEM_PROMPT = """你是 DreamWeaver 画布智能助手，一个帮助用户在
 
 
 chat_agent: Agent = Agent(
-    model=_model,
+    model=_build_chat_model(),
     system_prompt=SYSTEM_PROMPT,
     tools=[
         _tools.inspect_canvas,
