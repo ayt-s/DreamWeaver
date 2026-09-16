@@ -34,12 +34,18 @@ import {
   getTask,
   getTaskSegments,
 } from '../api/tasks';
+import { useTaskEvents } from '../hooks/useTaskEvents';
 import SegmentManager from './SegmentManager';
 import SlideshowPanel from './SlideshowPanel';
 import ParamEditDialog from './ParamEditDialog';
 
 interface TaskCardProps {
   task: TaskResponse;
+  /**
+   * 是否订阅这条任务的 SSE 事件。**由列表决定**（只给最近几个进行中的任务订阅）：
+   * 同域 HTTP/1.1 连接数上限约 6，一页 10 个活动任务全订阅会占满连接、还会与轨迹面板互抢。
+   */
+  subscribe?: boolean;
 }
 
 type TaskState = 'completed' | 'failed' | 'running' | 'queued' | 'interrupted';
@@ -104,7 +110,7 @@ function headlineIcon(genType?: GenType): ReactNode {
  * 画廊卡片：展示单个历史生成任务及其产物（视频/图片）。
  * 终态任务提供「重新生成」「删除」管理操作。
  */
-export default function TaskCard({ task }: TaskCardProps) {
+export default function TaskCard({ task, subscribe = false }: TaskCardProps) {
   const state = stateOf(task.status);
   const imageUrls = parseImageUrls(task.imageUrls);
   const genType = task.genType ?? 'text_video';
@@ -126,11 +132,29 @@ export default function TaskCard({ task }: TaskCardProps) {
   // 列表整体因此可以从 5s 放宽到 20s 兜底：卡片状态不再依赖列表刷新，
   // 而且转终态那一刻会自己刷一次列表，就地翻成「完成/失败」。
   const live = !TERMINAL_STATUSES.includes(task.status);
+  // SSE：有订阅时进度是推来的（不用等轮询），并把详情轮询放宽到 15s 兜底。
+  // ⚠️ 必须声明在下面的 useQuery 之前 —— refetchInterval 在渲染期求值，
+  // 放到后面会因 TDZ 直接报错。
+  const { events: sseEvents, connected: sseConnected } = useTaskEvents(
+    subscribe && live ? task.sessionId : null,
+  );
+  const lastEvent = sseEvents.length ? sseEvents[sseEvents.length - 1] : null;
+  const lastData = (lastEvent?.data ?? {}) as {
+    phase?: string;
+    node_name?: string;
+    nodeName?: string;
+    summary?: string;
+    progress?: number;
+  };
+  const livePhase = lastData.phase || lastData.node_name || lastData.nodeName || lastData.summary || '';
+  const liveProgress = typeof lastData.progress === 'number' ? lastData.progress : undefined;
+
   const { data: taskLive } = useQuery({
     queryKey: ['task', task.id],
     queryFn: () => getTask(task.id),
     enabled: live,
-    refetchInterval: live ? 5000 : false,
+    // SSE 已连接时靠推送 + 15s 兜底；没连接就还是 5s 轮询
+    refetchInterval: live ? (sseConnected ? 15000 : 5000) : false,
   });
   const { data: liveSegs } = useQuery({
     queryKey: ['task-segments', task.id],
@@ -149,6 +173,13 @@ export default function TaskCard({ task }: TaskCardProps) {
     // refreshList 每次渲染都是新函数（放依赖里会反复触发），这里只看状态跃迁
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskLive?.status]);
+  useEffect(() => {
+    // SSE 直接收到终态事件 → 立刻刷列表（不必等下次兜底轮询）
+    if (lastEvent && (lastEvent.type === 'completed' || lastEvent.type === 'failed')) {
+      refreshList();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastEvent]);
 
   const regenMutation = useMutation({
     mutationFn: () => regenerateTask(task.id),
@@ -221,6 +252,15 @@ export default function TaskCard({ task }: TaskCardProps) {
               {stateIcon(state, genType)}
               {STATE_LABEL[state]}
             </span>
+            {subscribe && live && livePhase && (
+              <span
+                title="SSE 实时事件（列表只订阅最近几个进行中的任务）"
+                className="inline-flex shrink-0 items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-medium text-violet-700"
+              >
+                {livePhase}
+                {liveProgress !== undefined ? ` ${liveProgress}%` : ''}
+              </span>
+            )}
             {live && totalSegs > 0 && (
               <span
                 title="这条任务已完成的分段（每 5s 更新；列表整体已放宽到 20s 兜底轮询）"

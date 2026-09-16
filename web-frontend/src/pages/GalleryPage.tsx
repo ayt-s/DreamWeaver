@@ -67,6 +67,18 @@ export default function GalleryPage() {
   );
 
   const tasks = data?.list ?? [];
+  // SSE 订阅策略：只给「最近 3 个进行中的任务」订阅 —— 同域 HTTP/1.1 连接数约 6，
+  // 全订阅会占满连接并与轨迹面板互抢；其余任务靠卡片自身轮询，行为不受影响。
+  const sseTaskIds = useMemo(
+    () =>
+      new Set(
+        tasks
+          .filter((t) => !['completed', 'failed', 'expired', 'interrupted'].includes(t.status))
+          .slice(0, 3)
+          .map((t) => t.id),
+      ),
+    [tasks],
+  );
   const total = data?.total ?? 0;
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.size)) : 1;
 
@@ -247,7 +259,7 @@ export default function GalleryPage() {
         <motion.div layout className="space-y-5">
           {tasks.map((task) => (
             <div key={task.id} className="relative">
-              <TaskCard task={task} />
+              <TaskCard task={task} subscribe={sseTaskIds.has(task.id)} />
               {/* 批量模式选择遮罩 */}
               {batchMode && (
                 <button
