@@ -1,6 +1,7 @@
 package com.dreamweaver.controller;
 
 import com.dreamweaver.common.CommonResult;
+import com.dreamweaver.common.UserContext;
 import com.dreamweaver.dto.CanvasProjectRequest;
 import com.dreamweaver.dto.CanvasProjectView;
 import com.dreamweaver.dto.CanvasVersionView;
@@ -29,7 +30,8 @@ public class CanvasController {
 
     private final CanvasProjectService projectService;
 
-    private static final long DEFAULT_USER_ID = 1L;
+    /** 当前用户（阶段 1：从请求头解析；接登录后只改这个类） */
+    private final UserContext userContext;
 
     /** 创建项目（空画布） */
     @PostMapping
@@ -37,14 +39,14 @@ public class CanvasController {
         if (req.getName() == null || req.getName().isBlank()) {
             throw new IllegalArgumentException("项目名称不能为空");
         }
-        CanvasProject p = projectService.createProject(req.getName().trim(), DEFAULT_USER_ID);
+        CanvasProject p = projectService.createProject(req.getName().trim(), userContext.currentUserId());
         return CommonResult.ok(CanvasProjectView.of(p));
     }
 
     /** 项目列表（轻量，无 JSON，供下拉选择） */
     @GetMapping
     public CommonResult<List<CanvasProjectView>> listProjects() {
-        return CommonResult.ok(projectService.listProjects(DEFAULT_USER_ID).stream()
+        return CommonResult.ok(projectService.listProjects(userContext.currentUserId()).stream()
                 .map(CanvasProjectView::of)
                 .toList());
     }
@@ -52,7 +54,7 @@ public class CanvasController {
     /** 加载项目完整内容（含 nodes/edges JSON） */
     @GetMapping("/{id}")
     public CommonResult<CanvasProjectView> getProject(@PathVariable Long id) {
-        CanvasProject p = projectService.getProject(id, DEFAULT_USER_ID);
+        CanvasProject p = projectService.getProject(id, userContext.currentUserId());
         if (p == null) {
             throw new IllegalArgumentException("画布项目不存在: " + id);
         }
@@ -64,7 +66,7 @@ public class CanvasController {
     public CommonResult<SaveCanvasResult> saveProject(
             @PathVariable Long id, @RequestBody CanvasProjectRequest req) {
         return CommonResult.ok(projectService.saveProject(
-                id, DEFAULT_USER_ID, req.getName(), req.getNodesJson(), req.getEdgesJson(),
+                id, userContext.currentUserId(), req.getName(), req.getNodesJson(), req.getEdgesJson(),
                 req.getCharacterRefs(), req.getSceneRefs(), req.getVersion()));
     }
 
@@ -74,7 +76,7 @@ public class CanvasController {
      */
     @GetMapping("/{id}/version")
     public CommonResult<CanvasVersionView> getVersion(@PathVariable Long id) {
-        CanvasProject p = projectService.getProject(id, DEFAULT_USER_ID);
+        CanvasProject p = projectService.getProject(id, userContext.currentUserId());
         if (p == null) {
             throw new IllegalArgumentException("画布项目不存在: " + id);
         }
@@ -84,7 +86,7 @@ public class CanvasController {
     /** 删除项目 */
     @DeleteMapping("/{id}")
     public CommonResult<Void> deleteProject(@PathVariable Long id) {
-        projectService.deleteProject(id, DEFAULT_USER_ID);
+        projectService.deleteProject(id, userContext.currentUserId());
         return CommonResult.ok(null);
     }
 }

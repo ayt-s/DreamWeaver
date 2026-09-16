@@ -6,6 +6,7 @@ import com.dreamweaver.config.AgentServiceProperties;
 import com.dreamweaver.dto.CreateTaskRequest;
 import com.dreamweaver.dto.TaskListResponse;
 import com.dreamweaver.dto.TaskResponse;
+import com.dreamweaver.common.UserContext;
 import com.dreamweaver.entity.Task;
 import com.dreamweaver.mapper.TaskMapper;
 import com.dreamweaver.service.TaskService;
@@ -29,6 +30,9 @@ import java.util.Set;
 @Service
 @RequiredArgsConstructor
 public class TaskServiceImpl implements TaskService {
+
+    /** 当前用户（任务归属 + 配额统计用） */
+    private final UserContext userContext;
 
     private final TaskMapper taskMapper;
     private final AgentServiceProperties agentServiceProperties;
@@ -309,7 +313,10 @@ public class TaskServiceImpl implements TaskService {
         // 1. 落库（pending）
         Task task = new Task();
         task.setPrompt(request.getPrompt());
-        task.setUserId(request.getUserId() == null || request.getUserId().isBlank() ? null : Long.valueOf(request.getUserId()));
+        // userId 缺失时回落当前用户：此前一律落 null，而配额累加是「userId 非空才计」，
+        // 于是 api_quota 表永远是空的（谁也统计不到）。
+        task.setUserId(request.getUserId() == null || request.getUserId().isBlank()
+                ? userContext.currentUserId() : Long.valueOf(request.getUserId()));
         task.setStatus("pending");
         task.setGenType(request.getGenType() != null ? request.getGenType() : "text_video");
         // 来源标记：默认 default（进画廊）；画布素材传 canvas_asset（画廊过滤）

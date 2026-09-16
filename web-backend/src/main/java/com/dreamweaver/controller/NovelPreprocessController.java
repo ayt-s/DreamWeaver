@@ -1,6 +1,7 @@
 package com.dreamweaver.controller;
 
 import com.dreamweaver.common.CommonResult;
+import com.dreamweaver.common.UserContext;
 import com.dreamweaver.dto.CanvasProjectView;
 import com.dreamweaver.dto.NovelPreprocessRequest;
 import com.dreamweaver.dto.NovelProjectResponse;
@@ -25,14 +26,15 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class NovelPreprocessController {
 
-    private static final long DEFAULT_USER_ID = 1L;
-
     private final NovelPreprocessService service;
+
+    /** 当前用户（阶段 1：从请求头解析；接登录后只改 UserContext 一处） */
+    private final UserContext userContext;
 
     /** 预处理：同步调用 agent-service，返回项目实体（含 segments） */
     @PostMapping("/preprocess")
     public CommonResult<NovelProjectResponse> preprocess(@Valid @RequestBody NovelPreprocessRequest req) {
-        return CommonResult.ok(service.toResponse(service.preprocess(DEFAULT_USER_ID, req)));
+        return CommonResult.ok(service.toResponse(service.preprocess(userContext.currentUserId(), req)));
     }
 
     /** 查询项目 */
@@ -44,7 +46,7 @@ public class NovelPreprocessController {
     /** 项目列表（按用户，按更新时间倒序，轻量字段不含 segments） */
     @GetMapping
     public CommonResult<java.util.List<NovelProjectResponse>> list() {
-        return CommonResult.ok(service.listByUser(DEFAULT_USER_ID));
+        return CommonResult.ok(service.listByUser(userContext.currentUserId()));
     }
 
     /** 更新分镜片段 JSON */

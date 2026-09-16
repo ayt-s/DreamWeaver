@@ -1,5 +1,6 @@
 package com.dreamweaver.service.impl;
 
+import com.dreamweaver.common.UserContext;
 import com.dreamweaver.dto.CanvasProjectView;
 import com.dreamweaver.dto.NovelPreprocessRequest;
 import com.dreamweaver.dto.NovelProjectResponse;
@@ -47,11 +48,13 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
 
     private static final String AGENT_URL = "http://localhost:8000/v1/novel/preprocess";
     private static final String DEFAULT_STYLE = "电影写实";
-    private static final long DEFAULT_USER_ID = 1L;
     private static final int DEFAULT_SEGMENTS = 6;
 
     private final NovelProjectMapper mapper;
     private final CanvasProjectService canvasProjectService;
+
+    /** 当前用户（阶段 1：从请求头解析；接登录后只改这个类） */
+    private final UserContext userContext;
 
     private static final ObjectMapper OM = buildMapper();
 
@@ -83,7 +86,7 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
     @Override
     public NovelProject preprocess(Long userId, NovelPreprocessRequest req) {
         NovelProject p = new NovelProject();
-        p.setUserId(userId != null ? userId : DEFAULT_USER_ID);
+        p.setUserId(userId != null ? userId : userContext.currentUserId());
         p.setProjectName(req.getProjectName().trim());
         p.setNovelText(req.getNovelText());
         p.setStatus("draft");
@@ -328,7 +331,7 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
         // （此前无条件 createProject，点 N 次「转入画布」就在库里留 N 个同名项目）
         CanvasProject target = null;
         if (p.getCanvasProjectId() != null) {
-            target = canvasProjectService.getProject(p.getCanvasProjectId(), DEFAULT_USER_ID);
+            target = canvasProjectService.getProject(p.getCanvasProjectId(), userContext.currentUserId());
             if (target != null) {
                 log.info("novel -> canvas 复用已有画布: novelId={} canvasId={}",
                         p.getId(), p.getCanvasProjectId());
@@ -353,7 +356,7 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
             // 新建 / 另存为新画布（保留原画布不动）
             target = canvasProjectService.createProject(
                     saveAsNew ? copyName(p.getProjectName()) : p.getProjectName(),
-                    DEFAULT_USER_ID);
+                    userContext.currentUserId());
         }
         // 锚定图一并落库：刷新画布/换设备都还在（此前只走 URL query + localStorage）
         // 名字：普通转入沿用小说名（既有语义）；另存为副本时保留刚生成的副本名 ——
@@ -361,7 +364,7 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
         String canvasName = saveAsNew ? target.getProjectName() : p.getProjectName();
         // 内部覆盖语义：不传 expectedVersion（版本校验由上层「转入画布」确认框把关）
         CanvasProjectView saved = canvasProjectService.saveProject(
-                target.getId(), DEFAULT_USER_ID, canvasName, nodesJson, edgesJson,
+                target.getId(), userContext.currentUserId(), canvasName, nodesJson, edgesJson,
                 characterRefs, sceneRefs, null).getCanvas();
 
         // 回填 canvasProjectId 关联
@@ -417,7 +420,7 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
     /** 另存为新画布时的名字：base · 副本 / 副本2 / 副本3…（避开同名）。 */
     private String copyName(String base) {
         List<String> names = new ArrayList<>();
-        for (CanvasProject c : canvasProjectService.listProjects(DEFAULT_USER_ID)) {
+        for (CanvasProject c : canvasProjectService.listProjects(userContext.currentUserId())) {
             names.add(c.getProjectName());
         }
         String name = base + " · 副本";
