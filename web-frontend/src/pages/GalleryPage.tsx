@@ -36,14 +36,17 @@ export default function GalleryPage() {
   const [page, setPage] = useState(1);
   const [genType, setGenType] = useState<GenType | ''>('');
   const [draft, setDraft] = useState<DraftFilter>('draft');
+  // 画布「一键文生图」产出的素材任务（source=canvas_asset）默认不进画廊，
+  // 否则一次批量会在草稿区刷出 N 个中间任务；但它们在别处没有入口，所以给个显式开关。
+  const [showAssets, setShowAssets] = useState(false);
   // 批量模式
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [showBatchPanel, setShowBatchPanel] = useState(false);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['tasks', page, genType, draft],
-    queryFn: () => listTasks({ page, size: PAGE_SIZE, genType, draft }),
+    queryKey: ['tasks', page, genType, draft, showAssets],
+    queryFn: () => listTasks({ page, size: PAGE_SIZE, genType, draft, includeAssets: showAssets }),
     // 有排队/进行中的任务时每 5s 轮询刷新；全为终态则停止轮询
     refetchInterval: (query) => {
       const list = query.state.data?.list;
@@ -171,6 +174,22 @@ export default function GalleryPage() {
         >
           <CheckSquare className="h-3.5 w-3.5" />
           {batchMode ? '退出批量' : '批量重生'}
+        </button>
+        <span className="mx-1 h-4 w-px bg-slate-200" aria-hidden />
+        <button
+          type="button"
+          onClick={() => {
+            setShowAssets((v) => !v);
+            setPage(1);
+          }}
+          title="画布「一键文生图」产出的素材任务默认不进画廊（避免刷屏）；打开这里可以找回它们，也能删除"
+          className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors ${
+            showAssets
+              ? 'bg-slate-700 text-white shadow-sm'
+              : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          {showAssets ? '隐藏画布素材' : '显示画布素材'}
         </button>
       </div>
 
