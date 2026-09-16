@@ -311,18 +311,32 @@ export type CreativeEventType =
   | 'failed';
 
 export interface CreativeEvent {
-  eventId: number;
-  sessionId: string;
+  /**
+   * ⚠️ 服务端发的是 **snake_case**（app/events.py 的 event/emit 原文）：`event_id` / `session_id`。
+   * 这里原先声明成 camelCase，导致轨迹面板读 `ev.data.nodeId` 永远取不到值
+   * （节点名一直显示不出来）—— 保留 camel 名作为可选别名只为兼容旧引用。
+   */
+  event_id?: number;
+  session_id?: string;
+  eventId?: number;
+  sessionId?: string;
   type: CreativeEventType;
   timestamp: number;
   data: {
+    node_id?: string;
+    node_name?: string;
+    tool_name?: string;
+    summary?: string;
+    /** 进度事件的阶段文案（如「下载分段」「拼接完成」） */
+    phase?: string;
+    progress?: number;
+    message?: string;
+    error?: string;
+    // 历史遗留别名（运行时可能是 undefined）
     nodeId?: string;
     nodeName?: string;
     toolName?: string;
     toolParams?: unknown;
     toolResult?: unknown;
-    progress?: number;
-    message?: string;
-    error?: string;
   };
 }

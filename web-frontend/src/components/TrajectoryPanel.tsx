@@ -169,7 +169,10 @@ export default function TrajectoryPanel() {
                 {ev.type === 'failed' && <XCircle className="h-4 w-4 text-red-500" />}
                 {ev.type === 'interrupted' && <AlertCircle className="h-4 w-4 text-amber-500" />}
                 <span className="text-slate-700">
-                  {NODE_NAMES[ev.data.nodeId ?? ''] ?? ev.data.nodeName ?? EVENT_NAMES[ev.type] ?? ev.type}
+                  {NODE_NAMES[ev.data.node_id ?? ev.data.nodeId ?? ''] ??
+                    ev.data.node_name ?? ev.data.nodeName ??
+                    ev.data.summary ?? ev.data.phase ??
+                    EVENT_NAMES[ev.type] ?? ev.type}
                 </span>
                 {ev.data.progress != null && (
                   <span className="ml-auto text-xs text-slate-400">{ev.data.progress}%</span>
