@@ -26,6 +26,9 @@ public class PreparedStoryboard {
     /** 分镜片段 */
     private List<NovelSegment> segments;
 
+    /** 分镜忠实度结论（agent 的 fidelity：passed/reason/missing/invented/attempts） */
+    private Map<String, Object> fidelity;
+
     private Integer totalSegments;
 
     private Integer totalDurationSeconds;

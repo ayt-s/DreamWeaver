@@ -29,6 +29,20 @@ import { stripChapterSuffix } from '../utils/projectName';
 const fmtTime = (s?: string | null) =>
   s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '未知';
 
+/** 忠实度警告文案：只在「校验明确未通过」时产出内容（没跑/通过都不打扰用户） */
+const fidelityNotice = (f?: {
+  passed?: boolean | null;
+  reason?: string;
+  missing?: string[];
+  invented?: string[];
+} | null) =>
+  f && f.passed === false
+    ? `⚠️ 分镜忠实度校验未通过：${f.reason || '未通过'}` +
+      (f.missing?.length ? `；疑似漏掉：${f.missing.slice(0, 3).join('；')}` : '') +
+      (f.invented?.length ? `；疑似编造：${f.invented.slice(0, 3).join('；')}` : '') +
+      '。建议先核对分镜再「转入画布」（转入后就开始消耗生成额度）。'
+    : '';
+
 type Phase = 'input' | 'processing' | 'segments' | 'error';
 
 export default function NovelPage() {
@@ -44,6 +58,8 @@ export default function NovelPage() {
   const [project, setProject] = useState<NovelProject | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [converting, setConverting] = useState(false);
+  // 分镜忠实度警告（预处理返回；非阻塞，仅提示）：置于顶部提示区，转入画布前可见
+  const [fidelityWarning, setFidelityWarning] = useState('');
 
   const canSubmit = projectName.trim() && novelText.trim().length >= 100;
 
@@ -61,6 +77,8 @@ export default function NovelPage() {
         visualStyle: visualStyle.trim() || undefined,
       });
       setProject(p);
+      // 预处理刚跑完是最该提示的时刻：分镜一旦转入画布就开始花钱
+      setFidelityWarning(fidelityNotice(p.fidelity));
       if (p.status === 'ready') {
         setPhase('segments');
       } else {
@@ -191,6 +209,7 @@ export default function NovelPage() {
       <main className="flex-1 overflow-auto">
         {phase === 'input' && (
           <InputPanel
+            fidelityWarning={fidelityWarning}
             projectName={projectName}
             novelName={novelName}
             novelText={novelText}
@@ -267,11 +286,13 @@ function InputPanel(props: {
   setSecondsPerSegment: (v: number) => void;
   setVisualStyle: (v: string) => void;
   onSubmit: () => void;
+  /** 分镜忠实度警告（父组件传入；空串 = 无警告） */
+  fidelityWarning?: string;
 }) {
   const {
     projectName, novelName, novelText, targetSegments, secondsPerSegment, visualStyle,
     setProjectName, setNovelName, setNovelText, setTargetSegments, setSecondsPerSegment,
-    setVisualStyle, onSubmit,
+    setVisualStyle, onSubmit, fidelityWarning,
   } = props;
 
   const charCount = novelText.length;
@@ -284,6 +305,7 @@ function InputPanel(props: {
   const [loadingId, setLoadingId] = useState<number | null>(null);
   const [loadError, setLoadError] = useState('');
   const [loadNotice, setLoadNotice] = useState('');
+
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
   // 删除项目记录：只删 novel_project 这一条，它生成的画布项目不受影响
@@ -346,7 +368,10 @@ function InputPanel(props: {
         setProjectName(full.projectName);
         setNovelName(stripChapterSuffix(full.projectName));
         setNovelText(full.novelText || '');
-        setLoadNotice(`已加载「${full.projectName}」原文（${full.novelText?.length || 0} 字），可直接编辑后重新预处理`);
+        setLoadNotice(
+          fidelityNotice(full.fidelity) ||
+            `已加载「${full.projectName}」原文（${full.novelText?.length || 0} 字），可直接编辑后重新预处理`,
+        );
       } else {
         setLoadError('项目加载失败');
       }
@@ -460,10 +485,10 @@ function InputPanel(props: {
               </div>
             )}
 
-            {loadNotice && (
+            {(loadNotice || fidelityWarning) && (
               <div className="mt-2 flex items-start gap-1.5 rounded bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-300">
                 <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                <span>{loadNotice}</span>
+                <span>{loadNotice || fidelityWarning}</span>
               </div>
             )}
           </div>

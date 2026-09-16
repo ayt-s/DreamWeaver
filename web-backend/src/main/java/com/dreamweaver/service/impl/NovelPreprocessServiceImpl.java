@@ -228,6 +228,7 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
         r.setCanvasProjectId(p.getCanvasProjectId());
         r.setStatus(p.getStatus());
         r.setErrorMessage(p.getErrorMessage());
+        r.setFidelity(extractFidelity(p.getAnalysisJson()));
         r.setCreatedAt(p.getCreatedAt());
         r.setUpdatedAt(p.getUpdatedAt());
         r.setSegments(parseSegments(p.getSegmentsJson()));
@@ -449,6 +450,22 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
         }
     }
 
+    /** 从 analysis_json 里取出 fidelity（老数据没有该键 → null，前端不提示）。 */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> extractFidelity(String analysisJson) {
+        if (analysisJson == null || analysisJson.isBlank()) {
+            return null;
+        }
+        try {
+            Map<String, Object> analysis = OM.readValue(analysisJson, Map.class);
+            Object f = analysis.get("fidelity");
+            return f instanceof Map ? (Map<String, Object>) f : null;
+        } catch (Exception e) {
+            log.warn("analysis_json 解析 fidelity 失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
     private String buildAnalysisJson(PreparedStoryboard sb) {
         Map<String, Object> analysis = new LinkedHashMap<>();
         analysis.put("novelSummary", sb.getNovelSummary());
@@ -456,6 +473,8 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
         analysis.put("scenes", sb.getScenes());
         analysis.put("totalSegments", sb.getTotalSegments());
         analysis.put("totalDurationSeconds", sb.getTotalDurationSeconds());
+        // 忠实度结论一起落 analysis_json：刷新/换设备后仍能在「转入画布」前提示（不必新增列）
+        analysis.put("fidelity", sb.getFidelity());
         return safeJson(analysis);
     }
 

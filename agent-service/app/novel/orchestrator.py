@@ -9,7 +9,7 @@ import logging
 from typing import Any
 
 from app.config import settings
-from app.novel import analyzer, composer, splitter, storyboarder
+from app.novel import analyzer, composer, fidelity, splitter, storyboarder
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,43 @@ async def preprocess_novel(
     if not raw_segments:
         raise ValueError("分镜产出为空")
 
+    # 3.1) 忠实度校验（LLM，语义层 —— qc_checker 只做画面层，剧情偏差此前无人拦）。
+    # 位置刻意在这里：分镜一旦确认就要转画布、开始烧视频额度，这是最省钱的拦截点。
+    # 校验本身失败（LLM 抖动）绝不能拖垮预处理 → passed=None，只是没有结论。
+    try:
+        fidelity_report = await fidelity.check_fidelity(novel_text, raw_segments, model=model)
+    except Exception as exc:
+        logger.warning("分镜忠实度校验失败（不影响预处理）：%s", exc)
+        fidelity_report = {"passed": None, "reason": "", "missing": [], "invented": [],
+                           "error": str(exc)[:200]}
+
+    # 3.2) 不通过 → 带审校意见重切一次；重切失败则保留第一版（分镜不能丢）
+    if fidelity_report.get("passed") is False:
+        logger.warning("分镜忠实度未通过：%s（带反馈重切一次）", fidelity_report.get("reason"))
+        try:
+            retried = await storyboarder.storyboard(
+                novel_text=novel_text,
+                analysis=analysis,
+                target_segments=target_segments,
+                model=model,
+                rewrite_hint=fidelity.rewrite_hint(fidelity_report),
+            )
+        except Exception as exc:
+            logger.warning("带反馈重切失败，保留第一版分镜：%s", exc)
+            retried = []
+        if retried:
+            raw_segments = retried
+            try:
+                fidelity_report = {**await fidelity.check_fidelity(novel_text, raw_segments, model=model),
+                                  "firstAttempt": fidelity_report, "attempts": 2}
+            except Exception as exc:
+                logger.warning("重切后复核失败，沿用第一次结论：%s", exc)
+                fidelity_report = {**fidelity_report, "attempts": 2}
+        else:
+            fidelity_report = {**fidelity_report, "attempts": 1}
+    else:
+        fidelity_report = {**fidelity_report, "attempts": 1}
+
     # 4) 拼装 prompt（无 LLM），并 clamp 秒数到 [4, 12]
     for seg in raw_segments:
         seg["seconds"] = max(4, min(12, int(seg.get("seconds", seconds_per_segment))))
@@ -101,4 +138,7 @@ async def preprocess_novel(
         "totalDurationSeconds": total_duration,
         # 实际生效的视觉风格（Java 侧落库 + 前端展示；空入参时这里就是 AI 分析结果）
         "visualStyle": effective_style,
+        # 忠实度结论（Java 落进 analysis_json 的 fidelity 键；前端在转入画布前提示）
+        "fidelity": fidelity_report,
+        "fidelityWarning": fidelity.warning_text(fidelity_report),
     }

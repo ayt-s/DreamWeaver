@@ -133,6 +133,7 @@ async def storyboard(
     analysis: dict,
     target_segments: int,
     model: Any,
+    rewrite_hint: str = "",
 ) -> list[dict]:
     """产出 segment 列表（camelCase 前已经是 snake，直接用 model_dump）。带重试：wifi 抖动时按 10/30/60s 退避。"""
     import json
@@ -143,6 +144,13 @@ async def storyboard(
         scenes_json=json.dumps(analysis.get("scenes", []), ensure_ascii=False),
         visual_style=analysis.get("visual_style", ""),
     )
+    if rewrite_hint:
+        # 忠实度校验不通过时的重切：把审校意见拼进提示词（缺主线 / 凭空编造）
+        system_prompt += (
+            "\n\n【上一版分镜被指出的问题，必须逐条修正】\n"
+            f"{rewrite_hint}\n"
+            "请在满足上面全部硬性要求的前提下修正这些问题；角色名保持与角色卡一致。\n"
+        )
     agent = _build_agent(model)
     # 用 user prompt 承载 system 指令 + 文本；pydantic_ai 支持在 run() 里覆盖 output_type 前的 system
     # 由于 Agent 构造时未指定 system_prompt，我们在 run() 里通过 instructions 参数传入

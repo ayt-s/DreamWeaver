@@ -20,6 +20,16 @@ export interface NovelSegment {
   movement?: string;
 }
 
+/** 分镜忠实度结论（后端 analysis_json.fidelity / 响应同名字段） */
+export interface FidelityReport {
+  /** false = 未通过（会提示用户先核对分镜）；null/undefined = 没跑（不提示） */
+  passed?: boolean | null;
+  reason?: string;
+  missing?: string[];
+  invented?: string[];
+  attempts?: number;
+}
+
 export interface NovelProject {
   id: number;
   projectName: string;
@@ -31,6 +41,8 @@ export interface NovelProject {
   canvasProjectId: number | null;
   status: 'draft' | 'processing' | 'ready' | 'failed';
   errorMessage: string | null;
+  /** 分镜忠实度结论（老数据为 null） */
+  fidelity?: FidelityReport | null;
   createdAt: string;
   updatedAt: string;
 }
