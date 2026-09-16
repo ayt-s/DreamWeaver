@@ -14,8 +14,8 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { GenType, TaskResponse, TaskStatus } from '../types/task';
 import {
   parseImageUrls,
@@ -26,7 +26,14 @@ import {
   cachedImageUrl,
   formatDuration,
 } from '../types/task';
-import { concatTask, deleteTask, regenerateTask, setTaskDraft } from '../api/tasks';
+import {
+  concatTask,
+  deleteTask,
+  regenerateTask,
+  setTaskDraft,
+  getTask,
+  getTaskSegments,
+} from '../api/tasks';
 import SegmentManager from './SegmentManager';
 import SlideshowPanel from './SlideshowPanel';
 import ParamEditDialog from './ParamEditDialog';
@@ -115,6 +122,34 @@ export default function TaskCard({ task }: TaskCardProps) {
 
   const refreshList = () => queryClient.invalidateQueries({ queryKey: ['tasks'] });
 
+  // 只给「这一条进行中的任务」拉详情 + 分段进度（5s）。
+  // 列表整体因此可以从 5s 放宽到 20s 兜底：卡片状态不再依赖列表刷新，
+  // 而且转终态那一刻会自己刷一次列表，就地翻成「完成/失败」。
+  const live = !TERMINAL_STATUSES.includes(task.status);
+  const { data: taskLive } = useQuery({
+    queryKey: ['task', task.id],
+    queryFn: () => getTask(task.id),
+    enabled: live,
+    refetchInterval: live ? 5000 : false,
+  });
+  const { data: liveSegs } = useQuery({
+    queryKey: ['task-segments', task.id],
+    queryFn: () => getTaskSegments(task.id),
+    enabled: live,
+    refetchInterval: live ? 5000 : false,
+  });
+  const totalSegs = liveSegs?.length ?? 0;
+  // 段「已完成」的判定：视频任务看 existing_video_url，图片任务看 existing_image_url
+  const doneSegs =
+    liveSegs?.filter((s) => s.existing_video_url || s.existing_image_url).length ?? 0;
+  useEffect(() => {
+    if (taskLive && TERMINAL_STATUSES.includes(taskLive.status)) {
+      refreshList();
+    }
+    // refreshList 每次渲染都是新函数（放依赖里会反复触发），这里只看状态跃迁
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskLive?.status]);
+
   const regenMutation = useMutation({
     mutationFn: () => regenerateTask(task.id),
     onSuccess: refreshList,
@@ -186,6 +221,15 @@ export default function TaskCard({ task }: TaskCardProps) {
               {stateIcon(state, genType)}
               {STATE_LABEL[state]}
             </span>
+            {live && totalSegs > 0 && (
+              <span
+                title="这条任务已完成的分段（每 5s 更新；列表整体已放宽到 20s 兜底轮询）"
+                className="inline-flex shrink-0 items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600"
+              >
+                <ListVideo className="h-2.5 w-2.5" />
+                已完成 {doneSegs}/{totalSegs} 段
+              </span>
+            )}
           </div>
           <p className="mt-1 flex items-center gap-2 truncate text-xs text-slate-500" title={task.sessionId}>
             <span>会话 {shortSessionId(task.sessionId)}</span>

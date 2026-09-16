@@ -47,13 +47,16 @@ export default function GalleryPage() {
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['tasks', page, genType, draft, showAssets],
     queryFn: () => listTasks({ page, size: PAGE_SIZE, genType, draft, includeAssets: showAssets }),
-    // 有排队/进行中的任务时每 5s 轮询刷新；全为终态则停止轮询
+    // 兜底轮询：任务卡会给「进行中的那一条」自己拉详情 + 分段进度（5s），并在转终态
+    // 时刷一次列表，所以列表整体放宽到 20s —— 只兜「卡片不在视口里 / 卡片没挂载」的情况。
+    // interrupted 也按前端终态处理（与 TaskCard 的 TERMINAL_STATUSES 保持一致，
+    // 否则被中断的任务会让列表一直轮询下去）。
     refetchInterval: (query) => {
       const list = query.state.data?.list;
       const hasActive = list?.some(
-        (t) => !['completed', 'failed', 'expired'].includes(t.status),
+        (t) => !['completed', 'failed', 'expired', 'interrupted'].includes(t.status),
       );
-      return hasActive ? 5000 : false;
+      return hasActive ? 20000 : false;
     },
   });
 
