@@ -508,60 +508,21 @@ async def concat_task_videos(session_id: str) -> ApiResponse:
     直接 xfade 拼接；本地缺失时按 state.video_urls 下载兜底（老会话/目录被清理）。
     幂等：final.mp4 已存在且不早于最后一个分段 → 直接返回，不重复编码。
     不消耗 agnes 额度（纯本地 ffmpeg）。
+
+    实现已抽到 `app.utils.stitch`：标准模式的自动拼接（notify_final）与本端点共用同一条
+    代码路径，避免两处各自演化。
     """
-    from app.utils.media import concat_videos, download, local_url, probe_duration, session_dir
+    from app.utils.stitch import stitch_session
 
     state = _sessions.get(session_id)
     if not state:
         state = (await session_store.load_state(session_id)) or {}
 
-    d = session_dir(session_id)
-    final = d / "final.mp4"
-
-    def _clips() -> list:
-        return sorted(p for p in d.glob("seg_*.mp4") if p.stat().st_size > 0)
-
-    clips = _clips()
-    if len(clips) < 2 and state.get("video_urls"):
-        # 本地不全 → 按 video_urls 顺序补下载（已是本地产物的跳过）
-        for i, u in enumerate(state.get("video_urls") or []):
-            if not u or str(u).startswith("/v1/files/"):
-                continue
-            dest = d / f"seg_{i:03d}.mp4"
-            if dest.exists() and dest.stat().st_size > 0:
-                continue
-            try:
-                await download(str(u), dest)
-            except Exception as exc:
-                logger.warning("concat 下载分段失败 sid=%s idx=%s: %s", session_id, i, exc)
-        clips = _clips()
-
-    if len(clips) < 2:
+    result = await stitch_session(session_id, state.get("video_urls") or [])
+    if result is None:
         raise AppError("可拼接的分段不足 2 个", status_code=409)
 
-    if (final.exists() and final.stat().st_size > 0
-            and final.stat().st_mtime >= clips[-1].stat().st_mtime):
-        return ApiResponse(code=0, message="ok", data={
-            "session_id": session_id,
-            "final_url": local_url(session_id),
-            "segment_count": len(clips),
-            "duration": await probe_duration(final),
-            "cached": True,
-        })
-
-    ok = await concat_videos(clips, final)
-    if not ok:
-        raise AppError("视频拼接失败", status_code=500)
-
-    duration = await probe_duration(final)
-    logger.info("concat 拼接成片 sid=%s 段数=%s 时长=%.1fs", session_id, len(clips), duration)
-    return ApiResponse(code=0, message="ok", data={
-        "session_id": session_id,
-        "final_url": local_url(session_id),
-        "segment_count": len(clips),
-        "duration": duration,
-        "cached": False,
-    })
+    return ApiResponse(code=0, message="ok", data={"session_id": session_id, **result})
 
 
 class TextGenerateRequest(BaseModel):

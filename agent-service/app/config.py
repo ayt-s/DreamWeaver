@@ -106,6 +106,15 @@ class Settings:
     log_dir: str = _env("AGENT_LOG_DIR", "").strip() or "data/logs"
     log_level: str = _env("AGENT_LOG_LEVEL", "INFO").strip().upper() or "INFO"
 
+    # === 成片自动拼接（标准模式）===
+    # 标准模式（一句话生成）此前产出 N 个分段就结束，用户得在画廊手点「拼接成片」
+    # （实测任务 38/39 至今没有成片）。开启后 notify_final 会用本地 ffmpeg 自动拼好，
+    # **不消耗 agnes 额度**；只用会话目录里已有的分段，缺了就不拼（不做网络兜底，
+    # 否则 download 的 300s 超时会把任务长时间卡在非终态）。
+    # 画布模式（segments）不受此开关影响 —— 那条链路由 synthesizer 负责。
+    auto_stitch_enabled: bool = _env(
+        "AGENT_AUTO_STITCH", "1").strip().lower() not in ("0", "false", "no", "off")
+
     # === 可观测性：LangSmith（P0-2 架包，批次 H）===
     # **默认关闭**。关闭时 `utils.observability.traced` 直接透传，不 import langsmith、
     # 零开销 —— 上报失败绝不能影响主流程。

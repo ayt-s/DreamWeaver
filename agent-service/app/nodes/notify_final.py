@@ -88,6 +88,32 @@ async def notify_final_node(state: CreativeSessionState) -> dict:
     import json as _json
     storyboard_json = _json.dumps(state.get("storyboard") or [], ensure_ascii=False)
 
+    # 自动拼接成片（仅标准模式）。
+    # 画布模式（segments 非空）在生成时已由 synthesizer 自动拼接，这里不能重复拼；
+    # 标准模式此前**没有任何自动拼接环节** —— 画廊里平铺 N 个分段，用户得手点一次
+    # 「拼接成片」（实测任务 38/39 至今没有成片）。纯本地 ffmpeg，不消耗生成额度。
+    # 失败不阻断任务：分段仍可用，原因带回 Java 展示（与 synthesizer 同一降级哲学）。
+    if status == TaskStatus.COMPLETED and not state.get("segments") and len(video_urls) >= 2:
+        from app.utils.stitch import stitch_enabled, stitch_session
+
+        if stitch_enabled():
+            await events.emit(session_id, "progress", {"progress": 95, "phase": "拼接成片"})
+            try:
+                stitched = await stitch_session(session_id, video_urls, allow_download=False)
+                if stitched and stitched.get("final_url"):
+                    video_urls = [stitched["final_url"]] + video_urls
+                    await events.emit(session_id, "node_completed", {
+                        "node_id": "notify_final",
+                        "summary": f"自动拼接 {stitched.get('segment_count')} 段为成片",
+                    })
+                    logger.info("notify_final 自动拼接成片: session=%s 段数=%s",
+                                session_id, stitched.get("segment_count"))
+            except Exception as exc:
+                reason = str(exc)[:200]
+                logger.warning("notify_final 自动拼接失败: %s", reason)
+                warn = f"自动拼接失败，分段视频仍可下载：{reason}"
+                error_message = f"{error_message}；{warn}" if error_message else warn
+
     logger.info("notify_final: session=%s status=%s urls=%d error=%s",
                 session_id, status, len(video_urls), error_message or "(无)")
 
