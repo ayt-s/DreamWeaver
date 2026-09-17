@@ -56,29 +56,41 @@ public class TaskServiceImpl implements TaskService {
         return task == null ? null : toResponse(task);
     }
 
+    /**
+     * 来源过滤形态。
+     *
+     * <p>抽成枚举 + 纯函数，只为一个原因：判断条件错了**不会报错**，只会静默少返回/多返回。
+     * 而它现在同时服务三条链路 —— 画廊（不传 source）、画布素材面板（asset）、画布作品面板（work）。
+     */
+    enum SourceFilter {
+        /** 不按来源筛（素材 + 作品都要） */
+        NO_FILTER,
+        /** 排除画布素材（画廊默认；source=work 同义） */
+        EXCLUDE_ASSETS,
+        /** 只要画布素材 */
+        ASSETS_ONLY,
+    }
+
+    static SourceFilter sourceFilterOf(String source, boolean includeAssets) {
+        if ("asset".equalsIgnoreCase(source)) {
+            return SourceFilter.ASSETS_ONLY;
+        }
+        if ("work".equalsIgnoreCase(source)) {
+            return SourceFilter.EXCLUDE_ASSETS;
+        }
+        // 不传 / 未知取值 → 维持老语义（画廊默认排除素材，面板传 includeAssets=true 时都返回）
+        return includeAssets ? SourceFilter.NO_FILTER : SourceFilter.EXCLUDE_ASSETS;
+    }
+
     @Override
     public TaskListResponse listTasks(int page, int size, String genType, Boolean draft,
-            boolean includeAssets) {
+            boolean includeAssets, String status, String source) {
         int safePage = Math.max(page, 1);
         int safeSize = Math.min(Math.max(size, 1), 50);
-        boolean hasTypeFilter = genType != null && !genType.isBlank();
-        // draft 为 null = 不按草稿筛选；true/false = 只取草稿/只取成品
-        boolean hasDraftFilter = draft != null;
-        int draftFlag = draft != null && draft ? 1 : 0;
-        long total = taskMapper.selectCount(
-                new LambdaQueryWrapper<Task>()
-                        .eq(hasTypeFilter, Task::getGenType, genType)
-                        .eq(hasDraftFilter, Task::getIsDraft, draftFlag)
-                        // 默认把画布素材排除在作品画廊之外（includeAssets=true 时才带上）
-                        .and(!includeAssets, w -> w.isNull(Task::getSource)
-                                .or().ne(Task::getSource, "canvas_asset"))
-        );
+        // count 与 list 各建一次（wrapper 可变，共用会把 LIMIT 带进 count）
+        long total = taskMapper.selectCount(listCondition(genType, draft, includeAssets, status, source));
         List<TaskResponse> list = taskMapper.selectList(
-                new LambdaQueryWrapper<Task>()
-                        .eq(hasTypeFilter, Task::getGenType, genType)
-                        .eq(hasDraftFilter, Task::getIsDraft, draftFlag)
-                        .and(!includeAssets, w -> w.isNull(Task::getSource)
-                                .or().ne(Task::getSource, "canvas_asset"))
+                listCondition(genType, draft, includeAssets, status, source)
                         .orderByDesc(Task::getId)
                         .last("LIMIT " + safeSize + " OFFSET " + ((long) (safePage - 1) * safeSize))
         ).stream().map(this::toResponse).toList();
@@ -88,6 +100,20 @@ public class TaskServiceImpl implements TaskService {
         resp.setPage(safePage);
         resp.setSize(safeSize);
         return resp;
+    }
+
+    /** 列表查询条件（count 与 list 共用一处，避免两侧条件漂移） */
+    private LambdaQueryWrapper<Task> listCondition(String genType, Boolean draft, boolean includeAssets,
+            String status, String source) {
+        SourceFilter filter = sourceFilterOf(source, includeAssets);
+        return new LambdaQueryWrapper<Task>()
+                .eq(genType != null && !genType.isBlank(), Task::getGenType, genType)
+                // draft 为 null = 不按草稿筛选；true/false = 只取草稿/只取成品
+                .eq(draft != null, Task::getIsDraft, draft != null && draft ? 1 : 0)
+                .eq(status != null && !status.isBlank(), Task::getStatus, status)
+                .eq(filter == SourceFilter.ASSETS_ONLY, Task::getSource, "canvas_asset")
+                .and(filter == SourceFilter.EXCLUDE_ASSETS, w -> w.isNull(Task::getSource)
+                        .or().ne(Task::getSource, "canvas_asset"));
     }
 
     @Override
@@ -675,6 +701,8 @@ public class TaskServiceImpl implements TaskService {
         resp.setGenParamsJson(task.getGenParamsJson());
         resp.setErrorMessage(task.getErrorMessage());
         resp.setPrompt(task.getPrompt());
+        // 来源（default / canvas_asset）：前端面板要按来源分区，必须回传
+        resp.setSource(task.getSource());
         // Lombok @Data 对 Boolean isDraft 生成 getIsDraft()/setIsDraft()
         resp.setIsDraft(task.getIsDraft() != null && task.getIsDraft() == 1);
         if (task.getStartedAt() != null) {

@@ -106,6 +106,11 @@ export interface TaskResponse {
   completedAt?: string;
   /** 任务创建时间（ISO 格式） */
   createdAt?: string;
+  /**
+   * 产物来源：'default'（进画廊）/ 'canvas_asset'（画布素材，画廊默认过滤）。
+   * 后端刚补上这个字段（此前只有 DB 有这列），面板分源筛选走的是查询参数 `source`。
+   */
+  source?: string;
 }
 
 /** 任务分页列表（对应 Java TaskListResponse dto） */

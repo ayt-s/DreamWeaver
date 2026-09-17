@@ -24,8 +24,26 @@ export async function listTasks(params: {
   draft?: DraftFilter;
   /** true = 连画布素材（source=canvas_asset）一起返回；画廊不传，画布素材面板传 true */
   includeAssets?: boolean;
+  /**
+   * 状态过滤（如 'completed'）。
+   * ⚠️ 必须**后端**过滤：前端先取一页再自己筛，排队/失败的任务会把分页窗口的名额占掉。
+   */
+  status?: string;
+  /**
+   * 来源过滤：'asset' 只要画布素材；'work' 只要作品（排除素材，与画廊默认同义）。
+   * 不传 = 按 includeAssets 走老逻辑（画廊/旧面板行为不变）。
+   */
+  source?: 'asset' | 'work';
 }): Promise<TaskListResponse> {
-  const { page = 1, size = 10, genType = '', draft = '', includeAssets = false } = params;
+  const {
+    page = 1,
+    size = 10,
+    genType = '',
+    draft = '',
+    includeAssets = false,
+    status,
+    source,
+  } = params;
   return unwrap(
     client.get('/tasks', {
       params: {
@@ -35,6 +53,8 @@ export async function listTasks(params: {
         // '' = 不筛；'final' -> false；'draft' -> true
         draft: draft === '' ? undefined : draft === 'draft',
         includeAssets: includeAssets || undefined,
+        status: status || undefined,
+        source: source || undefined,
       },
     }),
   );

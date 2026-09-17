@@ -672,6 +672,16 @@ const nextFreeNodeId = (list: GraphNode[]) => {
  */
 const HISTORY_IMAGES_KEY = ['canvas-history-images'] as const;
 
+/** 面板一页 12 格（3 列 × 4 行）；「加载更多」按页累加 */
+const HISTORY_PAGE_SIZE = 12;
+/** 面板最多展示 48 张（后端 size 上限 50）；再多去画廊看，别把窄面板堆成无限长 */
+const HISTORY_MAX_SIZE = 48;
+/** 分源：素材是画布自己生成的（数量多），作品是画廊里的 —— 不分开的话素材会把 12 格占满 */
+const HISTORY_TABS: Array<{ key: 'asset' | 'work'; label: string }> = [
+  { key: 'asset', label: '本画布素材' },
+  { key: 'work', label: '作品' },
+];
+
 const initialNodes: GraphNode[] = [
   {
     id: 'n1',
@@ -1369,31 +1379,46 @@ export default function CanvasPage() {
     }
   };
 
-  // 素材来源：历史作品（文生图成品，展示缓存图）
+  // 素材来源：本画布素材（source=canvas_asset）/ 作品（source=work）分栏 + 分页。
+  // 以前两者混排、只按 id 倒序取 12 格 —— 画布自己生成的素材会把格子占满，
+  // 画廊里的作品一张也看不到（实测 12 格全是 canvas_asset，作品全在窗口外）。
+  const [historyTab, setHistoryTab] = useState<'asset' | 'work'>('asset');
+  const [historyPages, setHistoryPages] = useState(1);
   const {
     data: history,
     isLoading: historyLoading,
     isError: historyError,
+    isFetching: historyFetching,
     refetch: refetchHistory,
   } = useQuery({
-    queryKey: HISTORY_IMAGES_KEY,
+    // 分源/页数都进 key：切栏或加载更多就是另一条缓存，不必自己拼列表
+    queryKey: [...HISTORY_IMAGES_KEY, historyTab, historyPages],
     queryFn: async () => {
-      // includeAssets：画布的一键文生图素材（source=canvas_asset）也要能选回来
-      const { list } = await listTasks({
+      const res = await listTasks({
         page: 1,
-        size: 40,
+        size: HISTORY_PAGE_SIZE * historyPages,
         genType: 'text_image',
+        // ★ 后端过滤（以前是前端先取 40 条再筛 completed：排队/失败的任务会挤掉名额）
+        status: 'completed',
+        // ★ 后端按来源分区，不再靠「12 格里恰好有没有作品」
+        source: historyTab,
+        // 只为兼容「还没重启」的旧后端：旧 JVM 不认 source，若这里不传它会退回
+        // includeAssets=false 的语义 → 连素材都查不到（两个栏都只剩作品）。
+        // 新后端里 source 优先，这个参数不影响结果（见 sourceFilterOf 的单测）。
         includeAssets: true,
       });
       // 只留有图的任务：没图的任务在网格里渲染成空洞（占一格却点不动）
       // ⚠️ 刻意**不按提示词去重**：同镜重跑（同 prompt、各带自己的候选）是用户可能想
       //    分别挑的真实产物，且实测 32 条成品里精确重复只有 1 组（49/50），
       //    去重省下的格子是 0，代价却是丢掉一组候选 —— 不划算（2026-09-17 实测更正）。
-      return list.filter(
+      const rows = res.list.filter(
         (t) => t.status === 'completed' && parseImageUrls(t.imageUrls).length > 0,
       );
+      return { rows, total: res.total };
     },
     staleTime: 30_000,
+    // 加载更多/切栏时保留上一批：否则网格闪一次空态，看起来像「图丢了」
+    placeholderData: (prev) => prev,
   });
 
   const mutation = useMutation({
@@ -2141,8 +2166,29 @@ export default function CanvasPage() {
               }}
             />
             <div className={`mb-2 text-[11px] ${theme.label}`}>从历史作品选取（点击入画布）：</div>
+            {/* 分源 chip：混排 + 只取 12 格时，画布自己生成的素材会把格子占满，
+                画廊里的作品一张都看不到（实测 12 格全是 canvas_asset） */}
+            <div className="mb-2 flex items-center gap-1">
+              {HISTORY_TABS.map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => {
+                    setHistoryTab(t.key);
+                    // 换源回到第一页：否则新源会按上一源的页数一次取一大坨
+                    setHistoryPages(1);
+                  }}
+                  className={`rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                    historyTab === t.key ? 'bg-violet-600 text-white shadow-sm' : `border ${theme.btn}`
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+              {historyFetching && <span className={`text-[10px] ${theme.hint}`}>加载中…</span>}
+            </div>
             <div className="grid grid-cols-3 gap-1.5">
-              {(history ?? []).slice(0, 12).map((t) => {
+              {(history?.rows ?? []).map((t) => {
                 const urls = parseImageUrls(t.imageUrls);
                 if (urls.length === 0) return null;
                 return (
@@ -2190,12 +2236,32 @@ export default function CanvasPage() {
                   </button>
                 </div>
               )}
-              {!historyLoading && !historyError && (history ?? []).length === 0 && (
+              {!historyLoading && !historyError && (history?.rows.length ?? 0) === 0 && (
                 <div className="col-span-3 py-4 text-center text-[11px] text-slate-600">
-                  暂无历史作品，先上传或文生图生成
+                  {historyTab === 'asset'
+                    ? '还没有画布素材：先在图片节点点「文生图」'
+                    : '还没有作品（画布素材不在这里，切回「本画布素材」）'}
                 </div>
               )}
             </div>
+            {/* 加载更多：面板 12 格一页，作品一多就够不着了（此前是硬截断，没有入口） */}
+            {!historyLoading && !historyError && history && history.total > history.rows.length && (
+              <button
+                type="button"
+                onClick={() => setHistoryPages((p) => p + 1)}
+                disabled={
+                  historyFetching || HISTORY_PAGE_SIZE * historyPages >= HISTORY_MAX_SIZE
+                }
+                title={
+                  HISTORY_PAGE_SIZE * historyPages >= HISTORY_MAX_SIZE
+                    ? `面板最多展示 ${HISTORY_MAX_SIZE} 张，更多请去画廊`
+                    : '再加载一页'
+                }
+                className={`mt-2 w-full rounded-lg border px-2 py-1 text-[11px] disabled:opacity-50 ${theme.btn}`}
+              >
+                加载更多（已显示 {history.rows.length} / 共 {history.total}）
+              </button>
+            )}
           </section>
         </aside>
 

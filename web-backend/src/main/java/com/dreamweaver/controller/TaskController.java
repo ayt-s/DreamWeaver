@@ -38,8 +38,12 @@ public class TaskController {
             @RequestParam(required = false) String genType,
             @RequestParam(required = false) Boolean draft,
             // 画布「从历史作品选取」需要素材（source=canvas_asset），画廊不需要
-            @RequestParam(defaultValue = "false") boolean includeAssets) {
-        return CommonResult.ok(taskService.listTasks(page, size, genType, draft, includeAssets));
+            @RequestParam(defaultValue = "false") boolean includeAssets,
+            // 状态过滤：画布面板传 completed —— 前端先取 40 条再筛会把排队/失败任务算进名额
+            @RequestParam(required = false) String status,
+            // 来源过滤：asset=只要画布素材；work=只要作品（与画廊默认同义，显式写法）；不传=按 includeAssets 走
+            @RequestParam(required = false) String source) {
+        return CommonResult.ok(taskService.listTasks(page, size, genType, draft, includeAssets, status, source));
     }
 
     /** 删除历史作品（仅终态；非终态返回 400） */

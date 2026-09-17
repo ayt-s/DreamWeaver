@@ -23,7 +23,8 @@ public interface TaskService {
      *                      一键文生图会在草稿区刷出 N 个素材任务，它们不是作品；
      *                      画布的「从历史作品选取」面板传 true。
      */
-    TaskListResponse listTasks(int page, int size, String genType, Boolean draft, boolean includeAssets);
+    TaskListResponse listTasks(int page, int size, String genType, Boolean draft, boolean includeAssets,
+            String status, String source);
 
     /**
          * 删除历史作品。

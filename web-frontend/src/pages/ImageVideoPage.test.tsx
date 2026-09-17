@@ -159,6 +159,7 @@ describe('ImageVideoPage 无限画布页', () => {
 /** 构造「历史作品」分页响应：只填页面真正读的字段（status / prompt / imageUrls） */
 function historyList(
   rows: Array<{ id: number; prompt: string; urls: string[]; status?: string }>,
+  total = rows.length,
 ): TaskListResponse {
   return {
     list: rows.map(
@@ -171,9 +172,9 @@ function historyList(
           imageUrls: JSON.stringify(r.urls),
         }) as unknown as TaskResponse,
     ),
-    total: rows.length,
+    total,
     page: 1,
-    size: 40,
+    size: rows.length,
   };
 }
 
@@ -211,14 +212,86 @@ describe('「从历史作品选取」面板', () => {
     expect(screen.queryByAltText('没图的任务')).toBeNull();
     // 候选数角标：让用户知道这一格背后还有两张可挑
     expect(screen.getByText(/3\s*张/)).toBeInTheDocument();
-    // 取数参数：必须带 includeAssets，否则画布素材（source=canvas_asset）会被后端过滤掉
+    // 取数参数：后端过滤（status/source）——以前是前端取 40 条再自己筛，
+    // 排队/失败任务会挤掉名额，且素材会把作品挤出面板
     expect(vi.mocked(listTasks).mock.calls[0][0]).toMatchObject({
       genType: 'text_image',
+      status: 'completed',
+      source: 'asset',
       includeAssets: true,
+      page: 1,
+      size: 12,
     });
   });
 
-  it('加载中不显示「暂无历史作品」（假空态会让用户以为作品丢了）', async () => {
+  it('切「作品」栏 → 用 source=work 重新取数（素材与作品不再混排）', async () => {
+    vi.mocked(listTasks).mockImplementation(async (p) =>
+      p?.source === 'work'
+        ? historyList([
+            { id: 30, prompt: '初音未来跨屏', urls: ['https://cdn.agnes-ai.space/c1.png'] },
+          ])
+        : historyList([
+            { id: 78, prompt: '陈浔闻焦味', urls: ['https://cdn.agnes-ai.space/a1.png'] },
+          ]),
+    );
+    renderPage();
+
+    await waitFor(() => expect(screen.getByAltText('陈浔闻焦味')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: '作品' }));
+
+    await waitFor(() => expect(screen.getByAltText('初音未来跨屏')).toBeInTheDocument());
+    const calls = vi.mocked(listTasks).mock.calls;
+    expect(calls[calls.length - 1]?.[0]).toMatchObject({ source: 'work' });
+    // 换栏后素材那张不该还留在网格里（placeholderData 只是防闪空，不应留下旧源的行）
+    await waitFor(() => expect(screen.queryByAltText('陈浔闻焦味')).toBeNull());
+  });
+
+  it('「加载更多」按页累加请求（不再硬截断在 12 格）', async () => {
+    // total 固定 26（模拟库里共有 26 张），list 按请求的 size 返回前 N 张
+    vi.mocked(listTasks).mockImplementation(async (p) =>
+      historyList(
+        Array.from({ length: 26 }, (_, i) => ({
+          id: 100 - i,
+          prompt: `镜头 ${i + 1}`,
+          urls: [`https://cdn.agnes-ai.space/s${i + 1}.png`],
+        })).slice(0, p?.size ?? 12),
+        26,
+      ),
+    );
+    renderPage();
+
+    // 第一次：size=12
+    await waitFor(() => expect(vi.mocked(listTasks).mock.calls[0][0]).toMatchObject({ size: 12 }));
+    await waitFor(() => expect(screen.getAllByAltText(/^镜头 /)).toHaveLength(12));
+    const more = screen.getByRole('button', { name: /加载更多/ });
+    // total=26 > 已显示 12 → 按钮出现并带着真实总数
+    expect(more.textContent).toContain('共 26');
+
+    fireEvent.click(more);
+    const afterClick = vi.mocked(listTasks).mock.calls;
+    await waitFor(() =>
+      expect(afterClick[afterClick.length - 1]?.[0]).toMatchObject({ size: 24 }),
+    );
+    await waitFor(() => expect(screen.getAllByAltText(/^镜头 /)).toHaveLength(24));
+    // 还剩 2 张没显示 → 按钮仍在（下一次会顶到 48 上限）
+    expect(screen.getByRole('button', { name: /加载更多/ }).textContent).toContain('已显示 24');
+  });
+
+  it('两个栏的空态文案不同（作品栏要说清「素材不在这里」）', async () => {
+    vi.mocked(listTasks).mockResolvedValue(historyList([]));
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText(/还没有画布素材/)).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '作品' }));
+    await waitFor(() => expect(screen.getByText(/还没有作品/)).toBeInTheDocument());
+    expect(screen.getByText(/画布素材不在这里/)).toBeInTheDocument();
+  });
+
+  it('加载中不显示空态（假空态会让用户以为作品丢了）', async () => {
     let release: (v: TaskListResponse) => void = () => {};
     vi.mocked(listTasks).mockReturnValue(
       new Promise<TaskListResponse>((r) => {
@@ -227,7 +300,9 @@ describe('「从历史作品选取」面板', () => {
     );
     renderPage();
 
-    expect(screen.getByText('加载中…')).toBeInTheDocument();
+    // 网格里一处 + chip 旁的「加载中…」提示（isFetching），两处都算数
+    expect(screen.getAllByText('加载中…').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/还没有画布素材/)).toBeNull();
     expect(screen.queryByText(/暂无历史作品/)).toBeNull();
 
     release(
@@ -243,6 +318,8 @@ describe('「从历史作品选取」面板', () => {
 
     await waitFor(() => expect(screen.getByText(/历史作品加载失败/)).toBeInTheDocument());
     expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument();
+    // 失败态也绝不能退化成空态文案（用户会以为作品没了、跑去修错的地方）
+    expect(screen.queryByText(/还没有画布素材/)).toBeNull();
     expect(screen.queryByText(/暂无历史作品/)).toBeNull();
   });
 
@@ -322,7 +399,7 @@ describe('「从历史作品选取」面板', () => {
     } as never);
 
     renderPage();
-    await waitFor(() => expect(screen.getByText(/暂无历史作品/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/还没有画布素材/)).toBeInTheDocument());
     const before = vi.mocked(listTasks).mock.calls.length;
 
     // 给初始画布的图片节点填提示词 → 它成为「有提示词但没图」的批量目标

@@ -50,4 +50,12 @@ public class TaskResponse {
 
     /** 任务创建时间（ISO 格式）；前端计算耗时 */
     private String createdAt;
+
+    /**
+     * 产物来源：{@code default}（进画廊）/ {@code canvas_asset}（画布素材，画廊过滤）。
+     *
+     * <p>此前只在 DB 有这列、响应里没有 —— 前端因此**无法区分素材与作品**，
+     * 画布「从历史作品选取」只能把两者混排，结果面板 12 格全被自家素材占满。
+     */
+    private String source;
 }
