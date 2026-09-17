@@ -59,6 +59,7 @@ import {
   getCanvasVersion,
 } from '../api/canvas';
 import { generateText } from '../api/agent';
+import { qcImages } from '../api/imageQc';
 import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
 import { createContext, useContext } from 'react';
 import { reorderShotX, sortShots } from '../utils/shotOrder';
@@ -323,6 +324,17 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [generating, setGenerating] = useState(false);
   const [status, setStatus] = useState('');
+  // 候选图质检（P0-1）：命中「严禁面部特写」红线的候选打标提示。
+  // ⚠️ 只打标不自动淘汰 —— 标定样本还不够（正样本 6 张），见 image_qc.py 的说明。
+  const candidateKey = ((data.candidates as string[] | undefined) ?? []).join('|');
+  const { data: qc } = useQuery({
+    queryKey: ['image-qc', candidateKey],
+    enabled: candidateKey.length > 0,
+    // 同一个 URL 的判定是确定的（本地人脸检测），缓存到会话结束即可
+    staleTime: Infinity,
+    queryFn: () => qcImages(data.candidates as string[]),
+  });
+  const qcByUrl = new Map((qc?.results ?? []).map((r) => [r.url, r]));
   const patch = (p: Partial<ImageNodeData>) => updateNodeData(id, p);
 
   // === 分镜顺序（上移 / 下移）===
@@ -487,27 +499,48 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
         <div className="mb-2">
           <div className="mb-1 text-[10px] text-slate-500">
             候选 {data.candidates.length} 张 · 点一张设为首帧
+            {qc && qc.summary.closeupCount > 0 && (
+              <span className="ml-1 text-amber-600">
+                · {qc.summary.closeupCount} 张疑似面部特写
+              </span>
+            )}
           </div>
           <div className="flex gap-1 overflow-x-auto pb-0.5">
-            {(data.candidates as string[]).map((u: string, i: number) => (
-              <button
-                key={`${id}-cand-${i}`}
-                type="button"
-                onClick={() => patch({ imageUrl: u })}
-                title={`候选 ${i + 1}（点击作为该镜首帧）`}
-                className={`h-11 w-11 shrink-0 overflow-hidden rounded border transition ${
-                  data.imageUrl === u
-                    ? 'border-indigo-500 ring-1 ring-indigo-400'
-                    : 'border-slate-200 hover:border-indigo-300'
-                }`}
-              >
-                <img
-                  src={cachedImageUrl(u)}
-                  alt={`候选 ${i + 1}`}
-                  className="h-full w-full object-cover"
-                />
-              </button>
-            ))}
+            {(data.candidates as string[]).map((u: string, i: number) => {
+              const verdict = qcByUrl.get(u);
+              const bad = verdict?.closeup === true;
+              return (
+                <button
+                  key={`${id}-cand-${i}`}
+                  type="button"
+                  onClick={() => patch({ imageUrl: u })}
+                  title={
+                    `候选 ${i + 1}（点击作为该镜首帧）` +
+                    (bad
+                      ? ` · 疑似面部特写：人脸占画面 ${Math.round((verdict?.faceSpan ?? 0) * 100)}%，` +
+                        `提示词里的「严禁面部特写」红线可能没拦住`
+                      : '')
+                  }
+                  className={`relative h-11 w-11 shrink-0 overflow-hidden rounded border transition ${
+                    data.imageUrl === u
+                      ? 'border-indigo-500 ring-1 ring-indigo-400'
+                      : 'border-slate-200 hover:border-indigo-300'
+                  }`}
+                >
+                  <img
+                    src={cachedImageUrl(u)}
+                    alt={`候选 ${i + 1}`}
+                    className="h-full w-full object-cover"
+                  />
+                  {/* 命中红线的候选角标：⚠️ 只提示、不禁用（标定样本还不够，见 image_qc.py） */}
+                  {bad && (
+                    <span className="absolute inset-x-0 bottom-0 bg-amber-500/90 text-center text-[8px] font-medium leading-3 text-white">
+                      面部特写
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}

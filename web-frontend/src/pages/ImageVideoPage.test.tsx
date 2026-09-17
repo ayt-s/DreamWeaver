@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import ImageVideoPage from './ImageVideoPage';
 import { createVideoTask, getTask, listTasks } from '../api/tasks';
 import type { TaskListResponse, TaskResponse } from '../types/task';
@@ -471,4 +471,104 @@ describe('「从历史作品选取」面板', () => {
       { timeout: 20000 },
     );
   }, 30000);
+});
+
+describe('候选图质检打标（P0-1）', () => {
+  const URLS = [
+    'https://cdn.agnes-ai.space/q1.png',
+    'https://cdn.agnes-ai.space/q2.png',
+    'https://cdn.agnes-ai.space/q3.png',
+  ];
+
+  beforeEach(() => {
+    vi.mocked(listTasks)
+      .mockReset()
+      .mockResolvedValue(historyList([{ id: 78, prompt: '陈浔闻焦味', urls: URLS }]));
+    vi.mocked(createVideoTask).mockReset().mockRejectedValue(new Error('用例到此为止'));
+    vi.mocked(getTask).mockReset();
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** 只拦 `/v1/qc/images`，其余请求照旧（页面还有别的取数，别一并打断）。 */
+  function stubQc(payload: unknown, ok = true) {
+    const real = globalThis.fetch;
+    const spy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/v1/qc/images')) {
+        return { ok, json: async () => payload } as unknown as Response;
+      }
+      return real(input, init);
+    });
+    vi.stubGlobal('fetch', spy);
+    return spy;
+  }
+
+  it('命中红线的候选打标，并告诉用户有几张', async () => {
+    const spy = stubQc({
+      code: 0,
+      data: {
+        results: [
+          { index: 0, url: URLS[0], skipped: false, closeup: false, faces: 1, faceSpan: 0.09 },
+          { index: 1, url: URLS[1], skipped: false, closeup: true, faces: 1, faceSpan: 0.36 },
+          { index: 2, url: URLS[2], skipped: false, closeup: false, faces: 1, faceSpan: 0.08 },
+        ],
+        summary: { total: 3, closeupCount: 1, recommendIndex: 2 },
+      },
+    });
+
+    renderPage();
+    // 从「历史作品选取」里把带 3 张候选的素材加进画布 → 节点里出现候选切换器
+    const thumb = await screen.findByAltText('陈浔闻焦味');
+    fireEvent.click(thumb.closest('button')!);
+
+    await waitFor(() => expect(screen.getByText('面部特写')).toBeInTheDocument());
+    expect(screen.getByText(/1 张疑似面部特写/)).toBeInTheDocument();
+
+    // 接线没断：真的按候选 URL 打了质检接口（只带图，不带别的）
+    const call = spy.mock.calls.find((c) => String(c[0]).includes('/v1/qc/images'))!;
+    const body = JSON.parse(String((call[1] as RequestInit).body));
+    expect(body.urls).toEqual(URLS);
+  });
+
+  it('全是干净候选时不打标（避免每张图都挂个徽标）', async () => {
+    stubQc({
+      code: 0,
+      data: {
+        results: URLS.map((u, index) => ({
+          index, url: u, skipped: false, closeup: false, faces: 1, faceSpan: 0.08,
+        })),
+        summary: { total: 3, closeupCount: 0, recommendIndex: 0 },
+      },
+    });
+
+    renderPage();
+    const thumb = await screen.findByAltText('陈浔闻焦味');
+    fireEvent.click(thumb.closest('button')!);
+
+    await waitFor(() =>
+      expect(document.querySelectorAll('[data-testid^="rf__node-"]').length).toBeGreaterThan(0),
+    );
+    await waitFor(() => expect(screen.queryByText('面部特写')).toBeNull());
+    expect(screen.queryByText(/疑似面部特写/)).toBeNull();
+  });
+
+  it('质检接口不可用时不打断画布（静默降级，无徽标）', async () => {
+    const real = globalThis.fetch;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+        String(input).includes('/v1/qc/images')
+          ? Promise.reject(new Error('agent 没起来'))
+          : real(input, init),
+      ),
+    );
+
+    renderPage();
+    const thumb = await screen.findByAltText('陈浔闻焦味');
+    fireEvent.click(thumb.closest('button')!);
+
+    // 画布照常工作：候选切换器还在
+    await waitFor(() => expect(screen.getByText(/候选 3 张/)).toBeInTheDocument());
+    expect(screen.queryByText('面部特写')).toBeNull();
+  });
 });
