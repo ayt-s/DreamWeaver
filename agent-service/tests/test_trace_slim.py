@@ -306,6 +306,50 @@ async def test_repeated_node_visits_are_distinguishable(monkeypatch, patched):
 
 
 @pytest.mark.asyncio
+async def test_every_traced_node_also_emits_node_events(monkeypatch, patched):
+    """★ 两个视图的口径必须一致：trace 快照里有某个节点，实时 SSE 里就该有它的事件。
+
+    **为什么需要**：trace 由**图层包装**统一产生（结构上不会漏），而事件是
+    **各节点手写**的 —— 手写就会漏。实测漏了三处：
+
+    - `script_writer` **一个事件都不发** → 实时视图里「剧本生成」整步消失
+    - `video_generator` 从不发 `node_completed` → 「视频生成」永远停在「进行中」
+    - `fix_give_up` 只有 completed、没有 entered → 「放弃修复」凭空出现
+
+    于是「全链路可见」这句话**只在 trace 快照里成立**。这条测试把两个视图绑在一起：
+    以后新增节点忘了发事件会立刻红，而不是等用户发现"面板里怎么少了一步"。
+    """
+    from app import events as events_mod
+    from app import graph
+
+    recorded: list[tuple[str, str]] = []
+
+    async def _record_emit(session_id, event_type, data=None, **kwargs):
+        recorded.append((event_type, str((data or {}).get("node_id") or "")))
+        return None
+
+    monkeypatch.setattr(events_mod, "emit", _record_emit)
+
+    res = await graph.compiled_graph.ainvoke(
+        {"session_id": "c1-parity", "user_id": "t", "raw_prompt": "产品宣传片，10 秒",
+         "gen_type": "text_video", "status": TaskStatus.PENDING,
+         "fix_round": 0, "max_fix_rounds": 1, "fix_history": [],
+         "trace": [], "created_at": 0, "updated_at": 0},
+        config={"configurable": {"thread_id": "c1-parity"}})
+
+    traced = {t["node"].split("#")[0].split("@")[0] for t in res["trace"]}
+    entered = {nid for etype, nid in recorded if etype == "node_entered"}
+    completed = {nid for etype, nid in recorded if etype == "node_completed"}
+
+    assert traced, "跑完一张图却没有 trace，用例前提不成立"
+    assert not (traced - entered), (
+        f"这些节点在 trace 里有、却没发 node_entered：{sorted(traced - entered)}"
+        f"（实际收到的事件：{sorted(recorded)}）")
+    assert not (traced - completed), (
+        f"这些节点没发 node_completed：{sorted(traced - completed)}")
+
+
+@pytest.mark.asyncio
 async def test_real_graph_produces_only_slim_trace(monkeypatch, patched):
     """★ 真实 compiled_graph 跑完，trace 每条都必须是三元组。"""
     from app import graph

@@ -50,11 +50,21 @@ def _control_context(state: CreativeSessionState) -> tuple[str, str, list[str], 
 
 
 async def storyboarder_node(state: CreativeSessionState) -> dict:
+    from app import events
+
+    # ⚠️ 这个节点原先**一个事件都不发**（只有 `canvas_storyboarder` 发）——
+    # 标准模式主链路上「分镜拆解」整步在实时视图里是消失的（而 trace 快照有）。
+    # entered 必须在幂等守卫之前发：断点恢复时本节点确实被走到过。
+    await events.emit(state["session_id"], "node_entered",
+                      {"node_id": "storyboarder", "node_name": "分镜拆解"})
     # 幂等守卫（断点恢复）：storyboard 非空且每镜都有 prompt_en → 跳过 LLM 翻译，
     # 直接沿用已有 storyboard（含 reference_images / 复用字段）
     existing_sb = state.get("storyboard") or []
     if existing_sb and all(str(s.get("prompt_en") or "").strip() for s in existing_sb):
         logger.info("storyboarder 幂等跳过：已有 %d 镜 prompt_en", len(existing_sb))
+        await events.emit(state["session_id"], "node_completed",
+                          {"node_id": "storyboarder",
+                           "summary": f"复用已有 {len(existing_sb)} 镜分镜"})
         return {}
     # 用户上传的参考图（图生视频模式）：有则作为每镜参考图，空则后续 image_generator 自动生图回填
     user_ref_images = list(state.get("reference_images", []))
@@ -104,6 +114,8 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
             "style_prompt": style_prompt,
             "negative_prompt": negative_prompt,
         })
+    await events.emit(state["session_id"], "node_completed",
+                      {"node_id": "storyboarder", "summary": f"{len(storyboard)} 镜分镜"})
     return {"storyboard": storyboard, "status": TaskStatus.STORYBOARD_WRITING}
 
 

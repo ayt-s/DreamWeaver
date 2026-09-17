@@ -155,6 +155,16 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
     # 所有镜次是批量 gather 的，等多久是整批一起等，给每条都填整批耗时会让
     # 10 镜任务显示成 10 个 90s，是假的归因。
 
+    # ⚠️ 本节点原先只发 `node_entered`、**从不发 `node_completed`** —— 实时视图里
+    # 「视频生成」永远停在"进行中"，看不出它已经收尾（trace 快照有，但两个视图
+    # 的口径必须一致，否则「全链路可见」只在其中一个里成立）。
+    total_shots = len(state["storyboard"])
+    await events.emit(state["session_id"], "node_completed", {
+        "node_id": "video_generator",
+        "summary": (f"视频生成 {len(video_urls)}/{total_shots} 镜"
+                    + (f"（{len(error_msgs)} 镜失败）" if error_msgs else "")),
+    })
+
     return {
         "video_urls": video_urls,
         "video_ids": video_ids,

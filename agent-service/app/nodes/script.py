@@ -64,10 +64,21 @@ async def _llm_json_with_retry(prompt: str, *, session_id: str | None = None,
 
 
 async def script_writer_node(state: CreativeSessionState) -> dict:
+    from app import events
+
+    # ⚠️ `node_entered` 必须在幂等守卫**之前**发：断点恢复时本节点确实被走到过。
+    # 这个节点原先一个事件都不发 —— 实时视图里「剧本生成」是**静默消失**的
+    # （而 trace 快照那边由图层包装兜住了）。两边口径必须一致，否则
+    # 「全链路可见」这句话只在其中一个视图里成立。
+    await events.emit(state["session_id"], "node_entered",
+                      {"node_id": "script_writer", "node_name": "剧本生成"})
     # 幂等守卫（断点恢复）：已有非空 script → 跳过 LLM 创作，不重复花钱与耗时
     if state.get("script"):
         logger.info("script_writer 幂等跳过：已有 %d 镜剧本",
                     len(state.get("script") or []))
+        await events.emit(state["session_id"], "node_completed",
+                          {"node_id": "script_writer",
+                           "summary": f"复用已有 {len(state.get('script') or [])} 镜剧本"})
         return {}
     brief = state["brief"]
     total_seconds = state.get("total_seconds")
@@ -121,6 +132,8 @@ async def script_writer_node(state: CreativeSessionState) -> dict:
     total = total_seconds or _coerce_int(brief.get("duration_seconds"))
     if total and script:
         _distribute_duration(script, total)
+    await events.emit(state["session_id"], "node_completed",
+                      {"node_id": "script_writer", "summary": f"{len(script)} 镜剧本"})
     return {"script": script, "status": TaskStatus.SCRIPT_WRITING}
 
 

@@ -68,6 +68,10 @@ async def _fix_give_up_node(state: CreativeSessionState) -> dict:
     from app import events
 
     session_id = state["session_id"]
+    # 成对的 node_entered / node_completed：原先只有 completed，
+    # 实时视图里「放弃修复」凭空出现、看不出它开始过（与 trace 快照口径不一致）
+    await events.emit(session_id, "node_entered",
+                      {"node_id": "fix_give_up", "node_name": "放弃修复"})
     rounds = len(state.get("fix_history") or [])
     qc_report = state.get("qc_report") or {}
     failed = list(qc_report.get("failed_shots") or [])
