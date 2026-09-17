@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+import re
+
 # 全局红线，追加到每个 prompt 末尾（agnès 会优先识别末尾约束）
 _IMAGE_RED_LINES = (
     "严禁面部特写；"
@@ -28,13 +30,45 @@ _IMAGE_RED_LINES = (
 )
 
 
+def _char_aliases(name: str) -> tuple[str, ...]:
+    """角色的可匹配写法：全名 + 末尾 2 字做简称。
+
+    storyboarder 写 [主体动作] 时不会总用全名：「大黑牛」常写成「黑牛」
+    （「黑牛反刍保下些许大米」），所以光比全名会该留的没留住。
+    """
+    name = (name or "").strip()
+    if not name:
+        return ()
+    if len(name) <= 2:
+        return (name,)
+    return (name, name[-2:])
+
+
+def _mentioned_characters(seg: dict) -> list[str]:
+    """本镜 [主体动作] + [场景] 里**真正被提到**的角色。
+
+    ★ 为什么必须按镜裁剪：`[角色锚]` 里列了谁，agnès 就把谁都画出来 —— 而且
+    「大黑牛」会被画成**两头**。2026-09-17 实测第一章 6 镜 18 张图无一例外，
+    连 [主体动作] 明写「一人一牛」的那镜也是两头。角色锚不裁剪 = 每镜都在点单。
+
+    保守策略（与前端 P0-3 同口径）：**一个都没匹配到就退回全给**。
+    宁可多画一个，也不能把本该出场的角色漏掉 —— 漏角色比多画更难发现。
+    """
+    names = seg.get("characters") or []
+    if not names:
+        return []
+    text = f"{seg.get('plot', '')} {seg.get('scene', '')}"
+    hit = [n for n in names if any(a and a in text for a in _char_aliases(n))]
+    return hit or list(names)
+
+
 def _format_characters(seg: dict, analysis: dict | None = None) -> str:
     """把本段角色名拼成 '角色名(特征)' 列表。
 
     如果传了 analysis 且有角色特征卡，就用『名字(特征)』锁定描述；
-    没有特征卡时只列名字。
+    没有特征卡时只列名字。**只列本镜真正出现的角色**（见 _mentioned_characters）。
     """
-    names = seg.get("characters") or []
+    names = _mentioned_characters(seg)
     if not names:
         return "无具体人物"
     card = (analysis or {}).get("characters") or {}
@@ -77,6 +111,26 @@ def _ensure_camera_terms(camera: str) -> str:
     return camera
 
 
+# [镜头] 里凡是**声明主体人数**的措辞，一律删掉。
+#
+# ★ 实测（2026-09-17 第一章 shot1）：这类措辞会被 agnès 当成硬构图指令。
+#   同一镜，只改这句话出三组图：
+#     角色锚含陈浔+大黑牛        → 每张都是「1 少年 + 2 头牛」
+#     角色锚只留陈浔             → 每张都是「**2 个一模一样的少年**」（凑人数）
+#     角色锚只留陈浔 + 删掉这句   → 每张都是「1 个少年，没有牛」✓ 正确
+#   人数已经由 [角色锚]（按镜裁剪）和 [主体动作] 表达过了，镜头段再说一遍只会打架。
+_SUBJECT_COUNT_RE = re.compile(
+    r"(?:[一二两双]\s*人并排|双人并排|一人一牛|一牛一人|人牛并排|双人|二人|两人)"
+)
+
+
+def _sanitize_camera(camera: str) -> str:
+    """删掉 [镜头] 里声明主体人数的措辞，别让它变成硬构图指令。"""
+    s = _SUBJECT_COUNT_RE.sub("", camera or "")
+    s = re.sub(r"[，、]{2,}", "，", s).strip("，、 ")
+    return s
+
+
 def compose_image_prompt(seg: dict, style: str, analysis: dict | None = None) -> str:
     """拼一段图像生成 prompt（六段式，按优先级从高到低排列）。
 
@@ -91,7 +145,7 @@ def compose_image_prompt(seg: dict, style: str, analysis: dict | None = None) ->
     """
     subject = _extract_subject(seg)
     scene = seg.get("scene", "")
-    camera = _ensure_camera_terms(seg.get("camera", ""))
+    camera = _ensure_camera_terms(_sanitize_camera(seg.get("camera", "")))
     characters = _format_characters(seg, analysis)
     mood = seg.get("mood", "")
 
