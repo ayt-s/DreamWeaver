@@ -58,6 +58,7 @@ import {
 } from '../api/canvas';
 import { generateText } from '../api/agent';
 import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
+import { reorderShotX, sortShots } from '../utils/shotOrder';
 import {
   CAMERA_ANGLE_OPTIONS,
   CAMERA_MOVE_OPTIONS,
@@ -285,11 +286,36 @@ function TextNodeView({ id, data }: NodeProps<GraphNode>) {
 }
 
 function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
-  const { updateNodeData } = useReactFlow();
+  const { updateNodeData, getNodes, setNodes } = useReactFlow();
   const fileRef = useRef<HTMLInputElement>(null);
   const [generating, setGenerating] = useState(false);
   const [status, setStatus] = useState('');
   const patch = (p: Partial<ImageNodeData>) => updateNodeData(id, p);
+
+  // === 分镜顺序（上移 / 下移）===
+  // 成片顺序 = 图片节点**从左到右的 x 坐标**（唯一判据；后端 agent 的 reorder_shots
+  // 用的是同一条规则）。拖动节点确实能改顺序，但要把 6~10 个节点拖到互相精确的前后
+  // 位置很难（间距不齐时尤其），所以给「第 N 段」徽标配了 ▲▼。
+  // 排序/换位的规则抽在 utils/shotOrder.ts（纯函数 + 单测，因为排错了不会报错，
+  // 只会让成片顺序不对）。
+  const ORDER = (data as { __order?: number }).__order ?? 0;
+  const ORDER_TOTAL = (data as { __orderTotal?: number }).__orderTotal ?? 0;
+
+  const moveShot = (dir: -1 | 1) => {
+    const shots = sortShots(
+      getNodes()
+        .filter((n) => n.type === 'imageNode')
+        .map((n) => ({ id: n.id, x: n.position.x, y: n.position.y })),
+    );
+    const xById = reorderShotX(shots, shots.findIndex((s) => s.id === id), dir);
+    if (!xById) return; // 已经是第一段/最后一段
+    setNodes((nds) =>
+      nds.map((n) => {
+        const x = xById.get(n.id);
+        return x === undefined ? n : { ...n, position: { ...n.position, x } };
+      }),
+    );
+  };
 
   const onUploadFile = async (file: File) => {
     try {
@@ -351,13 +377,33 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
       <Handle type="target" position={Position.Left} className="!h-2.5 !w-2.5 !bg-indigo-400" />
       <div className="mb-2 flex items-center gap-1 text-[11px] font-semibold text-slate-500">
         <ImagePlus className="h-3.5 w-3.5" /> 图片节点
-        {/* 成片顺序徽标：chain 按 x 坐标排，拖动节点即改顺序 —— 不显示序号用户看不出来 */}
-        {(data as { __order?: number }).__order ? (
-          <span
-            className="ml-auto shrink-0 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-600"
-            title="成片里的第几段（按画布从左到右排序，拖动节点会改变它）"
-          >
-            第 {(data as { __order?: number }).__order} 段
+        {/* 成片顺序徽标 + 前后移动：chain 按 x 坐标排，拖动节点也能改顺序 —— 不显示序号用户看不出来 */}
+        {ORDER > 0 ? (
+          <span className="ml-auto flex shrink-0 items-center gap-0.5">
+            <button
+              type="button"
+              className="nodrag rounded px-0.5 text-[10px] text-indigo-500 hover:bg-indigo-50 disabled:opacity-25"
+              disabled={ORDER <= 1}
+              title="前移一段（在成片里提前）"
+              onClick={() => moveShot(-1)}
+            >
+              ▲
+            </button>
+            <span
+              className="rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-600"
+              title="成片里的第几段（按画布从左到右排序）"
+            >
+              第 {ORDER} 段
+            </span>
+            <button
+              type="button"
+              className="nodrag rounded px-0.5 text-[10px] text-indigo-500 hover:bg-indigo-50 disabled:opacity-25"
+              disabled={ORDER_TOTAL === 0 || ORDER >= ORDER_TOTAL}
+              title="后移一段（在成片里推后）"
+              onClick={() => moveShot(1)}
+            >
+              ▼
+            </button>
           </span>
         ) : null}
       </div>
@@ -1479,14 +1525,17 @@ export default function CanvasPage() {
       if (node?.type === 'imageNode') order.set(id, (seq += 1));
     }
     if (order.size === 0) return;
+    // __orderTotal 同时写：节点上的 ▲▼ 要用它判断「已经是最后一段」
+    const total = order.size;
     setNodes((nds) => {
       let changed = false;
       const next = nds.map((node) => {
         if (node.type !== 'imageNode') return node;
         const want = order.get(node.id) ?? 0;
-        if ((node.data as { __order?: number }).__order === want) return node;
+        const d = node.data as { __order?: number; __orderTotal?: number };
+        if (d.__order === want && d.__orderTotal === total) return node;
         changed = true;
-        return { ...node, data: { ...node.data, __order: want } };
+        return { ...node, data: { ...node.data, __order: want, __orderTotal: total } };
       });
       return changed ? next : nds;
     });
