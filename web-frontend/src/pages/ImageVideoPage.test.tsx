@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeAll, describe, expect, it } from 'vitest';
 import ImageVideoPage from './ImageVideoPage';
@@ -30,6 +30,28 @@ function renderPage() {
   );
 }
 
+/** React Flow 把节点定位写成 translate(xpx, ypx) —— 成片顺序的真实来源就是 x。 */
+function xOf(el: Element): number {
+  const m = /translate\(([-\d.]+)px/.exec((el as HTMLElement).style.transform);
+  return m ? Number(m[1]) : NaN;
+}
+
+/** 画布上的图片节点（有「第 N 段」徽标的那些）：id / x / 段号 / DOM。 */
+function shots() {
+  return Array.from(document.querySelectorAll('[data-testid^="rf__node-"]'))
+    .map((el) => ({
+      id: (el.getAttribute('data-testid') || '').replace('rf__node-', ''),
+      x: xOf(el),
+      order: Number(/第 (\d+) 段/.exec(el.textContent || '')?.[1] ?? 0),
+      el,
+    }))
+    .filter((n) => n.order > 0);
+}
+
+function moveBtn(el: Element, arrow: string) {
+  return Array.from(el.querySelectorAll('button')).find((b) => b.textContent === arrow)!;
+}
+
 describe('ImageVideoPage 无限画布页', () => {
   it('挂载渲染成功（标题/节点类型/素材来源/比例/提交按钮齐全）', () => {
     renderPage();
@@ -58,5 +80,38 @@ describe('ImageVideoPage 无限画布页', () => {
     expect(screen.getAllByText('16:9').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('视频模型')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '生成成片' })).toBeInTheDocument();
+  });
+
+  it('分镜 ▲▼ 真能换位（P4 接线：点击 → 换 x → 徽标互换）', () => {
+    renderPage();
+    const add = () => screen.getAllByRole('button', { name: '图片节点' })[0];
+    for (let i = 0; i < 3 && shots().length < 3; i += 1) fireEvent.click(add());
+
+    const before = shots();
+    expect(before.length).toBeGreaterThanOrEqual(3);
+    const first = before.find((n) => n.order === 1)!;
+    const second = before.find((n) => n.order === 2)!;
+
+    fireEvent.click(moveBtn(first.el, '▼'));
+
+    const after = shots();
+    expect(after.find((n) => n.id === first.id)!.order).toBe(2);
+    expect(after.find((n) => n.id === second.id)!.order).toBe(1);
+    // x 归一化成 base + k*340（与后端 reorder_shots 同口径）
+    const sorted = [...after].sort((a, b) => a.x - b.x);
+    sorted.forEach((n, k) => expect(n.x).toBeCloseTo(sorted[0].x + k * 340, 3));
+  });
+
+  it('分镜 ▲▼ 边界禁用态正确（第 1 段 ▲ 灰 / 最后一段 ▼ 灰）', () => {
+    renderPage();
+    const add = () => screen.getAllByRole('button', { name: '图片节点' })[0];
+    for (let i = 0; i < 3 && shots().length < 3; i += 1) fireEvent.click(add());
+
+    const list = shots();
+    const first = list.find((n) => n.order === 1)!;
+    const last = list.find((n) => n.order === list.length)!;
+    expect(moveBtn(first.el, '▲')).toBeDisabled();
+    expect(moveBtn(first.el, '▼')).not.toBeDisabled();
+    expect(moveBtn(last.el, '▼')).toBeDisabled();
   });
 });
