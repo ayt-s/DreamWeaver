@@ -367,8 +367,10 @@ class AgnesGateway:
                     last_reason = f"[{provider_name}] {_describe_transport_error(e)}"
                     if attempt == attempts_per_provider:
                         break
-                    logger.warning("视频提交[%s]%s，%.1fs 后重试 (%d/%d)",
-                                   provider_name, last_reason, wait, attempt, attempts_per_provider)
+                    # 格式串里不再重复 `[provider]`：last_reason 本身已带前缀，
+                    # 写成 `视频提交[%s]%s` 会输出「视频提交[intl][intl] 读超时…」
+                    logger.warning("视频提交%s，%.1fs 后重试 (%d/%d)",
+                                   last_reason, wait, attempt, attempts_per_provider)
                     await asyncio.sleep(wait)
                     continue
 
@@ -404,8 +406,9 @@ class AgnesGateway:
                     last_reason = f"[{provider_name}] 服务端 {resp.status_code} ({code or 'server error'})"
                     if attempt == attempts_per_provider:
                         break
-                    logger.warning("视频提交[%s]%s，%.1fs 后重试 (%d/%d)",
-                                   provider_name, last_reason, wait, attempt, attempts_per_provider)
+                    # 同上：去重 provider 前缀
+                    logger.warning("视频提交%s，%.1fs 后重试 (%d/%d)",
+                                   last_reason, wait, attempt, attempts_per_provider)
                     await asyncio.sleep(wait)
                     continue
 
