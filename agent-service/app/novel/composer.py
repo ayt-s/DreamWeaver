@@ -101,13 +101,41 @@ def _is_animal(name: str, card: str = "") -> bool:
     return not any(w in (card or "") for w in _HUMAN_HINTS)
 
 
+def _animal_names_from_analysis(analysis: dict | None) -> set[str] | None:
+    """读 analyzer 的结构化字段：这本书里哪些角色是动物/灵兽。
+
+    返回 **None** 与返回**空集**是两件事：
+    - None = 分析结果里根本没有这个字段（老数据）→ 只能退回关键词猜；
+    - 空集 = 分析器明确说了"没有非人角色"→ **不要再猜**，否则「黑牛」这种人类绰号
+      又会被关键词表误伤（既有测试抓过这个假阳性）。
+    两种写法都读：字段经过某些链路可能被 camel 化。
+    """
+    a = analysis or {}
+    for key in ("animal_characters", "animalCharacters"):
+        if key in a:
+            v = a.get(key)
+            if isinstance(v, (list, tuple, set)):
+                return {str(x).strip() for x in v if str(x).strip()}
+            return set()  # 字段在但形状异常 → 当作"没有动物"，不去猜
+    return None
+
+
 def _split_characters(seg: dict, analysis: dict | None = None) -> tuple[list[str], list[str]]:
-    """把本镜角色拆成（人物, 动物/灵兽）。"""
+    """把本镜角色拆成（人物, 动物/灵兽）。
+
+    **优先用 analyzer 给的结构化判断**（`animal_characters`），它不挑名字怎么写 ——
+    关键词表认不出的「饕餮」「麒麟」也能正确归到动物；老数据没有该字段时才退回猜。
+    """
     card = (analysis or {}).get("characters") or {}
+    declared = _animal_names_from_analysis(analysis)
     kept = _mentioned_characters(seg)
-    animals = [n for n in kept if _is_animal(n, card.get(n, ""))]
-    humans = [n for n in kept if not _is_animal(n, card.get(n, ""))]
-    return humans, animals
+
+    def is_animal(n: str) -> bool:
+        if declared is not None:
+            return n in declared
+        return _is_animal(n, card.get(n, ""))
+
+    return [n for n in kept if not is_animal(n)], [n for n in kept if is_animal(n)]
 
 
 def _animal_brief(names: list[str], analysis: dict | None = None) -> str:

@@ -190,6 +190,40 @@ def test_只剩拍脸指令时回落到默认镜头():
     assert "中景固定" in p
 
 
+def test_结构化字段认得出关键词表漏掉的灵兽():
+    """★ A 的意义：关键词表永远认不出「饕餮」「麒麟」这类名字，结构化字段能。"""
+    analysis = {
+        "characters": {"李寻": "少年，短打", "饕餮": "巨口獠牙的上古凶兽"},
+        "animal_characters": ["饕餮"],
+    }
+    p = compose_image_prompt(
+        seg("李寻与饕餮对峙", characters=("李寻", "饕餮")), "3D 写实国漫", analysis
+    )
+    assert "饕餮" not in _anchor(p)
+    assert "饕餮" in p.split("[场景]")[1].split("；")[0]
+
+
+def test_结构化字段说不是动物就绝不猜():
+    """「黑牛」是壮汉：分析器明确没列他 → 必须留在角色锚（关键词表会误伤）。"""
+    analysis = {"characters": {"黑牛": "中年壮汉，络腮胡，戴斗笠"}, "animal_characters": []}
+    p = compose_image_prompt(seg("黑牛握刀而立", characters=("黑牛",)), "3D 写实国漫", analysis)
+    assert "黑牛" in _anchor(p)
+
+
+def test_没有结构化字段时退回关键词猜():
+    """老分析结果（没这个字段）仍要能用 —— 此时才走词表。"""
+    old = {"characters": {"大黑牛": "通体漆黑的灵兽牛，左角已断"}}
+    p = compose_image_prompt(seg("黑牛反刍保下大米", characters=("大黑牛",)), "3D 写实国漫", old)
+    assert "大黑牛" not in _anchor(p)
+
+
+def test_字段被camel化也能读到():
+    analysis = {"characters": {"饕餮": "凶兽"}, "animalCharacters": ["饕餮"]}
+    assert "饕餮" not in _anchor(
+        compose_image_prompt(seg("饕餮扑来", characters=("饕餮",)), "3D 写实国漫", analysis)
+    )
+
+
 def test_六段结构与红线不受影响():
     prompt = compose_image_prompt(seg("陈浔握紧开山斧"), "3D 写实国漫", ANALYSIS)
     for block in ("[角色锚]", "[主体动作]", "[场景]", "[镜头]", "[风格]"):

@@ -132,6 +132,9 @@ async def preprocess_novel(
     return {
         "novelSummary": analysis.get("summary", ""),
         "characters": analysis.get("characters", {}),
+        # analyzer 的结构化判断：哪些角色是动物/灵兽（composer 靠它决定角色锚里放谁）。
+        # 这里不带上，落库的 analysis_json 就会缺这个字段，后续读库重算只能退回关键词猜。
+        "animalCharacters": analysis.get("animal_characters", []),
         "scenes": analysis.get("scenes", []),
         "segments": raw_segments,
         "totalSegments": len(raw_segments),
