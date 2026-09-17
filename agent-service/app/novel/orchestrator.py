@@ -132,9 +132,13 @@ async def preprocess_novel(
     return {
         "novelSummary": analysis.get("summary", ""),
         "characters": analysis.get("characters", {}),
-        # analyzer 的结构化判断：哪些角色是动物/灵兽（composer 靠它决定角色锚里放谁）。
-        # 这里不带上，落库的 analysis_json 就会缺这个字段，后续读库重算只能退回关键词猜。
-        "animalCharacters": analysis.get("animal_characters", []),
+        **({"animalCharacters": analysis["animal_characters"]}
+           if "animal_characters" in analysis else {}),
+        # ↑ 只有 analyzer **真的给了**这个判断才带上（camelCase 形态）。
+        #   漏填时务必**整个键都不写**：写成 `[]` 会被 composer 当成「分析器明确说没有非人角色」，
+        #   于是关键词兜底被关掉 —— 与「字段不存在 → 退回关键词猜」是两回事。
+        #   这个载荷会落进 Java 的 analysis_json，以后读库重算提示词时同样依赖这个区别。
+        #   带了它，读库重算才不用退回关键词猜（关键词表认不出「饕餮」「麒麟」）。
         "scenes": analysis.get("scenes", []),
         "segments": raw_segments,
         "totalSegments": len(raw_segments),

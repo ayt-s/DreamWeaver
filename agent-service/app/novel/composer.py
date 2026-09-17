@@ -44,8 +44,18 @@ def _char_aliases(name: str) -> tuple[str, ...]:
     return (name, name[-2:])
 
 
+# 裁剪时参与匹配的分镜文本字段。
+#
+# ★ 必须**含 camera**：镜头段会点名角色（「全景，王二站在门口」）。只扫 plot+scene 时，
+#   名字只写在镜头里的角色会被静默踢出角色锚，而角色锚是面部一致性的唯一来源 ——
+#   这是「本镜确实出现却没锁定长相」的收窄，比多画一个更难发现。
+# ★ 刻意**不含** imagePrompt / videoPrompt：编排器先拼 imagePrompt、紧接着拼 videoPrompt，
+#   把已生成的提示词也扫进来会让第二次拼装「自证命中」→ 角色锚退回全给，两段提示词口径不一致。
+_SEG_TEXT_FIELDS = ("title", "plot", "scene", "camera", "mood", "angle", "movement")
+
+
 def _mentioned_characters(seg: dict) -> list[str]:
-    """本镜 [主体动作] + [场景] 里**真正被提到**的角色。
+    """本镜**真正被提到**的角色。
 
     ★ 为什么必须按镜裁剪：`[角色锚]` 里列了谁，agnès 就把谁都画出来 —— 而且
     「大黑牛」会被画成**两头**。2026-09-17 实测第一章 6 镜 18 张图无一例外，
@@ -57,7 +67,7 @@ def _mentioned_characters(seg: dict) -> list[str]:
     names = seg.get("characters") or []
     if not names:
         return []
-    text = f"{seg.get('plot', '')} {seg.get('scene', '')}"
+    text = " ".join(str(seg.get(f) or "") for f in _SEG_TEXT_FIELDS)
     hit = [n for n in names if any(a and a in text for a in _char_aliases(n))]
     return hit or list(names)
 

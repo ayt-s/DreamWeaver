@@ -5,7 +5,11 @@
 「一人一牛」的那镜也是两头。根因是 storyboarder 给每镜都分配了全部角色，
 角色锚照单全收 = 每镜都在点单。
 """
-from app.novel.composer import _mentioned_characters, compose_image_prompt
+from app.novel.composer import (
+    _mentioned_characters,
+    compose_image_prompt,
+    compose_video_prompt,
+)
 
 ANALYSIS = {
     "characters": {
@@ -230,3 +234,56 @@ def test_六段结构与红线不受影响():
         assert block in prompt
     assert "严禁面部特写" in prompt
     assert "无文字乱码" in prompt
+
+
+# === 裁剪口径的收窄修复（2026-09-17 复查发现） ===
+
+VIDEO_ANALYSIS = {
+    "characters": {
+        "陈浔": "十七八岁少年，黑色短发，粗布短褂",
+        "王二": "四十岁壮汉，络腮胡，戴斗笠",
+    }
+}
+
+
+def test_名字只写在镜头段的角色也必须锁定长相():
+    """★ 收窄修复：镜头段会点名角色（「全景，王二站在门口」）。
+
+    只扫 plot+scene 时，王二会被静默踢出角色锚 —— 而角色锚是面部一致性的唯一来源，
+    「本镜确实出现却没锁定长相」比多画一个更难发现。
+    """
+    p = compose_image_prompt(
+        {
+            "plot": "陈浔回头，看见那壮汉已站在门口",
+            "scene": "客栈大堂，夜晚，烛火昏黄",
+            "camera": "全景，王二站在门口",
+            "characters": ["陈浔", "王二"],
+            "mood": "暗流",
+        },
+        "国风写实",
+        VIDEO_ANALYSIS,
+    )
+    anchor = _anchor(p)
+    assert "陈浔" in anchor
+    assert "王二" in anchor, "名字出现在镜头段的角色不能被踢出角色锚"
+
+
+def test_全篇都没提到才该踢出角色锚():
+    """另一端：名字在任何字段都没出现 → 仍然裁掉（这是 ① 的本意）。"""
+    p = compose_image_prompt(seg("陈浔独自握紧开山斧"), "3D 写实国漫", ANALYSIS)
+    assert "陈浔" in _anchor(p)
+    assert "大黑牛" not in _anchor(p)
+
+
+def test_视频提示词的角色锚与图片提示词一致():
+    """拼视频提示词时 seg 里已经有 imagePrompt 了。
+
+    如果裁剪把 imagePrompt 也扫进来，第二次拼装会「自证命中」→ 角色锚退回全给，
+    图片与视频两段提示词的口径就不一致了。
+    """
+    s = seg("陈浔独自握紧开山斧")
+    img = compose_image_prompt(s, "3D 写实国漫", ANALYSIS)
+    s["imagePrompt"] = img  # 编排器就是这样先写回再拼视频提示词的
+    vid = compose_video_prompt(s, "3D 写实国漫", ANALYSIS)
+    assert _anchor(vid) == _anchor(img)
+    assert "大黑牛" not in _anchor(vid)

@@ -5,11 +5,14 @@ pydantic_ai 内部会做重试，无需手写 JSON retry 循环。
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from app.utils.retry import with_retry
+
+logger = logging.getLogger(__name__)
 
 
 class NovelAnalysis(BaseModel):
@@ -95,8 +98,23 @@ def _build_agent(model: Any) -> Any:
 
 @with_retry("LLM 分析", preset="llm")
 async def analyze(novel_text: str, model: Any) -> dict:
-    """分析小说（传入前 8000 字），返回 camelCase dict。带重试：wifi 抖动时按 10/30/60s 退避。"""
+    """分析小说（传入前 8000 字），返回 **snake_case** dict（`NovelAnalysis` 的字段名）。
+
+    带重试：wifi 抖动时按 10/30/60s 退避。
+    """
     text_slice = novel_text[:8000]
     agent = _build_agent(model)
     result = await agent.run(text_slice)
-    return result.output.model_dump()
+    out = result.output.model_dump()
+
+    # ★ 漏填 vs 明确填空数组，后果完全不同，必须区分：
+    #   - 「明确说这本书没有非人角色」（模型给了 []）→ composer 信它，关掉关键词兜底；
+    #   - 「模型压根没答」（schema 里该字段**不在 required**，实测可以合法漏填）→ pydantic 用
+    #     default_factory 补成 []，看起来和上一种一模一样 → composer 误以为「没有动物」→
+    #     关键词兜底被关掉 → 大黑牛回到 [角色锚] → **两头牛的 bug 静默复发**。
+    #   `model_fields_set` 能区分二者（实测：漏填时不含该键、填空数组时含），
+    #   所以漏填就把键摘掉，让下游退回关键词兜底。
+    if "animal_characters" not in result.output.model_fields_set:
+        out.pop("animal_characters", None)
+        logger.info("analyzer 未给出 animal_characters（schema 允许漏填）→ 下游退回关键词兜底")
+    return out
