@@ -136,6 +136,41 @@ def test_场景已点名过的动物不再重复追加():
     assert scene.count("黑牛") == 1
 
 
+def test_镜头里的拍脸指令会被删掉_红线优先():
+    """★ 实测：镜头写「特写推近，从火焰快速推至少年惊愕面部」时，出图是整屏大脸 + 竖构图，
+    直接踩「严禁面部特写」红线 —— 模型听了镜头段、没听末尾红线。"""
+    p = compose_image_prompt(
+        {**seg("陈浔突然闻到焦味"), "camera": "特写推近，从火焰快速推至少年惊愕面部，背景烟雾缭绕"},
+        "3D 写实国漫",
+        ANALYSIS,
+    )
+    camera = p.split("[镜头]")[1].split("；")[0]
+    assert "面部" not in camera and "脸" not in camera
+    assert "特写推近" in camera and "背景烟雾缭绕" in camera
+
+
+def test_脸部与面部表情的分句都删():
+    p = compose_image_prompt(
+        {**seg("陈浔握紧开山斧"), "camera": "仰拍缓推，从陈浔脸部推至半身，突出咬牙握斧的面部表情，人物偏左居画面三分线"},
+        "3D 写实国漫",
+        ANALYSIS,
+    )
+    camera = p.split("[镜头]")[1].split("；")[0]
+    assert "脸" not in camera and "表情" not in camera
+    assert "仰拍缓推" in camera and "人物偏左居画面三分线" in camera
+
+
+def test_不含脸部词的镜头原样保留():
+    cam = "中景缓慢横移，从远景山林推向少年，主体居中，前景有野草虚化"
+    p = compose_image_prompt({**seg("陈浔躺坐山坡"), "camera": cam}, "3D 写实国漫", ANALYSIS)
+    assert p.split("[镜头]")[1].split("；")[0].strip() == cam
+
+
+def test_只剩拍脸指令时回落到默认镜头():
+    p = compose_image_prompt({**seg("陈浔握斧"), "camera": "面部大特写"}, "3D 写实国漫", ANALYSIS)
+    assert "中景固定" in p
+
+
 def test_六段结构与红线不受影响():
     prompt = compose_image_prompt(seg("陈浔握紧开山斧"), "3D 写实国漫", ANALYSIS)
     for block in ("[角色锚]", "[主体动作]", "[场景]", "[镜头]", "[风格]"):
