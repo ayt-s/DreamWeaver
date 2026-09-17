@@ -6,6 +6,7 @@ pydantic_ai 内部会做重试，无需手写 JSON retry 循环。
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -96,6 +97,52 @@ def _build_agent(model: Any) -> Any:
     return Agent(model=model, system_prompt=SYSTEM_PROMPT, output_type=NovelAnalysis)
 
 
+# 英文单词（含连字符/撇号），用于清洗中文描述里混进来的杂质。
+# ⚠️ 前置 `(?<![A-Za-z0-9])` 不能省：没有它，「4K」里的 `K`、「3D」里的 `D`
+#    会被当成独立单词删掉，变成「4 超高清，3 写实」（单测当场抓到）。
+_ASCII_WORD_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z][A-Za-z0-9\-']*")
+# 允许保留的英文词：画质/画幅/风格术语，删了反而丢信息。
+_KEEP_ASCII = frozenset({"4k", "8k", "2k", "hd", "3d", "2d", "cg", "ai", "rgb", "hdr"})
+
+
+def _strip_ascii_noise(text: str) -> str:
+    """去掉中文描述里混进来的英文单词，顺手修掉因删除留下的破碎标点/空格。
+
+    ★ 实测（2026-09-17）：角色卡里出现 `左角齐断只剩 stump` —— 这种杂质会一路进
+    锚定图提示词和画面提示词，对中文图像模型是纯噪声。
+    ⚠️ 保留 `4K` / `3D` / `HD` 这类术语（白名单），它们是有效信息。
+    """
+    out = _ASCII_WORD_RE.sub(lambda m: m.group(0) if m.group(0).lower() in _KEEP_ASCII else "", text)
+    out = re.sub(r"[ \t]+(?=[，。、；：！？）)])", "", out)   # 标点前的空格（删词留下的）
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"[，、；]\s*(?=[，、；])", "", out)          # 连续标点
+    out = re.sub(r"([（(])\s*(?=[）)])", r"\1", out)          # 空括号
+    return re.sub(r"^\s*[，、；]|[，、；]\s*$", "", out.strip()).strip()
+
+
+def _sanitize_analysis(out: dict) -> dict:
+    """清洗 LLM 输出里的英文杂质（就地修改并返回）。
+
+    键名也一起洗（角色名里混英文同样会传下去），但**洗成空串时保留原名** ——
+    宁可留一个怪名字，也不能让 characters 的键变空导致下游匹配不上。
+    """
+    chars = out.get("characters")
+    if isinstance(chars, dict):
+        cleaned: dict[str, str] = {}
+        for name, card in chars.items():
+            key = _strip_ascii_noise(str(name)) or str(name)
+            cleaned[key] = _strip_ascii_noise(str(card))
+        out["characters"] = cleaned
+    for key in ("scenes", "props", "animal_characters"):
+        value = out.get(key)
+        if isinstance(value, list):
+            out[key] = [_strip_ascii_noise(str(x)) for x in value]
+    for key in ("visual_style", "tone"):
+        if isinstance(out.get(key), str):
+            out[key] = _strip_ascii_noise(out[key])
+    return out
+
+
 @with_retry("LLM 分析", preset="llm")
 async def analyze(novel_text: str, model: Any) -> dict:
     """分析小说（传入前 8000 字），返回 **snake_case** dict（`NovelAnalysis` 的字段名）。
@@ -117,4 +164,7 @@ async def analyze(novel_text: str, model: Any) -> dict:
     if "animal_characters" not in result.output.model_fields_set:
         out.pop("animal_characters", None)
         logger.info("analyzer 未给出 animal_characters（schema 允许漏填）→ 下游退回关键词兜底")
-    return out
+
+    # 英文杂质清洗（模型偶尔漏出「只剩 stump」这类词，会一路进提示词）
+    # ⚠️ 放在摘键之后：清洗只动已存在的键，不会把摘掉的字段又变回来。
+    return _sanitize_analysis(out)

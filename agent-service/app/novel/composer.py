@@ -57,6 +57,11 @@ def _char_aliases(name: str) -> tuple[str, ...]:
 _SEG_TEXT_FIELDS = ("title", "plot", "scene", "camera", "mood", "angle", "movement")
 
 
+def _seg_text(seg: dict) -> str:
+    """本镜叙述字段拼成的文本 —— 裁剪与道具匹配**共用同一份口径**。"""
+    return " ".join(str(seg.get(f) or "") for f in _SEG_TEXT_FIELDS)
+
+
 def _mentioned_characters(seg: dict) -> list[str]:
     """本镜**真正被提到**的角色。
 
@@ -70,7 +75,7 @@ def _mentioned_characters(seg: dict) -> list[str]:
     names = seg.get("characters") or []
     if not names:
         return []
-    text = " ".join(str(seg.get(f) or "") for f in _SEG_TEXT_FIELDS)
+    text = _seg_text(seg)
     hit = [n for n in names if any(a and a in text for a in _char_aliases(n))]
     return hit or list(names)
 
@@ -286,6 +291,40 @@ def _sanitize_camera(camera: str, has_human: bool = True) -> str:
     return s
 
 
+def _prop_aliases(prop: str) -> tuple[str, ...]:
+    """道具的可匹配写法：去掉括号注释后的**全部后缀（≥2 字，长的在前）**。
+
+    中文名词「头在后」——`锈迹斑斑的开山斧` 的核心是 `开山斧`，
+    所以取后缀而不是前缀：`锈迹斑斑的开山斧` → `开山斧` → `山斧`。
+    ⚠️ 局限性（有意为之）：**不做同义/释义匹配** —— 道具写「开山斧」而原文写「斧头」时不命中。
+    关键词匹配到此为止，再往上就是 LLM 的活，不该塞进确定性拼装。
+    """
+    core = re.split(r"[（(]", (prop or "").strip())[0].strip()
+    if not core:
+        return ()
+    return tuple(core[i:] for i in range(max(0, len(core) - 2) + 1))
+
+
+def _props_brief(seg: dict, analysis: dict | None = None, limit: int = 3) -> str:
+    """本镜**真正提到**的关键道具（analysis.props），逗号分隔。
+
+    ★ 为什么接上它：`props` 此前是**死字段** —— analyzer 让模型产出、全项目没有任何消费方，
+    白花输出 token。道具是画面信息（「锈迹斑斑的开山斧」），补进 [场景] 有助忠实度。
+    ⚠️ 只在**本镜文本提到**时才带（同 P0-3 / 角色锚裁剪同一口径）：
+    agnès 是「照单执行」的，整片塞一遍会让每个镜头都出现同一件道具。
+    """
+    props = (analysis or {}).get("props") or []
+    if not isinstance(props, list):
+        return ""
+    text = _seg_text(seg)
+    hits = [
+        str(p).strip()
+        for p in props
+        if str(p).strip() and any(a and a in text for a in _prop_aliases(str(p)))
+    ]
+    return "，".join(hits[:limit])
+
+
 def compose_image_prompt(seg: dict, style: str, analysis: dict | None = None) -> str:
     """拼一段图像生成 prompt（六段式，按优先级从高到低排列）。
 
@@ -310,6 +349,10 @@ def compose_image_prompt(seg: dict, style: str, analysis: dict | None = None) ->
             brief = _animal_brief(todo, analysis)
             # 用「，」拼接：`；` 是本文件的分段块分隔符，用它会多切出一段、也破坏提示词结构。
             scene = f"{scene}，{brief}" if scene else brief
+    # 关键道具（analysis.props）：此前是死字段，现在只把**本镜提到**的补进 [场景]
+    props_brief = _props_brief(seg, analysis)
+    if props_brief:
+        scene = f"{scene}，{props_brief}" if scene else props_brief
     # 有人物的镜头才降「特写」档：纯景物的特写（米袋、斧头）不违反红线
     camera = _ensure_camera_terms(_sanitize_camera(seg.get("camera", ""), bool(humans)))
     characters = _format_characters(seg, analysis)

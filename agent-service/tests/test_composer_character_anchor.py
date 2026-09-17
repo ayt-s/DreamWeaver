@@ -353,3 +353,52 @@ def test_造型重复不影响六段结构与动物分流():
     for block in ("[角色锚]", "[主体动作]", "[场景]", "[镜头]", "[风格]"):
         assert block in p
     assert "大黑牛" not in _anchor(p), "动物仍不进角色锚"
+
+
+# === 关键道具接线（P1-5：props 此前是死字段） ===
+
+PROP_ANALYSIS = {
+    "characters": {"陈浔": "十七八岁少年，常穿粗布短衫"},
+    "props": ["锈迹斑斑的开山斧（斧柄缠麻绳）", "鼓鼓的米袋（粗麻布）"],
+}
+
+
+def test_本镜提到的道具补进场景段():
+    """道具是画面信息；此前 analyzer 产出它、却没有任何消费方（白花 token）。"""
+    p = compose_image_prompt(
+        seg("陈浔握紧开山斧劈向枯木", scene="山林，黄昏"), "3D 写实国漫", PROP_ANALYSIS
+    )
+    scene = p.split("[场景]")[1].split("；")[0]
+    assert "开山斧" in scene
+    assert "米袋" not in scene, "本镜没提的道具不许整片塞进来"
+
+
+def test_道具匹配是字面后缀_不做同义_已知局限():
+    """**已知局限**：道具匹配是字面后缀匹配，「斧头」不会命中「开山斧」。
+
+    钉住它是为了说明这是有意为之：再强的匹配要靠 LLM，不该塞进确定性拼装。
+    真觉得需要同义匹配时，改动点在这里（_prop_aliases），别偷偷加词表。
+    """
+    p = compose_image_prompt(
+        seg("陈浔扛着斧头走过山路", scene="山路，清晨"), "3D 写实国漫", PROP_ANALYSIS
+    )
+    assert "开山斧" not in p.split("[场景]")[1].split("；")[0]
+
+    # 对照：写成道具表里的核心名词就能命中（这才是匹配口径）
+    p2 = compose_image_prompt(
+        seg("陈浔扛着开山斧走过山路", scene="山路，清晨"), "3D 写实国漫", PROP_ANALYSIS
+    )
+    assert "开山斧" in p2.split("[场景]")[1].split("；")[0]
+
+
+def test_没有任何道具命中时场景段不变():
+    p = compose_image_prompt(seg("陈浔躺坐山坡"), "3D 写实国漫", PROP_ANALYSIS)
+    scene = p.split("[场景]")[1].split("；")[0]
+    assert "开山斧" not in scene and "米袋" not in scene
+    assert scene.strip() == "山洞洞口，黄昏时分"
+
+
+def test_props形状异常不炸():
+    bad = {"characters": {"陈浔": "少年"}, "props": "开山斧"}
+    p = compose_image_prompt(seg("陈浔握斧"), "3D 写实国漫", bad)
+    assert "[场景]" in p
