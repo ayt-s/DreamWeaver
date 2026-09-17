@@ -295,7 +295,13 @@ async def _run_session(state: CreativeSessionState) -> None:
         #    硬杀反而能恢复」（硬杀不执行 finally），与设计意图正好相反。
         abort.clear(state["session_id"])
         if settled:
-            await session_store.delete_session(state["session_id"])
+            # 跑到终态：退出「活跃索引」+ 清 progress，但**保留 state 快照**（2026-09-17 改）。
+            # 原先连快照一起删，导致任务一完成 `GET /v1/tasks/{sid}` 立刻 404 ——
+            # 前端轨迹面板拿不到 trace、逐镜质检明细一并消失，而「哪一镜为什么没通过」
+            # 恰恰是完成态最需要看的信息。
+            # 安全前提：启动恢复按 `dw:agent:active` 集合筛（不是按有没有快照），
+            # 这里已把 sid 移出，重启不会把它当活跃会话重跑。快照靠 TTL 自然过期。
+            await session_store.settle_session(state["session_id"])
 
 
 async def _heartbeat_loop(session_id: str) -> None:
@@ -587,13 +593,13 @@ async def get_task(session_id: str) -> ApiResponse:
 
     **内存未命中时回落 Redis 快照**（F1）。
 
-    ⚠️ 能触发这条回落的场景比第一版注释写的窄，别误会：
-    - 「**正常跑完**」的任务，`_run_session` 的 finally 在 `settled=True` 时会
-      `delete_session()` **主动删掉快照** → 1 小时后内存也释放 → 查它是 404，
-      而且**这是正确行为**（数据确实没了，F1 也变不出东西）
-    - 「**被杀 / 被取消**」的会话才会保留快照（`settled=False`，给 recovery 用）。
-      这类快照的 TTL 长于内存保留期，且**进程重启后 `_sessions` 里从来没有它** ——
-      这才是 F1 真正修好的场景：原先一律 404，现在能查到。
+    能触发这条回落的场景：
+
+    - 「**正常跑完**」的任务：快照**保留到 TTL**（2026-09-17 起，`settle_session`
+      只退出活跃索引、不再删快照）→ 完成后的 `trace` 与逐镜质检明细**仍可查**，
+      这正是前端轨迹面板需要的东西。语义变更原因见 `SessionStore.settle_session`。
+    - 「**被杀 / 被取消**」的会话：快照同样保留（给 recovery 用），
+      且**进程重启后 `_sessions` 里从来没有它** —— 这是 F1 最初修好的场景。
 
     命中快照时顺手回填内存：前端 `TrajectoryPanel` 每 3s 轮询，不回填就会反复打 Redis。
     """

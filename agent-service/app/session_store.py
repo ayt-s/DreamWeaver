@@ -137,6 +137,35 @@ class SessionStore:
         except Exception as exc:
             logger.debug("delete_session 失败（已降级）: %s", exc)
 
+    async def settle_session(self, sid: str) -> None:
+        """**正常跑到终态**后的收尾：SREM active + DEL progress，但**保留 state 快照**。
+
+        ## 为什么不连快照一起删（2026-09-17 改，真实任务实测驱动）
+
+        原先终态一并 `delete_session`，后果是任务**一完成** `GET /v1/tasks/{sid}`
+        立刻 404：前端「链路轨迹」面板拿不到 `trace`，逐镜质检明细也一并消失
+        （Java 侧只有 `notify_final` 写的那一句汇总）。而「哪一镜为什么没通过」
+        恰恰是**完成态**最需要看的信息 —— 正在跑的任务反而看得到，完成的看不到。
+
+        ## 为什么保留快照是安全的
+
+        启动恢复是按 `dw:agent:active` 这个**独立集合**筛的（`recover_active_sessions`
+        → `list_active`），不是按「有没有快照」。这里 SREM 掉 active 之后，
+        重启不会把它当活跃会话重跑（那会重复烧额度 + 重复回调）。
+        快照靠自身 TTL 自然过期（`session_snapshot_ttl_s`，默认 24h）。
+
+        ⚠️ 别把它用在「取消排队」那条路径上（那里要连快照一起清，否则重启会把
+        用户已取消的任务捡回来跑）—— 那条继续用 `delete_session`。
+        """
+        client = self._get_client()
+        if client is None or not sid:
+            return
+        try:
+            await client.delete(PROGRESS_KEY.format(sid=sid))
+            await client.srem(ACTIVE_KEY, sid)
+        except Exception as exc:
+            logger.debug("settle_session 失败（已降级）: %s", exc)
+
     # ------------------------------------------------------------ active 集合
 
     async def add_active(self, sid: str) -> None:
@@ -316,6 +345,11 @@ async def load_state(sid: str) -> dict | None:
 
 async def delete_session(sid: str) -> None:
     await store.delete_session(sid)
+
+
+async def settle_session(sid: str) -> None:
+    """终态收尾但保留快照（见 `SessionStore.settle_session` 的说明）。"""
+    await store.settle_session(sid)
 
 
 async def add_active(sid: str) -> None:

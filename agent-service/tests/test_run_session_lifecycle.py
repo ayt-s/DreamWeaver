@@ -8,6 +8,12 @@ P0-1  `_run_session` 的 `finally` 原先无条件清 Redis 快照。
       把快照删掉 → 下次启动无法恢复。而硬杀（finally 不执行）反而能保留。
       结论是「优雅停止丢会话、硬杀能恢复」，与设计意图正好相反。
 
+      **2026-09-17 再改一层**：终态（正常完成 / 节点失败）原先连快照一起删，
+      导致任务**一完成** `GET /v1/tasks/{sid}` 立刻 404 —— 前端轨迹面板拿不到
+      `trace`、逐镜质检明细一并消失，而「哪一镜为什么没通过」恰恰是完成态最需要
+      看的。现在终态走 `settle_session`：**退出活跃索引但保留快照**（靠 TTL 过期），
+      既让完成的明细可查，又不会被启动恢复重跑（恢复按 `dw:agent:active` 筛）。
+
 P0-2  `image_generator_node` 的幂等守卫早退分支无条件写 `status=COMPLETED`。
       对标准视频模式（text_video/image_video），`video_generator` 还在后面，
       却先落了一个终态 → 快照出现「假终态」→ 进程死在视频生成期间时，
@@ -37,10 +43,14 @@ async def test_cancel_keeps_snapshot(monkeypatch):
     import app.main as main_mod
 
     deleted: list[str] = []
+    settled: list[str] = []
     started = asyncio.Event()
 
     async def fake_delete(sid):
         deleted.append(sid)
+
+    async def fake_settle(sid):
+        settled.append(sid)
 
     async def fake_save(sid, state):  # noqa: ARG001
         return None
@@ -51,6 +61,7 @@ async def test_cancel_keeps_snapshot(monkeypatch):
         yield {}  # pragma: no cover - 永不到达
 
     monkeypatch.setattr(main_mod.session_store, "delete_session", fake_delete)
+    monkeypatch.setattr(main_mod.session_store, "settle_session", fake_settle)
     monkeypatch.setattr(main_mod.session_store, "save_state", fake_save)
     monkeypatch.setattr(main_mod, "compiled_graph", _FakeGraph(never_ending))
 
@@ -61,16 +72,26 @@ async def test_cancel_keeps_snapshot(monkeypatch):
         await task
 
     assert deleted == [], "取消路径不得清快照（否则优雅停止会丢会话）"
+    assert settled == [], "取消的会话必须留在活跃索引里，否则不会被恢复"
 
 
-async def test_normal_completion_clears_snapshot(monkeypatch):
-    """正常跑完 = 终态 → 清快照（无需恢复）。"""
+async def test_normal_completion_settles_without_deleting_snapshot(monkeypatch):
+    """正常跑完 = 终态 → `settle_session`（退出活跃索引但**保留快照**）。
+
+    快照要留着：完成后仍要能查到 `trace` 与逐镜质检明细（2026-09-17 实测驱动，
+    原先任务一完成 `GET /v1/tasks/{sid}` 就 404，前端轨迹面板全空）。
+    退出活跃索引则由 `test_settled_session_is_not_recovered` 保证不被重启重跑。
+    """
     import app.main as main_mod
 
     deleted: list[str] = []
+    settled: list[str] = []
 
     async def fake_delete(sid):
         deleted.append(sid)
+
+    async def fake_settle(sid):
+        settled.append(sid)
 
     async def fake_save(sid, state):  # noqa: ARG001
         return None
@@ -79,22 +100,29 @@ async def test_normal_completion_clears_snapshot(monkeypatch):
         yield {"session_id": "done-001", "status": TaskStatus.COMPLETED}
 
     monkeypatch.setattr(main_mod.session_store, "delete_session", fake_delete)
+    monkeypatch.setattr(main_mod.session_store, "settle_session", fake_settle)
     monkeypatch.setattr(main_mod.session_store, "save_state", fake_save)
     monkeypatch.setattr(main_mod, "compiled_graph", _FakeGraph(one_frame))
 
     await main_mod._run_session({"session_id": "done-001"})
 
-    assert deleted == ["done-001"], "正常完成应清快照"
+    assert settled == ["done-001"], "正常完成应走 settle_session"
+    assert deleted == [], \
+        "终态**不再**删快照 —— 删了的话完成后的轨迹与逐镜质检明细就查不到了"
 
 
-async def test_node_failure_clears_snapshot(monkeypatch):
-    """节点异常 → 已按 failed 落定（终态）→ 同样清快照，不应被误当成可恢复。"""
+async def test_node_failure_settles_without_deleting_snapshot(monkeypatch):
+    """节点异常 → 已按 failed 落定（终态）→ 同样走 settle，不应被误当成可恢复。"""
     import app.main as main_mod
 
     deleted: list[str] = []
+    settled: list[str] = []
 
     async def fake_delete(sid):
         deleted.append(sid)
+
+    async def fake_settle(sid):
+        settled.append(sid)
 
     async def fake_save(sid, state):  # noqa: ARG001
         return None
@@ -104,12 +132,14 @@ async def test_node_failure_clears_snapshot(monkeypatch):
         yield {}  # pragma: no cover
 
     monkeypatch.setattr(main_mod.session_store, "delete_session", fake_delete)
+    monkeypatch.setattr(main_mod.session_store, "settle_session", fake_settle)
     monkeypatch.setattr(main_mod.session_store, "save_state", fake_save)
     monkeypatch.setattr(main_mod, "compiled_graph", _FakeGraph(boom))
 
     await main_mod._run_session({"session_id": "fail-001"})
 
-    assert deleted == ["fail-001"], "失败落定后应清快照"
+    assert settled == ["fail-001"], "失败落定同样是终态 → 走 settle"
+    assert deleted == [], "失败任务的快照要留着（失败原因与逐镜质检正是要回看的）"
 
 
 # ------------------------------------------------- P0-2 幂等守卫的状态语义
