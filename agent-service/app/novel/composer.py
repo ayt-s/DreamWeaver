@@ -15,7 +15,10 @@
 """
 from __future__ import annotations
 
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 # 全局红线，追加到每个 prompt 末尾（agnès 会优先识别末尾约束）
 _IMAGE_RED_LINES = (
@@ -153,7 +156,21 @@ def _split_characters(seg: dict, analysis: dict | None = None) -> tuple[list[str
             return n in declared
         return _is_animal(n, card.get(n, ""))
 
-    return [n for n in kept if not is_animal(n)], [n for n in kept if is_animal(n)]
+    humans = [n for n in kept if not is_animal(n)]
+    animals = [n for n in kept if is_animal(n)]
+
+    # 可观测性（P1-6）：模型明确答了「这本书没有非人角色」，但关键词判出动物时记一笔。
+    # ⚠️ **只记日志、不改行为** —— 「空数组=权威」是为了保护「黑牛其实是个壮汉」那一端
+    #    （只按名字判会把人类绰号误伤出角色锚）。两种失败各有代价，这里选择信模型 + 留痕。
+    if declared is not None and not declared and humans:
+        suspect = [n for n in humans if _is_animal(n, card.get(n, ""))]
+        if suspect:
+            logger.warning(
+                "analyzer 说本书没有非人角色，但关键词判出动物：%s —— 按其答案执行（未改行为），"
+                "若这批图出现「每镜两头」再看这里",
+                suspect,
+            )
+    return humans, animals
 
 
 def _animal_brief(names: list[str], analysis: dict | None = None) -> str:
@@ -267,8 +284,14 @@ _SUBJECT_COUNT_RE = re.compile(
 # 出图就是整屏一张大脸 + 竖构图，直接踩红线。红线在末尾、权重高，所以删镜头里的拍脸指令。
 _FACE_SEGMENT_RE = re.compile(r"[^，；]*(?:面部|脸部|面孔|五官|表情|脸)[^，；]*")
 
-# 景别里的「特写」档：有人物的镜头里会直接推到脸上（见 _sanitize_camera 的注释）
-_CLOSEUP_RE = re.compile(r"(?:大特写|近景特写|特写|怼脸)")
+# 景别里的「近距离」档：有人物的镜头里会直接推到脸上（见 _sanitize_camera 的注释）。
+# ★ 2026-09-17 扩到含「近景 / 中近景」：只降「特写」档实测仍有 1/3 出整屏大脸
+#   （ch1d 对照图下排第 2 格），单人物镜头落到近景档时必然以脸为主体。
+#   ⚠️ 备选更靠前的「中近景」必须排在「近景」**前面** —— 否则 `近景` 会先把
+#   「中近景」的中段吃掉，变成「中中景」（既有测试当场抓到过）。
+#   **代价是镜头语言变单调**（人物镜头最高只到中景）：这是审美取舍，
+#   要恢复近景就从这条正则里去掉对应档位 —— 改动点唯一。
+_CLOSEUP_RE = re.compile(r"(?:大特写|近景特写|特写|中近景|近景|怼脸)")
 
 
 def _sanitize_camera(camera: str, has_human: bool = True) -> str:

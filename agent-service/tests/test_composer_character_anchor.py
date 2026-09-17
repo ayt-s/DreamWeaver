@@ -109,7 +109,10 @@ def test_镜头里的人数措辞会被删掉():
     assert "双人" not in camera and "并排" not in camera
     # 专业镜头术语不能连带被删
     assert "广角长镜头缓慢横移" in camera
-    assert "中近景" in camera
+    # ★ 「中近景」属于近距离档 → 有人物的镜头里一起压到中景（P0-3）。
+    #   此处断言的是**新契约**：既不能被拆成「中中景」，也不能原样留下。
+    assert "中近景" not in camera
+    assert "中景" in camera
     assert "三分线" in camera
 
 
@@ -402,3 +405,49 @@ def test_props形状异常不炸():
     bad = {"characters": {"陈浔": "少年"}, "props": "开山斧"}
     p = compose_image_prompt(seg("陈浔握斧"), "3D 写实国漫", bad)
     assert "[场景]" in p
+
+
+# === 近景降档（P0-3 保守档）与 animal 告警（P1-6） ===
+
+
+def test_有人物的近景也降一档():
+    """★ ch1d 对照实测：只降「特写」档仍有 1/3 出整屏大脸 —— 单人物镜头落到「近景」时
+
+    必然以脸为主体。代价是镜头语言变单调（审美取舍，改动点就是 _CLOSEUP_RE）。
+    """
+    p = compose_image_prompt({**seg("陈浔握紧开山斧"), "camera": "近景推近"}, "3D 写实国漫", ANALYSIS)
+    camera = p.split("[镜头]")[1].split("；")[0]
+    assert "近景" not in camera
+    assert "中景" in camera
+
+
+def test_纯景物的近景不降档():
+    """没有人物就没有拍脸风险：米袋/斧头的近景是有效镜头语言，不该一起压平。"""
+    p = compose_image_prompt(
+        {**seg("米袋近景", characters=()), "camera": "近景"}, "3D 写实国漫", ANALYSIS
+    )
+    assert "近景" in p.split("[镜头]")[1].split("；")[0]
+
+
+def test_analyzer说没有动物但关键词判出动物时记日志(caplog):
+    """P1-6：**只留痕、不改行为** —— 空数组权威是为了保护「黑牛是壮汉」那一端。"""
+    caplog.set_level("WARNING", logger="app.novel.composer")
+    analysis = {
+        "characters": {"大黑牛": "通体漆黑的灵兽牛，左角齐根断去"},
+        "animal_characters": [],
+    }
+    p = compose_image_prompt(
+        seg("黑牛反刍保下大米", characters=("大黑牛",)), "3D 写实国漫", analysis
+    )
+    # 行为不变：仍按模型的答案执行（牛留在角色锚里）
+    assert "大黑牛" in _anchor(p)
+    assert "关键词判出动物" in caplog.text, "应当留下可检索的日志"
+    assert "大黑牛" in caplog.text, "日志里要能看出是哪个角色"
+
+
+def test_字段缺失走关键词_不记这种日志(caplog):
+    """老数据（没这个字段）本来就该走关键词兜底，不该刷告警。"""
+    caplog.set_level("WARNING", logger="app.novel.composer")
+    old = {"characters": {"大黑牛": "通体漆黑的灵兽牛，左角齐根断去"}}
+    compose_image_prompt(seg("黑牛反刍保下大米", characters=("大黑牛",)), "3D 写实国漫", old)
+    assert not [r for r in caplog.records if "关键词判出动物" in str(r.msg)]
