@@ -59,11 +59,24 @@ def enabled() -> bool:
     return bool(os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY"))
 
 
-def traced(name: str, run_type: str = "llm"):
+#: 所有 run 都带的标签：在 LangSmith 里一眼筛出「这个项目、这个服务」的调用。
+#: 参考同机 `YanQue-AI` 的做法 —— 它用 run_name/tags/metadata 把图调用与其它库区分开，
+#: 否则列表里全是笼统的节点名，认不出哪条属于谁。
+DEFAULT_TAGS = ["dreamweaver", "agent-service"]
+
+
+def traced(name: str, run_type: str = "llm", tags: list[str] | None = None):
     """把 LLM 出口函数挂到 LangSmith 上（关闭时直通）。
 
     用法：`@traced("agnes.chat")` 加在 `gateway/agnes.py` 的出站方法上。
+
+    `tags` 不传时**自动**用 run 名的后缀（`agnes.chat` → `chat`）：每个出口天然可筛
+    （在 LangSmith 里按 `chat` / `submit_video` 过滤），不必在每个调用点手写一遍
+    —— 手写的地方多了必然漏。
     """
+    auto_tag = [name.rsplit(".", 1)[-1]] if "." in name else []
+    all_tags = [*DEFAULT_TAGS, *auto_tag, *(tags or [])]
+
     def decorator(fn):
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
@@ -72,7 +85,7 @@ def traced(name: str, run_type: str = "llm"):
             key = f"{getattr(fn, '__module__', '?')}.{getattr(fn, '__qualname__', name)}"
             wrapped = _wrapped.get(key)
             if wrapped is None:
-                wrapped = _try_wrap(fn, name, run_type)
+                wrapped = _try_wrap(fn, name, run_type, all_tags)
                 _wrapped[key] = wrapped
             return await wrapped(*args, **kwargs)
 
@@ -109,7 +122,7 @@ def _warn_bad_key_shape(key: str) -> None:
         )
 
 
-def _try_wrap(fn, name: str, run_type: str):
+def _try_wrap(fn, name: str, run_type: str, tags: list[str] | None = None):
     """惰性包一层 `langsmith.traceable`；包不上就退回原函数。
 
     ⚠️ 为什么还要 `tracing_context(enabled=True)`（2026-09-17 实测，代价是一整轮排查）：
@@ -136,6 +149,7 @@ def _try_wrap(fn, name: str, run_type: str):
         wrapped = traceable(
             name=name, run_type=run_type, client=client,
             project_name=settings.langsmith_project or None,
+            tags=list(tags or []),
         )(fn)
     except Exception as exc:  # noqa: BLE001 —— 可观测性不能影响主流程
         if not _warned:

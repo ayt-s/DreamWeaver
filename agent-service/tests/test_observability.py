@@ -154,6 +154,43 @@ async def test_on_path_wraps_once_then_reuses(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_tags_pass_through_with_auto_derived_suffix(monkeypatch):
+    """标签：默认两个 + 从 run 名自动派生的后缀 + 调用点显式给的。
+
+    参考同机 `YanQue-AI`：它用 tags/run_name 把调用归类，列表里才认得出哪条属于谁。
+    这里「自动派生」是关键 —— 否则每个调用点都要手写一遍，加新出口时必然漏。
+    """
+    import langsmith
+
+    monkeypatch.setattr(settings, "langsmith_tracing", True, raising=False)
+    monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_fake")
+    calls: list = []
+    monkeypatch.setattr(langsmith, "traceable", _spy_traceable(calls))
+    observability.reset_cache()
+
+    @observability.traced("agnes.chat")
+    async def auto_tagged() -> str:
+        return "ok"
+
+    assert await auto_tagged() == "ok"
+    tags = calls[0]["kwargs"]["tags"]
+    assert "dreamweaver" in tags and "agent-service" in tags, "默认标签必须都在"
+    assert "chat" in tags, "应从 run 名自动派生 chat（agnes.chat → chat）"
+
+    calls.clear()
+    observability.reset_cache()
+
+    @observability.traced("agnes.submit_video", tags=["video"])
+    async def explicitly_tagged() -> str:
+        return "ok"
+
+    assert await explicitly_tagged() == "ok"
+    tags2 = calls[0]["kwargs"]["tags"]
+    assert "submit_video" in tags2, "自动派生不能因为显式传了 tags 就丢"
+    assert "video" in tags2, "调用点显式给的标签也要在"
+
+
+@pytest.mark.asyncio
 async def test_wrap_failure_degrades_to_direct_call(monkeypatch, caplog):
     """★ 包装失败（SDK 版本不符 / 端点畸形 / 客户端初始化炸）→ 直通，不打断主流程。"""
     import langsmith
