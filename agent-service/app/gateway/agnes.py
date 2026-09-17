@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable, TypeVar
 import httpx
 
 from app.config import settings
+from app.utils.observability import traced
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +264,9 @@ class AgnesGateway:
         logger.info("session %s 粘附切换到 provider %s", session_id, provider_name)
 
     # ---------- 文本 ----------
+    # 批次 H：出口挂 LangSmith。默认关闭时直接透传（见 utils/observability.py）。
+    # run_type=llm 让它出现在 LangSmith 的 LLM 视图里（文本模型才是真正的 LLM）
+    @traced("agnes.chat", run_type="llm")
     async def chat(self, prompt: str, model: str | None = None,
                    temperature: float = 0.2, max_tokens: int = 4096,
                    session_id: str | None = None) -> str:
@@ -286,6 +290,8 @@ class AgnesGateway:
         return data["choices"][0]["message"]["content"]
 
     # ---------- 图像 ----------
+    # run_type=tool：图像/视频提交是「工具调用」而非 LLM 补全，放 tool 视图更贴切
+    @traced("agnes.generate_image", run_type="tool")
     async def generate_image(self, prompt: str,
                              model: str | None = None,
                              session_id: str | None = None) -> list[str]:
@@ -304,6 +310,7 @@ class AgnesGateway:
         return urls
 
     # ---------- 视频 ----------
+    @traced("agnes.submit_video", run_type="tool")
     async def submit_video(self, prompt: str, model: str | None = None,
                            seconds: str | None = None,
                            aspect_ratio: str | None = None,
@@ -420,6 +427,7 @@ class AgnesGateway:
             f"{attempts_per_provider} 次重试）：{last_reason}"
         )
 
+    @traced("agnes.query_video", run_type="tool")
     async def query_video(self, video_id: str, model_name: str,
                           mode: str = "text",
                           provider_name: str | None = None) -> dict[str, Any]:
