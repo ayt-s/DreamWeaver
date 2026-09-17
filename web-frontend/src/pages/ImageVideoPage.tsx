@@ -58,8 +58,17 @@ import {
 } from '../api/canvas';
 import { generateText } from '../api/agent';
 import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
+import { createContext, useContext } from 'react';
 import { reorderShotX, sortShots } from '../utils/shotOrder';
-import { MAX_REF_PICTURES, pickUrlsByPrompt } from '../utils/anchors';
+import {
+  augmentPromptWithAnchors,
+  MAX_REF_PICTURES,
+  parseAnchorRefs,
+  pickUrlsByPrompt,
+  serializeAnchorRefs,
+  urlMapOf,
+  type AnchorMap,
+} from '../utils/anchors';
 import {
   CAMERA_ANGLE_OPTIONS,
   CAMERA_MOVE_OPTIONS,
@@ -286,8 +295,21 @@ function TextNodeView({ id, data }: NodeProps<GraphNode>) {
   );
 }
 
+/**
+ * 把锚定图（含描述）传给画布节点组件。
+ *
+ * 节点组件只收 `{id, data}`（React Flow 的契约），而锚定图是**页面级**状态；
+ * 又**不能塞进 `data`**（data 是业务 JSON，会落库、会被序列化 —— 见画布四条硬规则）。
+ * 所以走 context：页面在 `<ReactFlow>` 外层提供，节点里 `useContext` 取。
+ */
+const AnchorsCtx = createContext<{ chars: AnchorMap; scenes: AnchorMap }>({
+  chars: {},
+  scenes: {},
+});
+
 function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
   const { updateNodeData, getNodes, setNodes } = useReactFlow();
+  const anchors = useContext(AnchorsCtx);
   const fileRef = useRef<HTMLInputElement>(null);
   const [generating, setGenerating] = useState(false);
   const [status, setStatus] = useState('');
@@ -330,7 +352,15 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
 
   // 文生图：以本节点 prompt 为提示词生成图片，完成后自动填参考图
   const startTextToImage = async () => {
-    const prompt = (data.prompt || '').trim();
+    // ★ P0-1：把本节点提示词里提到的角色/场景**描述**拼进去。
+    // 首帧才是画面的真正基底（锚定图此前只在视频阶段当参考图），而 agnes 图片接口
+    // **不接受图片输入**（只认 model + prompt，未知字段 400）—— 想让首帧的角色对得上，
+    // 只能靠文字。描述来自生成锚定图时那段设定（见 utils/anchors.ts）。
+    const prompt = augmentPromptWithAnchors(
+      (data.prompt || '').trim(),
+      anchors.chars,
+      anchors.scenes,
+    );
     if (!prompt) {
       setStatus('请先填写提示词');
       return;
@@ -715,8 +745,11 @@ export default function CanvasPage() {
 
   // 锚定图面板 state（角色/场景锚定图，key 是名称，value 是 URL）
   const [anchorPanelOpen, setAnchorPanelOpen] = useState(false);
-  const [anchorCharRefs, setAnchorCharRefs] = useState<Record<string, string>>({});
-  const [anchorSceneRefs, setAnchorSceneRefs] = useState<Record<string, string>>({});
+  // 锚定图状态用 `{url, desc?}`：desc 是生成锚定图时那段设定，**首帧文生图要用它**
+  // （图接口不吃图片输入，只能靠文字）。存取都经 serialize/parseAnchorRefs，与旧的
+  // 纯 url 格式双向兼容 —— 存量画布不用迁移。
+  const [anchorCharRefs, setAnchorCharRefs] = useState<AnchorMap>({});
+  const [anchorSceneRefs, setAnchorSceneRefs] = useState<AnchorMap>({});
   const [charRefName, setCharRefName] = useState('');
   const [charRefUrl, setCharRefUrl] = useState('');
   const [sceneRefName, setSceneRefName] = useState('');
@@ -729,20 +762,39 @@ export default function CanvasPage() {
   //   每段 reference_images = [本段图, ...角色锚定图, ...场景锚定图]，截断 5 张
   // 因此 Picture 1 = 每段自己的图（逐段不同，不可全局绑定），Picture 2 起才是锚定图。
   // 锚定图来源与提交保持一致：优先画布 state，URL anchorRefs 兜底。
-  const effectiveCharRefs =
-    Object.keys(anchorCharRefs).length > 0 ? anchorCharRefs : (anchorRefs?.characters ?? {});
-  const effectiveSceneRefs =
-    Object.keys(anchorSceneRefs).length > 0 ? anchorSceneRefs : (anchorRefs?.scenes ?? {});
+  const effectiveCharRefs: AnchorMap = useMemo(
+    () =>
+      Object.keys(anchorCharRefs).length > 0
+        ? anchorCharRefs
+        : parseAnchorRefs(anchorRefs?.characters),
+    [anchorCharRefs, anchorRefs],
+  );
+  const effectiveSceneRefs: AnchorMap = useMemo(
+    () =>
+      Object.keys(anchorSceneRefs).length > 0
+        ? anchorSceneRefs
+        : parseAnchorRefs(anchorRefs?.scenes),
+    [anchorSceneRefs, anchorRefs],
+  );
+  // 纯 url 视图：提交载荷（reference_images）与面板缩略图仍按 url 处理
+  const effectiveCharUrls = useMemo(() => urlMapOf(effectiveCharRefs), [effectiveCharRefs]);
+  const effectiveSceneUrls = useMemo(() => urlMapOf(effectiveSceneRefs), [effectiveSceneRefs]);
+  // 传给画布节点组件的锚定图（含描述，首帧文生图要用）。必须 useMemo ——
+  // 每次渲染新建对象会让所有节点重渲染。
+  const anchorsCtxValue = useMemo(
+    () => ({ chars: effectiveCharRefs, scenes: effectiveSceneRefs }),
+    [effectiveCharRefs, effectiveSceneRefs],
+  );
   // agnes reference 模式硬限制 5 张图 —— 常量收在 utils/anchors.ts（唯一出处，
   // 与 agent 侧 canvas_storyboarder_node 的截断保持一致）
   const bindingRows = useMemo(() => {
     const rows: { key: string; label: string; url: string; pictureIndex: number }[] = [];
     let idx = 2; // Picture 1 是每段自己的图，锚定图从 2 开始
-    for (const [name, url] of Object.entries(effectiveCharRefs)) {
-      rows.push({ key: `char:${name}`, label: name, url, pictureIndex: idx++ });
+    for (const [name, ref] of Object.entries(effectiveCharRefs)) {
+      rows.push({ key: `char:${name}`, label: name, url: ref.url, pictureIndex: idx++ });
     }
-    for (const [name, url] of Object.entries(effectiveSceneRefs)) {
-      rows.push({ key: `scene:${name}`, label: name, url, pictureIndex: idx++ });
+    for (const [name, ref] of Object.entries(effectiveSceneRefs)) {
+      rows.push({ key: `scene:${name}`, label: name, url: ref.url, pictureIndex: idx++ });
     }
     return rows;
   }, [effectiveCharRefs, effectiveSceneRefs]);
@@ -760,17 +812,9 @@ export default function CanvasPage() {
     }
     const p = projects.find((x) => x.id === currentProjectId);
     if (!p) return;
-    const parseJson = (s?: string | null) => {
-      if (!s) return {};
-      try {
-        const o = JSON.parse(s);
-        return o && typeof o === 'object' ? (o as Record<string, string>) : {};
-      } catch {
-        return {};
-      }
-    };
-    setAnchorCharRefs(parseJson(p.characterRefs));
-    setAnchorSceneRefs(parseJson(p.sceneRefs));
+    // 解析交给 utils/anchors.ts：兼容旧的「纯 url」与新的「{url, desc}」两种存储格式
+    setAnchorCharRefs(parseAnchorRefs(p.characterRefs));
+    setAnchorSceneRefs(parseAnchorRefs(p.sceneRefs));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProjectId, projects]);
 
@@ -779,8 +823,10 @@ export default function CanvasPage() {
   // 必须在项目加载完成后执行，否则 currentProjectId 还没设置
   useEffect(() => {
     if (!anchorRefs || !currentProjectId) return;
-    const chars = anchorRefs.characters ?? {};
-    const scenes = anchorRefs.scenes ?? {};
+    // URL 载荷可能是旧的「名字 → url」或新的「名字 → {url, desc}」（转画布时带上描述），
+    // parseAnchorRefs 两种都吃。
+    const chars = parseAnchorRefs(anchorRefs.characters);
+    const scenes = parseAnchorRefs(anchorRefs.scenes);
     // 合并到现有 state（覆盖同名 key）
     setAnchorCharRefs((prev) => ({ ...prev, ...chars }));
     setAnchorSceneRefs((prev) => ({ ...prev, ...scenes }));
@@ -801,7 +847,7 @@ export default function CanvasPage() {
   }, [anchorPanelOpen]);
 
   // 保存锚定图到当前项目（无项目先新建）
-  const saveAnchorsToProject = async (charRefs: Record<string, string>, sceneRefs: Record<string, string>) => {
+  const saveAnchorsToProject = async (charRefs: AnchorMap, sceneRefs: AnchorMap) => {
     let id = currentProjectId;
     const isNewProject = id === null;
     if (id === null) {
@@ -812,8 +858,9 @@ export default function CanvasPage() {
       setCurrentProjectId(p.id);
       setProjectName(p.name);
     }
-    const charJson = Object.keys(charRefs).length > 0 ? JSON.stringify(charRefs) : undefined;
-    const sceneJson = Object.keys(sceneRefs).length > 0 ? JSON.stringify(sceneRefs) : undefined;
+    // 序列化交给 utils/anchors.ts：**没有描述时写回旧的纯 url 格式**（不让存量数据变形）
+    const charJson = serializeAnchorRefs(charRefs);
+    const sceneJson = serializeAnchorRefs(sceneRefs);
     const res = await saveProject(id, {
       characterRefs: charJson,
       sceneRefs: sceneJson,
@@ -838,7 +885,7 @@ export default function CanvasPage() {
       window.alert('URL 必须是 http:// 或 https:// 开头');
       return;
     }
-    const next = { ...anchorCharRefs, [name]: url };
+    const next = { ...anchorCharRefs, [name]: { url } };
     setAnchorCharRefs(next);
     setCharRefName('');
     setCharRefUrl('');
@@ -870,7 +917,7 @@ export default function CanvasPage() {
       window.alert('URL 必须是 http:// 或 https:// 开头');
       return;
     }
-    const next = { ...anchorSceneRefs, [name]: url };
+    const next = { ...anchorSceneRefs, [name]: { url } };
     setAnchorSceneRefs(next);
     setSceneRefName('');
     setSceneRefUrl('');
@@ -912,11 +959,13 @@ export default function CanvasPage() {
         return;
       }
       if (kind === 'char') {
-        const next = { ...anchorCharRefs, [name]: newUrl };
+        // ★ 顺手把**这次用的描述**一起存下来（此前点一次重新生成，描述就丢了，
+        //   下次还得用户重打；存下来之后 P1-1 的面板可以默认填上一次的描述）
+        const next = { ...anchorCharRefs, [name]: { url: newUrl, desc: description } };
         setAnchorCharRefs(next);
         await saveAnchorsToProject(next, anchorSceneRefs);
       } else {
-        const next = { ...anchorSceneRefs, [name]: newUrl };
+        const next = { ...anchorSceneRefs, [name]: { url: newUrl, desc: description } };
         setAnchorSceneRefs(next);
         await saveAnchorsToProject(anchorCharRefs, next);
       }
@@ -1267,8 +1316,8 @@ export default function CanvasPage() {
       if (plan.segments.length > 0) {
         // 优先用画布 state（用户手动管理/从 URL 合并过），URL anchorRefs 作兜底
         // （与 bindingRows 用同一来源，保证 <Picture N> 编号对齐）
-        const charRefsMap = effectiveCharRefs;
-        const sceneRefsMap = effectiveSceneRefs;
+        const charRefsMap = effectiveCharUrls;
+        const sceneRefsMap = effectiveSceneUrls;
         const enriched = plan.segments.map((seg) => {
           // ★ 每段只带**这一段真正用到**的锚定图（P0-3）：agnes 对每张参考图都加权，
           // 把无关角色/场景塞进去会被"拉"进画面；而且 5 张名额会被无关项占满，
@@ -1356,7 +1405,12 @@ export default function CanvasPage() {
       if (batchStopRef.current) break;
       const t = targets[i];
       try {
-        const urls = await generateOneImage(t.prompt, candidateCount);
+        // ★ P0-1：首帧提示词同样拼上命中的角色/场景**描述**
+        //   （与单节点「文生图」共用 augmentPromptWithAnchors，同一套匹配口径）
+        const urls = await generateOneImage(
+          augmentPromptWithAnchors(t.prompt, effectiveCharRefs, effectiveSceneRefs),
+          candidateCount,
+        );
         setNodes((nds) =>
           nds.map((n) =>
             n.id === t.id
@@ -1767,10 +1821,26 @@ export default function CanvasPage() {
                   <Plus className="h-4 w-4" />
                 </button>
               </div>
-              {Object.entries(anchorCharRefs).map(([name, url]) => (
+              {Object.entries(anchorCharRefs).map(([name, ref]) => (
                 <div key={name} className={`mt-2 flex items-center gap-2 rounded border p-1.5 ${dark ? 'border-slate-700 bg-slate-900/40' : 'border-slate-200 bg-slate-50'}`}>
-                  <img src={cachedImageUrl(url)} alt={name} className="h-10 w-10 rounded object-cover" />
-                  <div className="flex-1 truncate text-xs">{name}</div>
+                  <img src={cachedImageUrl(ref.url)} alt={name} className="h-10 w-10 rounded object-cover" />
+                  <div className="min-w-0 flex-1 truncate text-xs" title={ref.desc || undefined}>
+                    {name}
+                    {ref.desc ? <span className={`ml-1 ${dark ? 'text-slate-500' : 'text-slate-400'}`}>·{ref.desc.slice(0, 14)}…</span> : null}
+                  </div>
+                  {/* 超出 5 张上限的锚定图**不会参与生成** —— 以前这里毫无提示，
+                      用户以为绑上了、实际被静默丢弃（P0-3 的可见性尾巴） */}
+                  {(() => {
+                    const row = bindingRows.find((r) => r.key === `char:${name}`);
+                    return row && row.pictureIndex > MAX_REF_PICTURES ? (
+                      <span
+                        className={`shrink-0 rounded px-1 text-[10px] ${dark ? 'bg-amber-900/50 text-amber-200' : 'bg-amber-100 text-amber-700'}`}
+                        title={`参考图上限 ${MAX_REF_PICTURES} 张（含每段自己的首帧图），这张排在第 ${row.pictureIndex} 位，本片不会用到`}
+                      >
+                        超出上限
+                      </span>
+                    ) : null;
+                  })()}
                   <button
                     onClick={() => regenerateAnchor('char', name)}
                     title="重新生成（不满意时替换）"
@@ -1816,10 +1886,24 @@ export default function CanvasPage() {
                   <Plus className="h-4 w-4" />
                 </button>
               </div>
-              {Object.entries(anchorSceneRefs).map(([name, url]) => (
+              {Object.entries(anchorSceneRefs).map(([name, ref]) => (
                 <div key={name} className={`mt-2 flex items-center gap-2 rounded border p-1.5 ${dark ? 'border-slate-700 bg-slate-900/40' : 'border-slate-200 bg-slate-50'}`}>
-                  <img src={cachedImageUrl(url)} alt={name} className="h-10 w-10 rounded object-cover" />
-                  <div className="flex-1 truncate text-xs">{name}</div>
+                  <img src={cachedImageUrl(ref.url)} alt={name} className="h-10 w-10 rounded object-cover" />
+                  <div className="min-w-0 flex-1 truncate text-xs" title={ref.desc || undefined}>
+                    {name}
+                    {ref.desc ? <span className={`ml-1 ${dark ? 'text-slate-500' : 'text-slate-400'}`}>·{ref.desc.slice(0, 14)}…</span> : null}
+                  </div>
+                  {(() => {
+                    const row = bindingRows.find((r) => r.key === `scene:${name}`);
+                    return row && row.pictureIndex > MAX_REF_PICTURES ? (
+                      <span
+                        className={`shrink-0 rounded px-1 text-[10px] ${dark ? 'bg-amber-900/50 text-amber-200' : 'bg-amber-100 text-amber-700'}`}
+                        title={`参考图上限 ${MAX_REF_PICTURES} 张（含每段自己的首帧图），这张排在第 ${row.pictureIndex} 位，本片不会用到`}
+                      >
+                        超出上限
+                      </span>
+                    ) : null;
+                  })()}
                   <button
                     onClick={() => regenerateAnchor('scene', name)}
                     title="重新生成（不满意时替换）"
@@ -1929,6 +2013,8 @@ export default function CanvasPage() {
 
         {/* 画布 */}
         <main className="relative min-w-0 flex-1">
+          {/* 锚定图 context：节点组件只收 {id,data}，页面状态只能这样传（见 AnchorsCtx 注释） */}
+          <AnchorsCtx.Provider value={anchorsCtxValue}>
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -1950,6 +2036,7 @@ export default function CanvasPage() {
             <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color={theme.dots} />
             <Controls className="react-flow__controls" />
           </ReactFlow>
+          </AnchorsCtx.Provider>
 
           {/* 底部悬浮控制栏 */}
           <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-4">

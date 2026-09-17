@@ -20,14 +20,25 @@ export type AnchorMap = Record<string, AnchorRef>;
 /** agnes reference 模式硬上限：images 数组最多 5 张（与 agent 侧截断一致）。 */
 export const MAX_REF_PICTURES = 5;
 
-/** 解析锚定图 JSON。容忍三种历史形态：`{n: "url"}` / `{n: {url, desc}}` / 脏数据。 */
-export function parseAnchorRefs(raw?: string | null): AnchorMap {
+/**
+ * 解析锚定图。容忍三种历史形态：`{n: "url"}` / `{n: {url, desc}}` / 脏数据。
+ *
+ * `raw` 既可以是 JSON 字符串（`canvas_project.character_refs` 的存储形态），
+ * 也可以是**已解析的对象**（NovelPage 转画布时塞在 URL 里的 `?anchorRefs=` 参数）。
+ */
+export function parseAnchorRefs(
+  raw?: string | Record<string, unknown> | null,
+): AnchorMap {
   if (!raw) return {};
   let obj: unknown;
-  try {
-    obj = JSON.parse(raw);
-  } catch {
-    return {};
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  } else {
+    obj = raw;
   }
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
 
@@ -69,6 +80,13 @@ export function serializeAnchorRefs(refs: AnchorMap): string | undefined {
     }
   }
   return JSON.stringify(out);
+}
+
+/** 「名字 → url」的纯 url 视图（老结构的消费者用：提交载荷、面板缩略图）。 */
+export function urlMapOf(refs: AnchorMap): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, ref] of Object.entries(refs)) out[name] = ref.url;
+  return out;
 }
 
 /**

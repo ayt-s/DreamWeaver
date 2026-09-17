@@ -16,6 +16,7 @@ import {
   parseAnchorRefs,
   pickUrlsByPrompt,
   serializeAnchorRefs,
+  urlMapOf,
   type AnchorMap,
 } from './anchors';
 
@@ -44,6 +45,26 @@ describe('parseAnchorRefs', () => {
   it('丢掉空 url / 空名字，保留合法项', () => {
     expect(parseAnchorRefs('{"  ":"u", "甲":"", "乙":"  https://x/b.png  "}')).toEqual({
       乙: { url: 'https://x/b.png' },
+    });
+  });
+});
+
+describe('parseAnchorRefs 接受已解析对象（URL ?anchorRefs 传的是对象，不是 JSON 串）', () => {
+  it('旧的纯 url 与新的 {url, desc} 都吃', () => {
+    expect(parseAnchorRefs({ 陈浔: 'https://x/a.png' })).toEqual({
+      陈浔: { url: 'https://x/a.png' },
+    });
+    expect(parseAnchorRefs({ 陈浔: { url: 'https://x/a.png', desc: '青年' } })).toEqual({
+      陈浔: { url: 'https://x/a.png', desc: '青年' },
+    });
+  });
+});
+
+describe('urlMapOf（纯 url 视图：提交载荷与面板缩略图用）', () => {
+  it('把 {url, desc} 压回 url', () => {
+    expect(urlMapOf({ 甲: { url: URL_A, desc: '描述' }, 乙: { url: URL_B } })).toEqual({
+      甲: URL_A,
+      乙: URL_B,
     });
   });
 });

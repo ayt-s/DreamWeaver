@@ -100,7 +100,10 @@ export default function NovelPage() {
       // 这样同本小说多章节自动共享一份锚定图，跨章节角色/场景视觉一致。
       const novelKey = (novelName.trim() || stripChapterSuffix(project.projectName)).trim();
       const cacheKey = `dreamweaver-anchors-novel-${novelKey}`;
-      let anchorRefsObj: { characters: Record<string, string>; scenes: Record<string, string> } | null = null;
+      let anchorRefsObj: {
+        characters: Record<string, { url: string; desc?: string }>;
+        scenes: Record<string, { url: string; desc?: string }>;
+      } | null = null;
       try {
         const cached = localStorage.getItem(cacheKey);
         if (cached) {
@@ -123,9 +126,24 @@ export default function NovelPage() {
               scenes,
               style: project.visualStyle || '电影写实',
             });
+            // ★ P0-1：把**描述一起带上**。此前只存 url，转画布后描述就丢了 ——
+            // 而首帧文生图要靠它（agnes 图片接口不吃图片输入，只能靠文字约束角色/场景）。
+            // `analysis.characters` 是 {名字: 描述}（按名字对齐）；
+            // `analysis.scenes` 是 [描述...]，而锚定图结果里场景的 key 就是描述本身，直接用。
+            const withDesc = (
+              urls: Record<string, string>,
+              descs: Record<string, string> | string[],
+            ): Record<string, { url: string; desc?: string }> => {
+              const out: Record<string, { url: string; desc?: string }> = {};
+              for (const [key, url] of Object.entries(urls)) {
+                const desc = Array.isArray(descs) ? key : descs[key];
+                out[key] = desc ? { url, desc: String(desc) } : { url };
+              }
+              return out;
+            };
             anchorRefsObj = {
-              characters: anchors.characters || {},
-              scenes: anchors.scenes || {},
+              characters: withDesc(anchors.characters || {}, characters),
+              scenes: withDesc(anchors.scenes || {}, scenes),
             };
             // 写入 localStorage，同本小说下次转画布直接读
             localStorage.setItem(cacheKey, JSON.stringify(anchorRefsObj));

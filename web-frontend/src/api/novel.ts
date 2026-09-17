@@ -47,7 +47,12 @@ export function updateSegments(
  */
 export function toCanvas(
   id: number,
-  anchors?: { characters?: Record<string, string>; scenes?: Record<string, string> },
+  // 锚定图值：旧格式是纯 url 字符串，新格式带生成时用的描述
+  // （描述供首帧文生图约束角色/场景 —— agnes 图片接口不吃图片输入）。两种都收。
+  anchors?: {
+    characters?: Record<string, string | { url: string; desc?: string }>;
+    scenes?: Record<string, string | { url: string; desc?: string }>;
+  },
   opts?: { force?: boolean; saveAsNew?: boolean },
 ): Promise<ToCanvasResult> {
   const body = {
