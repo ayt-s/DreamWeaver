@@ -169,7 +169,11 @@ def _traced(name: str, fn):
         out = await fn(state)
         if not isinstance(out, dict):
             return out
-        base = out.get("trace") or state.get("trace")
+        # ⚠️ 先拷贝再追加：当节点**没有**返回自己的 trace 时，`base` 就是 state 里那个
+        #    列表对象本身，而 `append()` 是原地追加（它自己的契约，见 utils/trace.py）。
+        #    原地改 state 今天看不出问题（图是线性执行、语义正是 accumulate），但一旦出现
+        #    并行分支，两条路径就会共享同一个列表 → 典型的「状态别名」，极难查。
+        base = list(out.get("trace") or state.get("trace") or [])
         status = (trace_util.STATUS_FAILED
                   if out.get("status") == TaskStatus.FAILED else trace_util.STATUS_OK)
         # 同一节点会被反复走到（自愈轮次：qc_checker / fix_looping / video_generator
