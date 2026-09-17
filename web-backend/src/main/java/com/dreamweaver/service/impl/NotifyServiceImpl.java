@@ -136,9 +136,27 @@ public class NotifyServiceImpl implements NotifyService {
         task.setUpdatedAt(LocalDateTime.now());
         int updated;
         if ("failed".equals(toStatus)) {
-            task.setErrorMessage(request.getError_message());
-            task.setCompletedAt(LocalDateTime.now());
-            updated = taskMapper.updateById(task);
+            // ⚠️ 必须显式 `.set(...)`，**不能**沿用 updateById —— MyBatis-Plus 默认
+            //    `FieldStrategy.NOT_NULL` 会**跳过 null 字段**。后果不是"少写一个字段"
+            //    这么轻：agent 报 failed 但没带 error_message 时，库里上一轮的旧原因
+            //    （例如回退排队时写的「Agent 重启恢复」）会原样留着 ——
+            //    任务卡片上显示的是一个**与本次失败无关的假原因**，排查时会被它带偏。
+            //    本文件另外三个分支都是显式 set，只有这里靠 NOT_NULL 兜底（唯一的不对称）。
+            String warn = request.getError_message();
+            String errorToStore = (warn != null && !warn.isBlank()) ? warn : null;
+            updated = taskMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<com.dreamweaver.entity.Task>()
+                    .eq(com.dreamweaver.entity.Task::getId, task.getId())
+                    .eq(com.dreamweaver.entity.Task::getVersion, task.getVersion())
+                    .set(com.dreamweaver.entity.Task::getStatus, "failed")
+                    // 本轮已聚合的产物字段照样写回（保持与 completed 分支同口径）
+                    .set(com.dreamweaver.entity.Task::getResultJson, task.getResultJson())
+                    .set(com.dreamweaver.entity.Task::getImageUrls, task.getImageUrls())
+                    .set(com.dreamweaver.entity.Task::getSegmentsJson, task.getSegmentsJson())
+                    // null 也要显式清 —— 这正是 updateById 做不到的那一步
+                    .set(com.dreamweaver.entity.Task::getErrorMessage, errorToStore)
+                    .set(com.dreamweaver.entity.Task::getCompletedAt, LocalDateTime.now())
+                    .set(com.dreamweaver.entity.Task::getUpdatedAt, LocalDateTime.now())
+                    .setSql("version = version + 1"));
         } else if ("queued".equals(toStatus) || "interrupted".equals(toStatus)) {
             // Agent 重启恢复后回退报到（interrupted → queued）或显式报中断：
             // 非终态回退，不写 completed_at、不覆盖已聚合的产物字段，只回写状态与提示。
