@@ -1,8 +1,20 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import ImageVideoPage from './ImageVideoPage';
+import { createVideoTask } from '../api/tasks';
+
+// 只替换「提交任务」这一个函数：断言单节点「文生图」确实走了直出短路。
+// 页面还从同一模块拿别的函数，所以用 importOriginal 保留其余实现。
+vi.mock('../api/tasks', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/tasks')>();
+  return {
+    ...actual,
+    // 让它立刻失败：本用例只关心**调用参数**，不需要跑完轮询
+    createVideoTask: vi.fn().mockRejectedValue(new Error('用例到此为止')),
+  };
+});
 
 // React Flow 在 jsdom 下需要 ResizeObserver（白屏回归防护：保证页面无运行时错误挂载）
 beforeAll(() => {
@@ -113,5 +125,29 @@ describe('ImageVideoPage 无限画布页', () => {
     expect(moveBtn(first.el, '▲')).toBeDisabled();
     expect(moveBtn(first.el, '▼')).not.toBeDisabled();
     expect(moveBtn(last.el, '▼')).toBeDisabled();
+  });
+
+  it('★ 单节点「文生图」必须走直出短路（directImage=true）', async () => {
+    renderPage();
+    // 初始画布的图片节点没有提示词 —— 先填上，否则按钮只会提示「请先填写提示词」
+    const desc = screen.getByPlaceholderText(/本段描述/) as HTMLTextAreaElement;
+    fireEvent.change(desc, { target: { value: '陈浔在洞口整理草药' } });
+
+    const btn = screen
+      .getAllByText('文生图')
+      .map((el) => el.closest('button'))
+      .find(Boolean);
+    expect(btn).toBeTruthy();
+    fireEvent.click(btn as HTMLButtonElement);
+
+    await waitFor(() => expect(vi.mocked(createVideoTask)).toHaveBeenCalled());
+    // 直接用真实类型（CreateTaskRequest 本来就有 genType / directImage，不必断言成 Record）
+    const arg = vi.mocked(createVideoTask).mock.calls[0][0];
+
+    expect(arg.genType).toBe('text_image');
+    // ⚠️ 核心断言：不传 directImage 时 Java 不加 `direct_image`，agent 会**按 prompt 重新拆镜**
+    // → 一次白出 3~5 张不同画面的图，而这里只用得上第 1 张。
+    // 这条就是 2026-09-17 修的那个额度浪费 bug 的回归护栏（TaskServiceImpl.java:380-383）。
+    expect(arg.directImage).toBe(true);
   });
 });

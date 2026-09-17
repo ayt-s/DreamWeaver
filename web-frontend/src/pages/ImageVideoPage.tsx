@@ -755,6 +755,17 @@ export default function CanvasPage() {
   const [sceneRefName, setSceneRefName] = useState('');
   const [sceneRefUrl, setSceneRefUrl] = useState('');
   const [regenerating, setRegenerating] = useState<{ kind: 'char' | 'scene'; name: string } | null>(null);
+  // 重新生成的**候选**：生成完先放这里，面板里新旧并排让用户选，选「用新图」才覆盖。
+  // 锚定图是全片一致性的基准，旧图一覆盖就再也拿不回来（此前就是直接覆盖）。
+  const [anchorCandidate, setAnchorCandidate] = useState<{
+    kind: 'char' | 'scene';
+    name: string;
+    url: string;
+    description: string;
+  } | null>(null);
+  // 每个锚定图的描述草稿（key = `char:名字` / `scene:名字`）——默认填已存描述或名字，
+  // 可以改完再点重新生成；改完的描述会随结果一起存下来（下次不用重打）。
+  const [descDrafts, setDescDrafts] = useState<Record<string, string>>({});
   const anchorRefBox = useRef<HTMLDivElement>(null);
 
   // 元素语义绑定（④）：参考图编号必须与提交时的组装顺序严格一致，
@@ -928,15 +939,12 @@ export default function CanvasPage() {
     }
   };
 
-  // 重新生成单个锚定图：prompt 弹框填描述（默认当前名称），调 agent anchors 生成新 URL 覆盖
-  const regenerateAnchor = async (kind: 'char' | 'scene', name: string) => {
-    const defaultDesc = name;
-    const descInput = window.prompt(
-      `重新生成「${name}」的锚定图。请输入角色/场景描述（用于生成提示词）：`,
-      defaultDesc,
-    );
-    if (descInput === null) return; // 取消
-    const description = descInput.trim() || defaultDesc;
+  // 重新生成单个锚定图：描述由**面板内联输入**传入。
+  // 不再用 window.prompt —— 阻塞式弹框，且部分 Electron/webview 里压根不可用
+  // （症状是「点了没反应」）；默认值本该是可见、可改的输入框。
+  // 生成结果只做**候选**（见 anchorCandidate），不立刻覆盖。
+  const regenerateAnchor = async (kind: 'char' | 'scene', name: string, desc: string) => {
+    const description = desc.trim() || name;
     setRegenerating({ kind, name });
     try {
       const res = await fetch('/v1/novel/anchors', {
@@ -958,22 +966,30 @@ export default function CanvasPage() {
         window.alert(`重新生成失败：${json?.message || '未知错误'}`);
         return;
       }
-      if (kind === 'char') {
-        // ★ 顺手把**这次用的描述**一起存下来（此前点一次重新生成，描述就丢了，
-        //   下次还得用户重打；存下来之后 P1-1 的面板可以默认填上一次的描述）
-        const next = { ...anchorCharRefs, [name]: { url: newUrl, desc: description } };
-        setAnchorCharRefs(next);
-        await saveAnchorsToProject(next, anchorSceneRefs);
-      } else {
-        const next = { ...anchorSceneRefs, [name]: { url: newUrl, desc: description } };
-        setAnchorSceneRefs(next);
-        await saveAnchorsToProject(anchorCharRefs, next);
-      }
+      // ★ 只做候选：面板里新旧并排，点「用新图」才落库 ——
+      //   锚定图是全片一致性的基准，旧图覆盖掉就再也回不来，而重新生成的结果常常更差。
+      setAnchorCandidate({ kind, name, url: newUrl, description });
     } catch (e) {
       window.alert(e instanceof Error ? `重新生成失败：${e.message}` : '重新生成失败');
     } finally {
       setRegenerating(null);
     }
+  };
+
+  /** 采用候选锚定图：此刻才写入并落库（在此之前一直保留旧图）。 */
+  const applyAnchorCandidate = async () => {
+    if (!anchorCandidate) return;
+    const { kind, name, url, description } = anchorCandidate;
+    if (kind === 'char') {
+      const next = { ...anchorCharRefs, [name]: { url, desc: description } };
+      setAnchorCharRefs(next);
+      await saveAnchorsToProject(next, anchorSceneRefs);
+    } else {
+      const next = { ...anchorSceneRefs, [name]: { url, desc: description } };
+      setAnchorSceneRefs(next);
+      await saveAnchorsToProject(anchorCharRefs, next);
+    }
+    setAnchorCandidate(null);
   };
 
   // 删除场景锚定图
@@ -1823,7 +1839,16 @@ export default function CanvasPage() {
               </div>
               {Object.entries(anchorCharRefs).map(([name, ref]) => (
                 <div key={name} className={`mt-2 flex items-center gap-2 rounded border p-1.5 ${dark ? 'border-slate-700 bg-slate-900/40' : 'border-slate-200 bg-slate-50'}`}>
-                  <img src={cachedImageUrl(ref.url)} alt={name} className="h-10 w-10 rounded object-cover" />
+                  {/* 有候选时**新旧并排**（左=当前还没被覆盖的，右=新生成）：锚定图是全片基准，
+                      覆盖掉就回不去，所以先给用户看、点了「用新图」才落库 */}
+                  {anchorCandidate?.kind === 'char' && anchorCandidate.name === name ? (
+                    <>
+                      <img src={cachedImageUrl(ref.url)} alt="当前" title="当前（尚未覆盖）" className="h-10 w-10 rounded object-cover opacity-40" />
+                      <img src={cachedImageUrl(anchorCandidate.url)} alt="新生成" title="新生成" className="h-10 w-10 rounded object-cover ring-2 ring-indigo-500" />
+                    </>
+                  ) : (
+                    <img src={cachedImageUrl(ref.url)} alt={name} className="h-10 w-10 rounded object-cover" />
+                  )}
                   <div className="min-w-0 flex-1 truncate text-xs" title={ref.desc || undefined}>
                     {name}
                     {ref.desc ? <span className={`ml-1 ${dark ? 'text-slate-500' : 'text-slate-400'}`}>·{ref.desc.slice(0, 14)}…</span> : null}
@@ -1841,14 +1866,40 @@ export default function CanvasPage() {
                       </span>
                     ) : null;
                   })()}
-                  <button
-                    onClick={() => regenerateAnchor('char', name)}
-                    title="重新生成（不满意时替换）"
-                    disabled={regenerating?.kind === 'char' && regenerating?.name === name}
-                    className={`text-xs ${dark ? 'text-slate-400 hover:text-blue-400' : 'text-slate-500 hover:text-blue-500'} disabled:cursor-wait disabled:opacity-40`}
-                  >
-                    <RefreshCw className={`h-4 w-4 ${regenerating?.kind === 'char' && regenerating?.name === name ? 'animate-spin' : ''}`} />
-                  </button>
+                  {anchorCandidate?.kind === 'char' && anchorCandidate.name === name ? (
+                    <>
+                      <button
+                        onClick={applyAnchorCandidate}
+                        className="shrink-0 rounded bg-indigo-600 px-1.5 py-0.5 text-[10px] text-white hover:bg-indigo-500"
+                      >
+                        用新图
+                      </button>
+                      <button
+                        onClick={() => setAnchorCandidate(null)}
+                        className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] ${dark ? 'border-slate-600 text-slate-300 hover:bg-slate-800' : 'border-slate-300 text-slate-600 hover:bg-slate-100'}`}
+                      >
+                        保留旧图
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() =>
+                        regenerateAnchor('char', name, descDrafts[`char:${name}`] ?? ref.desc ?? name)
+                      }
+                      title="用左边的描述重新生成（生成后先对比，不直接覆盖）"
+                      disabled={regenerating?.kind === 'char' && regenerating?.name === name}
+                      className={`shrink-0 text-xs ${dark ? 'text-slate-400 hover:text-blue-400' : 'text-slate-500 hover:text-blue-500'} disabled:cursor-wait disabled:opacity-40`}
+                    >
+                      <RefreshCw className={`h-4 w-4 ${regenerating?.kind === 'char' && regenerating?.name === name ? 'animate-spin' : ''}`} />
+                    </button>
+                  )}
+                  <input
+                    value={descDrafts[`char:${name}`] ?? ref.desc ?? name}
+                    onChange={(e) => setDescDrafts((d) => ({ ...d, [`char:${name}`]: e.target.value }))}
+                    placeholder="描述"
+                    title="这段描述用于重新生成锚定图，也会拼进首帧文生图的提示词（改这里不影响已生成的图）"
+                    className={`w-32 shrink-0 rounded border px-1 py-0.5 text-[10px] ${dark ? 'border-slate-600 bg-slate-800 text-slate-200' : 'border-slate-300 bg-white text-slate-700'}`}
+                  />
                   <button
                     onClick={() => removeCharRef(name)}
                     className={dark ? 'text-xs text-slate-400 hover:text-red-400' : 'text-xs text-slate-500 hover:text-red-500'}
@@ -1888,7 +1939,14 @@ export default function CanvasPage() {
               </div>
               {Object.entries(anchorSceneRefs).map(([name, ref]) => (
                 <div key={name} className={`mt-2 flex items-center gap-2 rounded border p-1.5 ${dark ? 'border-slate-700 bg-slate-900/40' : 'border-slate-200 bg-slate-50'}`}>
-                  <img src={cachedImageUrl(ref.url)} alt={name} className="h-10 w-10 rounded object-cover" />
+                  {anchorCandidate?.kind === 'scene' && anchorCandidate.name === name ? (
+                    <>
+                      <img src={cachedImageUrl(ref.url)} alt="当前" title="当前（尚未覆盖）" className="h-10 w-10 rounded object-cover opacity-40" />
+                      <img src={cachedImageUrl(anchorCandidate.url)} alt="新生成" title="新生成" className="h-10 w-10 rounded object-cover ring-2 ring-indigo-500" />
+                    </>
+                  ) : (
+                    <img src={cachedImageUrl(ref.url)} alt={name} className="h-10 w-10 rounded object-cover" />
+                  )}
                   <div className="min-w-0 flex-1 truncate text-xs" title={ref.desc || undefined}>
                     {name}
                     {ref.desc ? <span className={`ml-1 ${dark ? 'text-slate-500' : 'text-slate-400'}`}>·{ref.desc.slice(0, 14)}…</span> : null}
@@ -1904,14 +1962,40 @@ export default function CanvasPage() {
                       </span>
                     ) : null;
                   })()}
-                  <button
-                    onClick={() => regenerateAnchor('scene', name)}
-                    title="重新生成（不满意时替换）"
-                    disabled={regenerating?.kind === 'scene' && regenerating?.name === name}
-                    className={`text-xs ${dark ? 'text-slate-400 hover:text-blue-400' : 'text-slate-500 hover:text-blue-500'} disabled:cursor-wait disabled:opacity-40`}
-                  >
-                    <RefreshCw className={`h-4 w-4 ${regenerating?.kind === 'scene' && regenerating?.name === name ? 'animate-spin' : ''}`} />
-                  </button>
+                  {anchorCandidate?.kind === 'scene' && anchorCandidate.name === name ? (
+                    <>
+                      <button
+                        onClick={applyAnchorCandidate}
+                        className="shrink-0 rounded bg-indigo-600 px-1.5 py-0.5 text-[10px] text-white hover:bg-indigo-500"
+                      >
+                        用新图
+                      </button>
+                      <button
+                        onClick={() => setAnchorCandidate(null)}
+                        className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] ${dark ? 'border-slate-600 text-slate-300 hover:bg-slate-800' : 'border-slate-300 text-slate-600 hover:bg-slate-100'}`}
+                      >
+                        保留旧图
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() =>
+                        regenerateAnchor('scene', name, descDrafts[`scene:${name}`] ?? ref.desc ?? name)
+                      }
+                      title="用左边的描述重新生成（生成后先对比，不直接覆盖）"
+                      disabled={regenerating?.kind === 'scene' && regenerating?.name === name}
+                      className={`shrink-0 text-xs ${dark ? 'text-slate-400 hover:text-blue-400' : 'text-slate-500 hover:text-blue-500'} disabled:cursor-wait disabled:opacity-40`}
+                    >
+                      <RefreshCw className={`h-4 w-4 ${regenerating?.kind === 'scene' && regenerating?.name === name ? 'animate-spin' : ''}`} />
+                    </button>
+                  )}
+                  <input
+                    value={descDrafts[`scene:${name}`] ?? ref.desc ?? name}
+                    onChange={(e) => setDescDrafts((d) => ({ ...d, [`scene:${name}`]: e.target.value }))}
+                    placeholder="描述"
+                    title="这段描述用于重新生成锚定图，也会拼进首帧文生图的提示词（改这里不影响已生成的图）"
+                    className={`w-32 shrink-0 rounded border px-1 py-0.5 text-[10px] ${dark ? 'border-slate-600 bg-slate-800 text-slate-200' : 'border-slate-300 bg-white text-slate-700'}`}
+                  />
                   <button
                     onClick={() => removeSceneRef(name)}
                     className={dark ? 'text-xs text-slate-400 hover:text-red-400' : 'text-xs text-slate-500 hover:text-red-500'}
