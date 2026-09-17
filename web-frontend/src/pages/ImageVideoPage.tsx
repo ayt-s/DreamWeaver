@@ -17,6 +17,7 @@ import {
   type Edge,
   type Connection,
   type NodeProps,
+  type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
@@ -309,6 +310,7 @@ const AnchorsCtx = createContext<{ chars: AnchorMap; scenes: AnchorMap }>({
 
 function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
   const { updateNodeData, getNodes, setNodes } = useReactFlow();
+  const queryClient = useQueryClient();
   const anchors = useContext(AnchorsCtx);
   const fileRef = useRef<HTMLInputElement>(null);
   const [generating, setGenerating] = useState(false);
@@ -387,6 +389,8 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
           if (urls.length > 0) {
             patch({ imageUrl: urls[0] });
             setStatus('已生成参考图');
+            // 这条任务同样是画布素材 → 让左侧「从历史作品选取」立刻能选到它
+            queryClient.invalidateQueries({ queryKey: HISTORY_IMAGES_KEY });
           } else {
             setStatus('生成完成但无图片');
           }
@@ -662,6 +666,12 @@ const nextFreeNodeId = (list: GraphNode[]) => {
   return `n${max + 1}`;
 };
 
+/**
+ * 画布「从历史作品选取」的取数 key。
+ * 生成完成后要 invalidate 它（单节点文生图 / 一键文生图批量），写死两处容易漂。
+ */
+const HISTORY_IMAGES_KEY = ['canvas-history-images'] as const;
+
 const initialNodes: GraphNode[] = [
   {
     id: 'n1',
@@ -731,6 +741,9 @@ export default function CanvasPage() {
   // 后端不写入并回传服务端现状，由用户决定保留哪一份。
   // ⚠️ 每次保存成功都必须把它更新为返回值，否则下一次保存必然误报「冲突」。
   const versionRef = useRef(0);
+  // React Flow 实例：新节点要落在「当前视口中心」，要用它做屏幕→画布坐标换算（见 spawnPosition）。
+  // 页面本身在 <ReactFlow> 之外，拿不到 ReactFlowProvider 的 context，只能用 onInit 存实例。
+  const rfRef = useRef<ReactFlowInstance<GraphNode, Edge> | null>(null);
   const anchorRefsParam = searchParams.get('anchorRefs');
   const anchorRefs = useMemo(() => {
     if (!anchorRefsParam) return null;
@@ -1267,11 +1280,49 @@ export default function CanvasPage() {
     return { segments, texts, videoSeconds };
   }, [chain, nodes, edges]);
 
+  /**
+   * 新节点落点：优先「当前视口中心」。画布平移远了以后固定坐标会把新节点丢到视口外，
+   * 用户看到的只是「点了没反应」；拿不到实例或尺寸时返回 null，调用方维持原有固定坐标。
+   * 与已有节点重叠则逐个向下错开，避免连点几次叠成一摞只看得见一个。
+   */
+  const spawnPosition = useCallback(
+    (nds: GraphNode[], size: { w: number; h: number }): { x: number; y: number } | null => {
+      const inst = rfRef.current;
+      // ⚠️ 用 .react-flow__pane 的 rect：页面在 <ReactFlow> 之外，拿不到容器 ref
+      const pane = document.querySelector('.react-flow__pane')?.getBoundingClientRect();
+      if (!inst || !pane || pane.width <= 0 || pane.height <= 0) return null;
+      let pos: { x: number; y: number };
+      try {
+        const c = inst.screenToFlowPosition({
+          x: pane.left + pane.width / 2,
+          y: pane.top + pane.height / 2,
+        });
+        pos = { x: Math.round(c.x - size.w / 2), y: Math.round(c.y - size.h / 2) };
+      } catch {
+        return null; // 实例尚未就绪（首帧渲染前）
+      }
+      for (let guard = 0; guard < 20; guard += 1) {
+        const hit = nds.some(
+          (n) => Math.abs(n.position.x - pos.x) < 90 && Math.abs(n.position.y - pos.y) < 90,
+        );
+        if (!hit) break;
+        pos = { ...pos, y: pos.y + size.h + 16 };
+      }
+      return pos;
+    },
+    [],
+  );
+
   const addNode = useCallback(
     (type: GraphNode['type']) => {
       setNodes((nds) => {
         const offset = nds.length * 40;
-        const base: GraphNode = { id: nextFreeNodeId(nds), type, position: { x: 60 + offset, y: 360 + offset }, data: {} as never };
+        const base: GraphNode = {
+          id: nextFreeNodeId(nds),
+          type,
+          position: spawnPosition(nds, { w: 264, h: 240 }) ?? { x: 60 + offset, y: 360 + offset },
+          data: {} as never,
+        };
         if (type === 'textNode') {
           base.data = { content: '', mode: '自己编写' };
         } else if (type === 'imageNode') {
@@ -1282,22 +1333,31 @@ export default function CanvasPage() {
         return [...nds, base];
       });
     },
-    [setNodes],
+    [setNodes, spawnPosition],
   );
 
   const addImageNode = useCallback(
-    (url: string) => {
+    (url: string, candidates?: string[]) => {
       setNodes((nds) => [
         ...nds,
         {
           id: nextFreeNodeId(nds),
           type: 'imageNode',
-          position: { x: 380, y: 420 + nds.length * 40 },
-          data: { imageUrl: url, prompt: '', ratio: '16:9' },
+          position:
+            spawnPosition(nds, { w: 264, h: 240 }) ?? { x: 380, y: 420 + nds.length * 40 },
+          data: {
+            imageUrl: url,
+            prompt: '',
+            ratio: '16:9',
+            // 候选一并带进节点：面板 12 格装不下每个任务的 3 张候选，
+            // 而节点里本来就有「候选 N 张 · 点一张设为首帧」的切换器 ——
+            // 不带的话用户在画布上永远只能拿到第 1 张（此时另一张可能才是好的）。
+            ...(candidates && candidates.length > 1 ? { candidates } : {}),
+          },
         },
       ]);
     },
-    [setNodes],
+    [setNodes, spawnPosition],
   );
 
   const onUploadAsset = async (file: File) => {
@@ -1310,8 +1370,13 @@ export default function CanvasPage() {
   };
 
   // 素材来源：历史作品（文生图成品，展示缓存图）
-  const { data: history } = useQuery({
-    queryKey: ['canvas-history-images'],
+  const {
+    data: history,
+    isLoading: historyLoading,
+    isError: historyError,
+    refetch: refetchHistory,
+  } = useQuery({
+    queryKey: HISTORY_IMAGES_KEY,
     queryFn: async () => {
       // includeAssets：画布的一键文生图素材（source=canvas_asset）也要能选回来
       const { list } = await listTasks({
@@ -1320,7 +1385,13 @@ export default function CanvasPage() {
         genType: 'text_image',
         includeAssets: true,
       });
-      return list.filter((t) => t.status === 'completed');
+      // 只留有图的任务：没图的任务在网格里渲染成空洞（占一格却点不动）
+      // ⚠️ 刻意**不按提示词去重**：同镜重跑（同 prompt、各带自己的候选）是用户可能想
+      //    分别挑的真实产物，且实测 32 条成品里精确重复只有 1 组（49/50），
+      //    去重省下的格子是 0，代价却是丢掉一组候选 —— 不划算（2026-09-17 实测更正）。
+      return list.filter(
+        (t) => t.status === 'completed' && parseImageUrls(t.imageUrls).length > 0,
+      );
     },
     staleTime: 30_000,
   });
@@ -1442,6 +1513,10 @@ export default function CanvasPage() {
       setBatchDone(i + 1);
     }
     setBatchRunning(false);
+    // 刚生成的素材要能立刻在「从历史作品选取」里选到。
+    // 此前没有任何地方 invalidate 这个 key：批量跑完面板不更新，用户得刷新页面
+    // 或切走再切回来才看得到新图（面板查询没有轮询，同页停留时不会自己 refetch）。
+    queryClient.invalidateQueries({ queryKey: HISTORY_IMAGES_KEY });
   };
 
   // === 一键回填：从历史素材任务里把已生成的图找回节点 ===
@@ -2073,8 +2148,12 @@ export default function CanvasPage() {
                 return (
                   <button
                     key={t.id}
-                    title={'点击加入画布：' + (t.prompt || `#${t.id}`)}
-                    onClick={() => addImageNode(urls[0])}
+                    title={
+                      '点击加入画布：' +
+                      (t.prompt || `#${t.id}`) +
+                      (urls.length > 1 ? `（该任务有 ${urls.length} 张候选，入画布后在节点里切换）` : '')
+                    }
+                    onClick={() => addImageNode(urls[0], urls)}
                     className="group relative aspect-square overflow-hidden rounded-md border border-slate-400 hover:border-indigo-400"
                   >
                     <img
@@ -2083,10 +2162,35 @@ export default function CanvasPage() {
                       className="h-full w-full object-cover"
                       loading="lazy"
                     />
+                    {/* 候选数角标：候选已带进节点可在节点里切换，面板不提示用户就不知道 */}
+                    {urls.length > 1 && (
+                      <span className="absolute bottom-0 right-0 rounded-tl-md bg-black/60 px-1 text-[9px] font-medium text-white">
+                        {urls.length} 张
+                      </span>
+                    )}
                   </button>
                 );
               })}
-              {(history ?? []).length === 0 && (
+              {/* 三态必须分开：加载中 / 加载失败都显示成「暂无历史作品」会让用户
+                  以为作品丢了、跑去修错的地方（本项目反复踩过的「文案说谎」） */}
+              {historyLoading && (
+                <div className="col-span-3 py-4 text-center text-[11px] text-slate-500">
+                  加载中…
+                </div>
+              )}
+              {!historyLoading && historyError && (
+                <div className="col-span-3 py-4 text-center text-[11px] text-amber-600">
+                  历史作品加载失败{' '}
+                  <button
+                    type="button"
+                    className="underline hover:text-amber-500"
+                    onClick={() => refetchHistory()}
+                  >
+                    重试
+                  </button>
+                </div>
+              )}
+              {!historyLoading && !historyError && (history ?? []).length === 0 && (
                 <div className="col-span-3 py-4 text-center text-[11px] text-slate-600">
                   暂无历史作品，先上传或文生图生成
                 </div>
@@ -2112,6 +2216,11 @@ export default function CanvasPage() {
             // React Flow 自带的控件（缩放/适配）跟随全局主题；
             // 不传的话它默认 colorMode='light'，黑底画布上仍是白色控件。
             colorMode={dark ? 'dark' : 'light'}
+            // 存实例：新节点要落在当前视口中心（见 spawnPosition）——页面在 <ReactFlow> 之外，
+            // 拿不到 ReactFlowProvider 的 context，只能在 onInit 里接一次
+            onInit={(inst) => {
+              rfRef.current = inst;
+            }}
             fitView
             minZoom={0.15}
             maxZoom={2.5}
