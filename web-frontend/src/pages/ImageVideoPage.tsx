@@ -337,7 +337,14 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
     setGenerating(true);
     setStatus('文生图进行中…');
     try {
-      const res = await createVideoTask({ prompt, genType: 'text_image' });
+      const res = await createVideoTask({
+        prompt,
+        genType: 'text_image',
+        // ⚠️ 必须走直出短路（与「一键文生图」一致）：不传 directImage 时 Java 不加
+        // `direct_image`，agent 会**按 prompt 重新拆镜** → 一次白出 3~5 张不同画面的图，
+        // 而这里只用得上第 1 张（实测过的额度浪费，见 TaskServiceImpl.java:380-383）。
+        directImage: true,
+      });
       const taskId = Number(res.id);
       const t0 = Date.now();
       while (Date.now() - t0 < 90_000) {
