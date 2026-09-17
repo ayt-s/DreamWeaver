@@ -130,7 +130,11 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
                       {"node_id": "canvas_storyboarder", "node_name": "画布分镜"})
 
     segments = list(state.get("segments", []))
-    style_prompt, negative_prompt, role_clauses, keep_clauses = _control_context(state)
+    # 元素绑定的声明句**在下面逐段现算**（<Picture N> 必须对照这一段真实的参考图数组，
+    # 否则某段没有自己的首帧图时数组前移 → 绑错对象；详见 utils/prompting.py 的说明）。
+    # 这里只要风格与负面词。
+    style_prompt, negative_prompt, _global_role, _global_keep = _control_context(state)
+    bindings = state.get("reference_bindings") or []
     storyboard = []
     for idx, seg in enumerate(segments):
         # 多参考图：优先读前端透传的 reference_images 数组
@@ -157,11 +161,12 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
             cn_description = build_cn_description([cn], style_prompt=style_prompt,
                                                   negative_prompt=seg_negative)
             en_prompt = await translate_to_en(cn_description)
-            # 元素绑定 + 确定性英文运镜片段（翻译之后再拼，保证术语精确）
-            if role_clauses:
-                en_prompt = f"{role_clauses[0]} {en_prompt}"
-            if keep_clauses:
-                en_prompt = f"{en_prompt} {keep_clauses[0]}"
+            # 元素绑定：按**这一段真实的参考图数组**现算 <Picture N>（见 prompting.py）
+            seg_role, seg_keep = build_reference_bindings(bindings, ref_images)
+            if seg_role:
+                en_prompt = f"{seg_role[0]} {en_prompt}"
+            if seg_keep:
+                en_prompt = f"{en_prompt} {seg_keep[0]}"
             if camera_en:
                 en_prompt = f"{en_prompt}, {camera_en}"
         raw_seconds = _coerce_int(seg.get("seconds")) or 5

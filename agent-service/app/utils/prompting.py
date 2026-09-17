@@ -103,14 +103,25 @@ def build_cn_description(
     return "，".join(parts)
 
 
-def build_reference_bindings(bindings: object) -> tuple[list[str], list[str]]:
+def build_reference_bindings(
+    bindings: object,
+    ref_images: list[str] | None = None,
+) -> tuple[list[str], list[str]]:
     """元素语义绑定 → (角色定义句, 一致性要求句)。
 
-    输入 shapes（兼容两种）：
+    输入 shapes（兼容三种）：
       1. [{"name": "我", "image_index": 2}, {"name": "摩托车", "image_index": 3}]
       2. [{"name": "我", "imageIndex": 2}]  # Java/前端透传为 camelCase
+      3. [{"name": "我", "imageUrl": "https://…/a.png"}]  # ← 推荐：按 url 现算编号
 
-    输出英文提示词片段：agnes reference 模式用 <Picture N> 指代 images[N-1]。
+    **为什么推荐 shape 3（2026-09-17 修的真实缺陷）**：`<Picture N>` 的编号此前完全取自
+    载荷、**从不与实际参考图数组核对** —— 而前端组装每段 `reference_images` 时是
+    `[本段自己的图, ...锚定图]`，某段没有自己的图时数组整体前移一位，于是
+    「"陈浔" refers to <Picture 2>」实际指向了第 1 张 → **绑错对象**。
+    给了 `ref_images` 就按 url 在**这一段真实数组**里的位置现算；找不到就跳过该绑定
+    （顺带消灭「被 5 张上限截断后仍被 <Picture N> 悬空引用」）。
+
+    不传 `ref_images` 时退回用法 1/2（保持旧行为，向后兼容）。
     返回 ([...], [...])，调用方按位置插入提示词。
     """
     if not isinstance(bindings, list):
@@ -123,13 +134,21 @@ def build_reference_bindings(bindings: object) -> tuple[list[str], list[str]]:
         name = str(item.get("name") or "").strip()
         if not name:
             continue
-        # 兼容 snake_case（内部）/ camelCase（Java 与前端透传）
-        raw_index = item.get("image_index", item.get("imageIndex", 0))
-        try:
-            # 前端传 1-based 图片编号（<Picture N> 语义），与 agnes 对齐
-            idx = int(raw_index)
-        except (TypeError, ValueError):
-            continue
+        # 优先按 url 现算；没有 url 才退回调用方给的编号
+        raw_url = str(item.get("imageUrl") or item.get("image_url") or "").strip()
+        idx = 0
+        if raw_url and ref_images is not None:
+            try:
+                idx = list(ref_images).index(raw_url) + 1  # 1-indexed，与 agnes 对齐
+            except ValueError:
+                idx = 0  # 这一段里没有这张图（被截断 / 本段无关）→ 不产生悬空引用
+        else:
+            raw_index = item.get("image_index", item.get("imageIndex", 0))
+            try:
+                # 前端传 1-based 图片编号（<Picture N> 语义），与 agnes 对齐
+                idx = int(raw_index)
+            except (TypeError, ValueError):
+                continue
         if idx < 1:
             continue
         defines.append(f'"{name}" refers to <Picture {idx}>')
