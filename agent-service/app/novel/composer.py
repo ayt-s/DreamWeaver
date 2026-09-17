@@ -21,6 +21,9 @@ import re
 _IMAGE_RED_LINES = (
     "严禁面部特写；"
     "严禁人物居中占比较大；"
+    # ★ 2026-09-17 加：同一张角色卡，前一批出「土黄短打+补丁裤」、后一批出「绿袍束发」——
+    #   跨批次造型漂移。红字在末尾、权重最高，是唯一能同时约束所有镜头的落点。
+    "同一角色在各镜头中的服装与发型必须完全一致，不得换装；"
     "4K 超高清；"
     "16:9 画幅；"
     "主体清晰居中；"
@@ -163,11 +166,37 @@ def _animal_brief(names: list[str], analysis: dict | None = None) -> str:
     return "、".join(parts)
 
 
+# 角色卡里「服装 / 发型」的线索词 —— 用来把造型分句抠出来重复一次。
+# ★ 为什么只抠分句、不整卡重复：卡里那串并列分句本身就是「两个主体」误判的来源
+#   （见 _ANIMAL_HINTS 上方那段实测），重复整卡会放大这个问题。
+_COSTUME_HINTS = (
+    "穿", "服装", "衣", "袍", "裤", "裙", "衫", "褂", "披", "斗笠", "帽", "靴", "鞋",
+    "腰带", "束发", "发髻", "长发", "短发", "发冠", "布带",
+)
+# 抠出来的造型短语上限（太长就截断，避免把整卡搬进来）
+_COSTUME_MAX = 24
+
+
+def _costume_of(card: str) -> str:
+    """从角色卡里抠出「服装/发型」的分句（≤24 字）。抠不到返回空串 —— **不编**。
+
+    ★ 实测（2026-09-17）：同一张角色卡，前一批出「土黄短打 + 补丁裤」、后一批出
+    「绿袍束发」——跨批次造型漂移。卡本身一直在 [角色锚] 里，所以「再说一遍全卡」没用；
+    改成把造型分句**重复到该角色条目的末尾**（模型对末尾信息更敏感），再配一条末尾红线。
+    """
+    parts = re.split(r"[，。；、]", card or "")
+    hits = [p.strip() for p in parts if p.strip() and any(h in p for h in _COSTUME_HINTS)]
+    if not hits:
+        return ""
+    return "，".join(hits)[:_COSTUME_MAX]
+
+
 def _format_characters(seg: dict, analysis: dict | None = None) -> str:
     """[角色锚] 只列**人物**（动物/灵兽见 _animal_brief，走 [场景] 段）。
 
     有角色特征卡就用『名字(特征)』锁定描述，没有则只列名字。
     **只列本镜真正出现的人物**（见 _mentioned_characters）。
+    卡里有造型分句时，在该条目末尾再重复一次（见 `_costume_of`）。
     """
     names, _ = _split_characters(seg, analysis)
     if not names:
@@ -176,7 +205,11 @@ def _format_characters(seg: dict, analysis: dict | None = None) -> str:
     parts = []
     for name in names:
         if name in card:
-            parts.append(f"{name}（{card[name]}）")
+            entry = f"{name}（{card[name]}）"
+            costume = _costume_of(card[name])
+            if costume:
+                entry += f"（全片服装发型保持一致：{costume}）"
+            parts.append(entry)
         else:
             parts.append(name)
     return "、".join(parts)

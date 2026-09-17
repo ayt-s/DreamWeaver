@@ -287,3 +287,69 @@ def test_视频提示词的角色锚与图片提示词一致():
     vid = compose_video_prompt(s, "3D 写实国漫", ANALYSIS)
     assert _anchor(vid) == _anchor(img)
     assert "大黑牛" not in _anchor(vid)
+
+
+# === 造型锁定（P0-2，2026-09-17 复查后新增） ===
+
+COSTUME_ANALYSIS = {
+    "characters": {
+        "陈浔": "十七八岁少年，黑色短发，常穿粗布短衫与靛蓝长裤，腰间别一柄开山斧",
+        "阿禾": "十五岁少女，扎双髻，身着青布衣裙，手腕系红绳",
+    }
+}
+
+
+def test_角色卡里的造型分句要重复到条目末尾():
+    """★ 实测：同一张卡，前一批出「土黄短打+补丁裤」、后一批出「绿袍束发」——
+
+    卡本身一直在锚里，所以「再说一遍全卡」没用；把造型分句重复到**条目末尾**。
+    """
+    p = compose_image_prompt(
+        seg("陈浔握紧开山斧", characters=("陈浔",)), "3D 写实国漫", COSTUME_ANALYSIS
+    )
+    anchor = _anchor(p)
+    assert "全片服装发型保持一致" in anchor, "造型分句必须被重复一次"
+    assert "粗布短衫" in anchor
+
+
+def test_造型短语不许抠成长篇大论():
+    """只抠分句、且截断到 24 字：整卡重复会放大「并列分句被当成多个主体」那个问题。"""
+    long_card = {
+        "characters": {
+            "陈浔": "十七八岁少年，" + "，".join(f"细节{i}" for i in range(12)) + "，常穿粗布短衫与靛蓝长裤，腰间别斧"
+        }
+    }
+    p = compose_image_prompt(seg("陈浔握斧", characters=("陈浔",)), "3D 写实国漫", long_card)
+    tail = _anchor(p).split("全片服装发型保持一致：")[1].split("）")[0]
+    assert len(tail) <= 24
+
+
+def test_卡里没有造型词就不编():
+    """抠不到造型分句时**不许编**一句「服装一致」出来 —— 提示词里每一句都要有出处。"""
+    bare = {"characters": {"陈浔": "十七八岁少年，眉目清秀，眼神慵懒"}}
+    p = compose_image_prompt(seg("陈浔躺坐山坡", characters=("陈浔",)), "3D 写实国漫", bare)
+    assert "全片服装发型保持一致" not in _anchor(p)
+
+    # 对照：卡里有「短发」这类发型词时应当命中（线索引词表含发型，不只是衣服）
+    with_hair = {"characters": {"陈浔": "十七八岁少年，黑色短发，眼神慵懒"}}
+    p2 = compose_image_prompt(seg("陈浔躺坐山坡", characters=("陈浔",)), "3D 写实国漫", with_hair)
+    assert "全片服装发型保持一致" in _anchor(p2)
+
+
+def test_末尾红线含造型一致约束():
+    """红线在末尾、权重最高，是唯一能同时约束所有镜头的落点。"""
+    p = compose_image_prompt(seg("陈浔握斧"), "3D 写实国漫", COSTUME_ANALYSIS)
+    assert "同一角色在各镜头中的服装与发型必须完全一致" in p
+    assert "不得换装" in p
+
+
+def test_造型重复不影响六段结构与动物分流():
+    p = compose_image_prompt(
+        seg("陈浔与断角黑牛对峙", scene="山坡，黄昏", characters=("陈浔", "大黑牛")),
+        "3D 写实国漫",
+        {**COSTUME_ANALYSIS, "characters": {**COSTUME_ANALYSIS["characters"],
+                                            "大黑牛": "通体漆黑的灵兽牛，左角齐根断去"}},
+    )
+    for block in ("[角色锚]", "[主体动作]", "[场景]", "[镜头]", "[风格]"):
+        assert block in p
+    assert "大黑牛" not in _anchor(p), "动物仍不进角色锚"
