@@ -168,7 +168,13 @@ def _traced(name: str, fn):
         base = out.get("trace") or state.get("trace")
         status = (trace_util.STATUS_FAILED
                   if out.get("status") == TaskStatus.FAILED else trace_util.STATUS_OK)
-        out["trace"] = trace_util.append(base, name, status, t0)
+        # 同一节点会被反复走到（自愈轮次：qc_checker / fix_looping / video_generator
+        # 一个任务里各跑好几次）。不加轮次后缀，时间线上就是几行一模一样的
+        # 「质量检查 1.2s」，看不出**哪一轮修的、第几轮才过** —— 而这正是排障时
+        # 最想知道的事。后缀用 `@`，与逐件序号 `#` 严格分开（见 utils/trace.py）。
+        nth = trace_util.visit_index(base, name) + 1
+        label = name if nth == 1 else trace_util.visit(name, nth)
+        out["trace"] = trace_util.append(base, label, status, t0)
         return out
     return wrapper
 

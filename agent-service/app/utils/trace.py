@@ -42,10 +42,45 @@ STATUS_FAILED = "failed"
 STATUS_REUSED = "reused"
 STATUS_SKIPPED = "skipped"
 
+#: 轮次后缀标记。**必须和 `#` 分开**：
+#: - `video_generator#2` = 第 2 镜/第 2 张（**逐件**，节点自己写）
+#: - `qc_checker@2`       = 第 2 次执行（**同一节点被反复走到**，图层包装写）
+#: 混用一个符号，前端就分不清「第 2 镜」和「第 2 轮」。
+VISIT_MARK = "@"
+
 
 def shot(node: str, index: int) -> str:
     """给节点名加镜/段序号后缀（1-based）。见模块文档「序号是时间线可用的前提」。"""
     return f"{node}#{index + 1}"
+
+
+def visit(node: str, nth: int) -> str:
+    """给节点名加**执行轮次**后缀（1-based）。自愈循环下同一节点会被走多次。"""
+    return f"{node}{VISIT_MARK}{nth}"
+
+
+def base_name(node: str) -> str:
+    """剥掉 `#镜号` / `@轮次` 后缀，得到纯节点名。"""
+    for sep in ("#", VISIT_MARK):
+        node = node.split(sep)[0]
+    return node
+
+
+def visit_index(trace: list | None, name: str) -> int:
+    """`name` 已经作为**节点级条目**出现过的次数（逐件条目 `#k` 不计）。
+
+    ⚠️ 必须排除逐件条目：`video_generator#1/#2` 属于**同一次**节点执行，
+    把它们算成两次访问的话，节点级条目从一开始就会显示成「第 3 次执行」——
+    这是我在实现时差点写错的地方（同一段 delta 里逐件条目排在前面）。
+    """
+    count = 0
+    for entry in trace or []:
+        node = str(entry.get("node", ""))
+        if "#" in node:
+            continue
+        if base_name(node) == name:
+            count += 1
+    return count
 
 
 def append(trace: list | None, node: str, status: str,

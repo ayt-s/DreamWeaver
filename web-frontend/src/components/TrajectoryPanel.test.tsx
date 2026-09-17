@@ -176,4 +176,23 @@ describe('TraceTimeline（批次 C3）', () => {
     expect(screen.getByText('brand_new_node')).toBeInTheDocument();
     expect(screen.queryByText(/undefined/)).toBeNull();
   });
+
+  it('★ 同一节点多次执行要能区分轮次（自愈循环下 QC 会跑好几遍）', () => {
+    render(
+      <TraceTimeline
+        entries={[
+          { node: 'qc_checker', status: 'ok', elapsed_ms: 1200 },
+          { node: 'fix_looping', status: 'ok', elapsed_ms: 90_000 },
+          { node: 'qc_checker@2', status: 'ok', elapsed_ms: 1100 },
+          { node: 'qc_checker@3', status: 'failed', elapsed_ms: 1000 },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText(/第 2 次/)).toBeInTheDocument();
+    expect(screen.getByText(/第 3 次/)).toBeInTheDocument();
+    // 四行的可见文本必须互不相同 —— 否则时间线上就是几行一模一样的「质量检查」
+    const rows = screen.getAllByRole('listitem').map((li) => li.textContent);
+    expect(new Set(rows).size).toBe(rows.length);
+  });
 });

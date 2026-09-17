@@ -105,6 +105,43 @@ def test_shot_suffix_is_one_based():
     assert trace_util.shot("video_generator", 9) == "video_generator#10"
 
 
+# ---- 轮次后缀（@）：与逐件序号（#）是两个正交的维度 ----
+
+
+def test_visit_suffix_marks_repeat_execution():
+    assert trace_util.visit("qc_checker", 2) == "qc_checker@2"
+
+
+def test_base_name_strips_both_suffixes():
+    assert trace_util.base_name("video_generator#2") == "video_generator"
+    assert trace_util.base_name("qc_checker@3") == "qc_checker"
+    assert trace_util.base_name("qc_checker") == "qc_checker"
+
+
+def test_per_item_entries_do_not_count_as_visits():
+    """★ 逐件条目（`#k`）属于**同一次**节点执行，不能算成多次访问。
+
+    这是实现时最容易写错的地方：视频节点的 delta 里逐件条目排在节点级条目**前面**，
+    若把它们也数进去，节点级条目从一开始就会显示成「第 3 次执行」。
+    """
+    trace = [{"node": "video_generator#1"}, {"node": "video_generator#2"}]
+
+    assert trace_util.visit_index(trace, "video_generator") == 0
+
+
+def test_visit_index_counts_only_node_level_entries():
+    trace = [
+        {"node": "qc_checker"},
+        {"node": "video_generator#1"},
+        {"node": "qc_checker@2"},
+    ]
+
+    assert trace_util.visit_index(trace, "qc_checker") == 2
+    assert trace_util.visit_index(trace, "video_generator") == 0
+    assert trace_util.visit_index(trace, "nobody") == 0
+    assert trace_util.visit_index(None, "qc_checker") == 0
+
+
 # ------------------------------------------------------- 结构级护栏（覆盖全仓）
 
 
@@ -228,6 +265,44 @@ def patched(monkeypatch):
 
     monkeypatch.setattr(qc_mod, "analyze_video_frames", _analyze)
     return gw
+
+
+@pytest.mark.asyncio
+async def test_repeated_node_visits_are_distinguishable(monkeypatch, patched):
+    """★ 同一节点被**多次执行**时必须可区分（自愈轮次）。
+
+    和「逐镜条目要带序号」是同一类问题：自愈开启后 `qc_checker` / `fix_looping` /
+    `video_generator` 在一个任务里各会被跑好几次，若节点级条目同名，
+    时间线上就是几行一模一样的「质量检查 1.2s」，看不出**哪一轮修的、第几轮才过**。
+
+    这正是真实排障时最想知道的事（上一轮线上任务 13:07 进 fix_looping、13:12 失败，
+    当时最想确认的就是"第几轮做了什么"）。
+    """
+    from app import graph
+
+    # 只让第 1 镜失败（失败过半会触发成本闸门 → 一次都不修，就跑不出多轮）
+    from app.nodes import qc as qc_mod
+
+    def _analyze(path):
+        bad = path.endswith("seg_000.mp4")
+        return {"total_frames": 5, "black_frame_ratio": 0.0,
+                "blur_frame_ratio": 1.0 if bad else 0.0, "passed": not bad}
+
+    monkeypatch.setattr(qc_mod, "analyze_video_frames", _analyze)
+
+    res = await graph.compiled_graph.ainvoke(
+        {"session_id": "c1-repeat", "user_id": "t", "raw_prompt": "产品宣传片，10 秒",
+         "gen_type": "text_video", "status": TaskStatus.PENDING,
+         "fix_round": 0, "max_fix_rounds": 2, "fix_history": [],
+         "trace": [], "created_at": 0, "updated_at": 0},
+        config={"configurable": {"thread_id": "c1-repeat"}})
+
+    names = [t["node"] for t in res["trace"]]
+    qc = [n for n in names if n.startswith("qc_checker")]
+
+    assert len(qc) >= 2, f"这个用例需要 QC 被跑多次，实际 trace: {names}"
+    assert len(set(qc)) == len(qc), f"QC 多次执行无法区分轮次: {qc}"
+    assert res["fix_round"] >= 1, f"应真的修过，实际 fix_round={res['fix_round']}"
 
 
 @pytest.mark.asyncio

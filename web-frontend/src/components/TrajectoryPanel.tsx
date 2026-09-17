@@ -254,8 +254,7 @@ export function TraceTimeline({ entries }: { entries: TraceEntry[] }) {
       </h3>
       <ol className="space-y-1">
         {entries.map((entry, i) => {
-          const [base, seq] = entry.node.split('#');
-          const label = NODE_NAMES[base] ?? base;
+          const { label, suffix } = parseTraceNode(entry.node);
           const isFailed = entry.status === 'failed';
           return (
             <li
@@ -267,7 +266,7 @@ export function TraceTimeline({ entries }: { entries: TraceEntry[] }) {
               </span>
               <span className={isFailed ? 'text-red-700' : 'text-slate-700'}>
                 {label}
-                {seq ? ` · 第 ${seq} 个` : ''}
+                {suffix ? ` · ${suffix}` : ''}
               </span>
               <span className="ml-auto flex items-center gap-2">
                 {entry.status === 'reused' && (
@@ -285,6 +284,26 @@ export function TraceTimeline({ entries }: { entries: TraceEntry[] }) {
       </ol>
     </div>
   );
+}
+
+/**
+ * 拆解 trace 条目里的节点名。
+ *
+ * 两个**正交**的后缀（后端约定见 `agent-service/app/utils/trace.py`）：
+ * - `#k`：逐件序号（第 k 镜 / 第 k 张）—— 节点自己写
+ * - `@n`：执行轮次（同一节点第 n 次被走到，自愈循环下常见）—— 图层包装写
+ *
+ * 两者可能同时出现，所以分开解析、**分别措辞**（「第 2 个」不等于「第 2 次」——
+ * 用同一个词会让「第 2 镜」和「第 2 轮修复」在界面上无法区分）。
+ */
+function parseTraceNode(node: string): { label: string; suffix: string } {
+  const [nameAndVisit, itemSeq] = node.split('#');
+  const [base, visitSeq] = nameAndVisit.split('@');
+  const suffix = [
+    itemSeq ? `第 ${itemSeq} 个` : '',
+    visitSeq ? `第 ${visitSeq} 次` : '',
+  ].filter(Boolean).join(' · ');
+  return { label: NODE_NAMES[base] ?? base, suffix };
 }
 
 function formatElapsed(ms: number): string {
