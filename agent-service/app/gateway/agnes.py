@@ -50,7 +50,14 @@ async def _with_retry(operation: Callable[[], Awaitable[httpx.Response]],
         except httpx.HTTPError as e:
             if attempt == max_retries - 1:
                 raise
-            logger.error(f"{what} 请求异常: {e}，5s 后重试 ({attempt + 1}/{max_retries})")
+            # ⚠️ 别直接打印 {e}：httpx 传输层异常的 str() 常是空串，实测 2026-09-17
+            # 日志出现「文本(intl) 请求异常: ，5s 后重试 (1/3)」—— 声称说了原因，
+            # 实际什么都没说（视频路径已在 f84232c 用 _describe_transport_error 修过，
+            # 这条重试日志当时漏了）。该函数保证带异常类型名。
+            logger.error(
+                f"{what} 请求异常（{_describe_transport_error(e)}），"
+                f"5s 后重试 ({attempt + 1}/{max_retries})"
+            )
             await asyncio.sleep(5)
     # 理论不可达（HTTPError 已 raise）
     assert resp is not None
