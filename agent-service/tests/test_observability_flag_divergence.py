@@ -14,6 +14,8 @@
 **这条测试在修复前是红的**（旧实现下 `seen["sdk_tracing"]` 是 False）。
 """
 
+import logging
+
 import pytest
 
 from app.utils import observability
@@ -24,8 +26,10 @@ async def test_our_flag_on_forces_sdk_tracing(monkeypatch):
     monkeypatch.setattr(observability.settings, "langsmith_tracing", True)
     monkeypatch.setenv("LANGSMITH_TRACING", "1")  # ← SDK 不认的写法，正是踩到的那个
     monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_pt_fake_for_test")
-    # 别真往 LangSmith 打：丢给一个必然拒绝的本地端口（断言不受上传结果影响）
+    # 别真往 LangSmith 打：丢给一个必然拒绝的本地端口。
+    # ⚠️ 必须同时改 settings（_try_wrap 用的是 settings.langsmith_endpoint，环境变量会被它覆盖）
     monkeypatch.setenv("LANGSMITH_ENDPOINT", "http://127.0.0.1:9")
+    monkeypatch.setattr(observability.settings, "langsmith_endpoint", "http://127.0.0.1:9")
     observability.reset_cache()
 
     from langsmith.utils import tracing_is_enabled
@@ -65,3 +69,39 @@ async def test_flag_off_keeps_passthrough(monkeypatch):
     assert await observability.traced("flag_probe_off")(inner)() == "ok"
     assert called["ran"] is True, "关闭时也要正常执行（直通）"
     assert observability._wrapped == {}, "开关关闭时不应包装 —— 否则会建 run 并上报"
+
+
+# ------------------------------------------------- 令牌形状（抄错一位的护栏）
+
+
+def test_key_shape_guard_catches_transcription_typo():
+    """★ 回归护栏：抄 key 少一位（50 而不是 51）时必须被判出来。
+
+    2026-09-17 实测：这种 key 在 LangSmith 读（`/sessions`）和写（`/runs/multipart`）
+    一律 403，而 SDK 只回一句 `403 Forbidden`，没有任何「key 不对」的线索 ——
+    我因此先跑去查了网络、代理、三个区域域名（方向全错）。
+
+    形状的权威来源：同机另一个项目 `YanQue-AI/.env` 里能用的 key 就是
+    `lsv2_pt_<32位hex>_<10位>` 共 51 位。
+    """
+    good = "lsv2_pt_" + "a1b2c3d4e5f60718293a4b5c6d7e8f90" + "_0123456789"
+    assert len(good) == 51, "自己先把样例长度算对，否则这条测试没意义"
+    assert observability.key_shape_ok(good)
+
+    assert not observability.key_shape_ok(good[:-1]), "少一位（正是踩到的形态）应被判出"
+    assert not observability.key_shape_ok(good + "x"), "多一位也应被判出"
+    assert not observability.key_shape_ok("")
+    assert not observability.key_shape_ok(None)
+    assert not observability.key_shape_ok("lsv2_pt_" + "z" * 32 + "_0123456789"), "非 hex"
+
+
+def test_bad_key_shape_warns_once(caplog):
+    """形状告警只打一次（否则每个请求刷一行日志）。"""
+    observability._warned_bad_key = False
+    with caplog.at_level(logging.WARNING):
+        observability._warn_bad_key_shape("lsv2_pt_short")
+        observability._warn_bad_key_shape("lsv2_pt_short")
+
+    hits = [r for r in caplog.records if "形状可疑" in r.getMessage()]
+    assert len(hits) == 1, f"应只告警一次，实际 {len(hits)} 次"
+    assert "403" in hits[0].getMessage(), "告警要说清后果（403），否则看不懂为什么要管它"

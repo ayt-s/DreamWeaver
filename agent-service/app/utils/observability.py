@@ -31,6 +31,7 @@ from __future__ import annotations
 import functools
 import logging
 import os
+import re
 
 from app.config import settings
 
@@ -41,6 +42,9 @@ _wrapped: dict[str, object] = {}
 
 #: 包装失败的告警只打一次，避免每个请求刷一行
 _warned = False
+
+#: key 形状告警也只打一次（与 _warned 分开：形状对但包装失败、或反之，各告一次）
+_warned_bad_key = False
 
 
 def enabled() -> bool:
@@ -77,6 +81,34 @@ def traced(name: str, run_type: str = "llm"):
     return decorator
 
 
+# `lsv2_pt_<32 位 hex>_<10 位>`（个人令牌）或 `lsv2_sk_...`（服务令牌）。
+#
+# ⚠️ 为什么专门校验形状（2026-09-17 实测）：从 LangSmith 页面抄 key 时**少抄一个字符**
+# （50 位而不是 51 位），结果**读 `/sessions` 与写 `/runs/multipart` 一律 403**，
+# 而 langsmith SDK 的报错只说 `403 Forbidden`，不带任何「key 不对」的线索 ——
+# 排查方向很容易被带偏到网络/代理/区域（我确实先查了三个区域域名）。
+# 所以形状不对就**大声告警**，一眼定位。
+_KEY_SHAPE = re.compile(r"^lsv2_[a-z]{2}_[0-9a-f]{32}_\w{10}$")
+
+
+def key_shape_ok(key: str) -> bool:
+    """key 形状是否符合 LangSmith 令牌格式（不校验有效性，只挡「抄错/截断」）。"""
+    return bool(_KEY_SHAPE.match(key or ""))
+
+
+def _warn_bad_key_shape(key: str) -> None:
+    global _warned_bad_key
+    if not key or key_shape_ok(key):
+        return
+    if not _warned_bad_key:
+        _warned_bad_key = True
+        logger.warning(
+            "LANGSMITH_API_KEY 形状可疑（长度 %d，应为 51：lsv2_pt_<32位hex>_<10位>）。"
+            "形状不对时 LangSmith 对读和写一律返回 403，别去查网络/区域/权限：%s…",
+            len(key), key[:13],
+        )
+
+
 def _try_wrap(fn, name: str, run_type: str):
     """惰性包一层 `langsmith.traceable`；包不上就退回原函数。
 
@@ -95,8 +127,10 @@ def _try_wrap(fn, name: str, run_type: str):
         from langsmith import Client, traceable
         from langsmith.run_helpers import tracing_context
 
+        key = getattr(settings, "langsmith_api_key", "") or os.getenv("LANGSMITH_API_KEY", "")
+        _warn_bad_key_shape(key)
         client = Client(
-            api_key=getattr(settings, "langsmith_api_key", "") or None,
+            api_key=key or None,
             api_url=settings.langsmith_endpoint or None,
         )
         wrapped = traceable(
