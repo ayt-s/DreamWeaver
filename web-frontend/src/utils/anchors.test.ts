@@ -14,6 +14,7 @@ import {
   anchorsForPrompt,
   anchorNamesInPrompt,
   parseAnchorRefs,
+  pickUrlsByPrompt,
   serializeAnchorRefs,
   type AnchorMap,
 } from './anchors';
@@ -97,6 +98,33 @@ describe('anchorsForPrompt（每段只带相关锚定图）', () => {
     expect(r.matched).toBe(false);
     expect(Object.keys(r.chars).sort()).toEqual(['大黑牛', '陈浔']);
     expect(Object.keys(r.scenes)).toEqual(['破旧山洞']);
+  });
+});
+
+describe('pickUrlsByPrompt（每段筛选的老结构入口，P0-3）', () => {
+  const chars = { 陈浔: URL_A, 大黑牛: URL_B };
+
+  it('只留下这段真正提到的名字', () => {
+    expect(pickUrlsByPrompt('陈浔牵着大黑牛走进山洞', chars)).toEqual({
+      picked: chars,
+      matched: true,
+    });
+    expect(pickUrlsByPrompt('陈浔独自站在崖边', chars)).toEqual({
+      picked: { 陈浔: URL_A },
+      matched: true,
+    });
+  });
+
+  it('★ 一个都没提到 → 全给 + matched=false（与改动前一致，不劣化）', () => {
+    expect(pickUrlsByPrompt('一只猫在窗台打盹', chars)).toEqual({
+      picked: chars,
+      matched: false,
+    });
+  });
+
+  it('空映射/空提示词都不崩', () => {
+    expect(pickUrlsByPrompt('随便什么', {})).toEqual({ picked: {}, matched: false });
+    expect(pickUrlsByPrompt('', chars)).toEqual({ picked: chars, matched: false });
   });
 });
 

@@ -59,6 +59,7 @@ import {
 import { generateText } from '../api/agent';
 import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
 import { reorderShotX, sortShots } from '../utils/shotOrder';
+import { MAX_REF_PICTURES, pickUrlsByPrompt } from '../utils/anchors';
 import {
   CAMERA_ANGLE_OPTIONS,
   CAMERA_MOVE_OPTIONS,
@@ -732,8 +733,8 @@ export default function CanvasPage() {
     Object.keys(anchorCharRefs).length > 0 ? anchorCharRefs : (anchorRefs?.characters ?? {});
   const effectiveSceneRefs =
     Object.keys(anchorSceneRefs).length > 0 ? anchorSceneRefs : (anchorRefs?.scenes ?? {});
-  // agnes reference 模式硬限制 5 张图（与 canvas_storyboarder_node 的截断一致）
-  const MAX_REF_PICTURES = 5;
+  // agnes reference 模式硬限制 5 张图 —— 常量收在 utils/anchors.ts（唯一出处，
+  // 与 agent 侧 canvas_storyboarder_node 的截断保持一致）
   const bindingRows = useMemo(() => {
     const rows: { key: string; label: string; url: string; pictureIndex: number }[] = [];
     let idx = 2; // Picture 1 是每段自己的图，锚定图从 2 开始
@@ -1269,21 +1270,32 @@ export default function CanvasPage() {
         const charRefsMap = effectiveCharRefs;
         const sceneRefsMap = effectiveSceneRefs;
         const enriched = plan.segments.map((seg) => {
+          // ★ 每段只带**这一段真正用到**的锚定图（P0-3）：agnes 对每张参考图都加权，
+          // 把无关角色/场景塞进去会被"拉"进画面；而且 5 张名额会被无关项占满，
+          // 真正该出场的角色反被静默挤掉。匹配口径与首帧描述注入完全一致
+          // （见 utils/anchors.ts，同一条规则）。一个都没匹配到 → 退回全给，
+          // 与改动前行为一致（不劣化）。
+          const { picked: chars } = pickUrlsByPrompt(seg.prompt ?? '', charRefsMap);
+          const { picked: scenes } = pickUrlsByPrompt(seg.prompt ?? '', sceneRefsMap);
           const extraRefs: string[] = [];
-          for (const url of Object.values(charRefsMap)) extraRefs.push(url);
-          for (const url of Object.values(sceneRefsMap)) extraRefs.push(url);
+          for (const url of Object.values(chars)) extraRefs.push(url);
+          for (const url of Object.values(scenes)) extraRefs.push(url);
           const merged = [seg.image_url, ...extraRefs].filter((u): u is string => !!u);
           return { ...seg, reference_images: merged.slice(0, MAX_REF_PICTURES) };
         });
         segmentsJson = JSON.stringify(enriched);
       }
       // ④ 元素语义绑定：名词 → <Picture N>（agent 转成占位符，保证角色/道具跨镜一致）
+      // ★ P0-2：**带上 imageUrl**，让 agent 按「这张图在本段真实数组里的位置」现算编号
+      //   —— 上面做了每段筛选（P0-3）后数组长度逐段不同，写死编号必然错位。
+      //   `imageIndex` 仍在，作为 url 缺失时的兜底（agent 侧两者都认）。
       const referenceBindings =
         activeBindingRows.length > 0
           ? JSON.stringify(
               activeBindingRows.map((r) => ({
                 name: (bindingNames[r.key] ?? r.label).trim(),
                 imageIndex: r.pictureIndex,
+                imageUrl: r.url,
               })),
             )
           : undefined;

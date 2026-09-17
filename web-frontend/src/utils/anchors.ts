@@ -81,10 +81,28 @@ export function serializeAnchorRefs(refs: AnchorMap): string | undefined {
  * 规则就是朴素包含判断：名字是用户自己填的（「陈浔」「破旧山洞」），
  * 中文没有词边界，包含判断足够；**一个都没匹配到时由调用方决定兜底行为**。
  */
-export function anchorNamesInPrompt(prompt: string, refs: AnchorMap): string[] {
+export function anchorNamesInPrompt(prompt: string, refs: Record<string, unknown>): string[] {
   const text = String(prompt ?? '');
   if (!text.trim()) return [];
   return Object.keys(refs).filter((name) => name.trim() && text.includes(name.trim()));
+}
+
+/**
+ * 从「名字 → url」映射里挑出这段提示词提到的项（P0-3 的每段筛选）。
+ *
+ * 与 `anchorsForPrompt` 是**同一套匹配口径**的两个入口：那边面向 `{url, desc}` 的新结构，
+ * 这边面向画布当前还在用的「名字 → url」老结构（接线完成前两者并存，口径必须一致）。
+ * 一个都没匹配到 → `matched=false`，由调用方决定兜底（当前是「全给」，与改动前一致）。
+ */
+export function pickUrlsByPrompt(
+  prompt: string,
+  urls: Record<string, string>,
+): { picked: Record<string, string>; matched: boolean } {
+  const hits = anchorNamesInPrompt(prompt, urls);
+  if (hits.length === 0) return { picked: urls, matched: false };
+  const picked: Record<string, string> = {};
+  for (const name of hits) if (urls[name]) picked[name] = urls[name];
+  return { picked, matched: true };
 }
 
 /** 每段实际要带上的锚定图（命中不了就**全给**，保持与改动前一致＝不劣化）。 */
