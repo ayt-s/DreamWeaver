@@ -48,17 +48,27 @@ class AppError(Exception):
 
 
 # 已知原始异常签名 → 用户友好中文（子串匹配，大小写不敏感；命中即返回）
+#
+# ⚠️ 措辞红线：**本模块跑在 agent 进程内**，所以这里出现的连接失败几乎只可能是
+#    agent **自己出网**（调 agnes 生成平台 / 回调 Java），而不是「Agent 服务不可达」。
+#    2026-09-17 实测踩到：任务 53 因 agnes 连接失败而失败（agent 日志里
+#    `httpx.ConnectError` during `requirement_parser`），但卡片上显示的是
+#    「Agent 服务暂不可用，请稍后重试」→ **用户会去重启 agent，而 agent 活得好好的**。
+#    所以这里一律把失败指向**真正的下一跳**（平台/网络），不要写「Agent 服务」。
+#    （Java 侧 `TaskServiceImpl` 的「Agent 服务暂不可用」是对的 —— 那是 Java 连不上
+#      agent 的场景，两处语义不同，别互抄。）
 _RAW_ERROR_CN: list[tuple[str, str]] = [
-    # 网络层（Agent 服务不可达 / 上游抖动）
-    ("connection refused", "Agent 服务暂不可用，请稍后重试"),
-    ("connection reset", "Agent 服务连接被重置，请稍后重试"),
-    ("connecterror", "Agent 服务暂不可用，请稍后重试"),
-    ("connection attempts failed", "Agent 服务暂不可用，请稍后重试"),
-    ("name or service not known", "Agent 服务地址解析失败，请联系管理员"),
+    # 网络层（agent 出网失败：网络 / 代理 / DNS）
+    ("connection refused", "连接生成平台失败（网络或代理不通），请检查网络后重试"),
+    ("connection reset", "连接生成平台被重置（网络不稳），请检查网络后重试"),
+    ("connecterror", "连接生成平台失败（网络或代理不通），请检查网络后重试"),
+    ("connection attempts failed", "连接生成平台失败（网络或代理不通），请检查网络后重试"),
+    ("name or service not known", "域名解析失败（网络或 DNS 异常），请检查网络后重试"),
     ("network is unreachable", "网络不可达，请检查网络后重试"),
-    # 超时
-    ("timed out", "生成服务响应超时，请稍后重试"),
-    ("timeout", "生成服务响应超时，请稍后重试"),
+    # 超时。agnes 免费额度只有 RPM 限制，排队时响应就会变慢 → 文案要提示这一点，
+    # 否则用户会以为是平台挂了（后端 gateway 侧已有同样的诊断口径，见 f84232c）
+    ("timed out", "生成平台响应超时（平台排队/限流时常见），请稍后重试"),
+    ("timeout", "生成平台响应超时（平台排队/限流时常见），请稍后重试"),
     # 鉴权 / 资源
     ("unauthorized", "API 密钥无效或已过期，请联系管理员"),
     ("insufficient balance", "账户余额不足，请充值后重试"),

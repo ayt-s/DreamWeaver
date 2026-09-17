@@ -35,6 +35,7 @@ import {
   getTaskSegments,
 } from '../api/tasks';
 import { useTaskEvents } from '../hooks/useTaskEvents';
+import { errorHint } from '../utils/errorHint';
 import SegmentManager from './SegmentManager';
 import SlideshowPanel from './SlideshowPanel';
 import ParamEditDialog from './ParamEditDialog';
@@ -298,6 +299,13 @@ export default function TaskCard({ task, subscribe = false }: TaskCardProps) {
               {task.errorMessage}
             </p>
           )}
+          {/* 「下一步该怎么办」：后端负责诊断（是什么/为什么），这里补动作（所以呢） */}
+          {(() => {
+            const hint = errorHint(task.errorMessage);
+            return hint ? (
+              <p className="mt-1 text-xs text-slate-500">建议：{hint}</p>
+            ) : null;
+          })()}
         </div>
       </div>
 

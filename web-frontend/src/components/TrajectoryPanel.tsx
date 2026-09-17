@@ -5,6 +5,7 @@ import { getTask } from '../api/tasks';
 import { agentTaskState, type QcReport, type TraceEntry } from '../api/agent';
 import { useTaskStore } from '../store/taskStore';
 import { parseResultUrls } from '../types/task';
+import { errorHint } from '../utils/errorHint';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Video, CheckCircle, XCircle, Clock, AlertCircle, ScanSearch } from 'lucide-react';
 import { statusLabel } from '../types/task';
@@ -372,6 +373,8 @@ export function QcReportBlock({ qc }: { qc: QcReport | null }) {
 
 function TaskStatusLine({ task }: { task: { status: string; errorMessage?: string } }) {
   if (task.status === 'failed') {
+    // 「下一步该怎么办」由前端补（后端那句是诊断，见 utils/errorHint.ts）
+    const hint = errorHint(task.errorMessage);
     return (
       <motion.div
         initial={{ opacity: 0, y: -10 }}
@@ -379,7 +382,10 @@ function TaskStatusLine({ task }: { task: { status: string; errorMessage?: strin
         className="mb-4 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
       >
         <XCircle className="h-5 w-5 shrink-0" />
-        失败：{task.errorMessage ?? '未知原因'}
+        <span>
+          失败：{task.errorMessage ?? '未知原因'}
+          {hint && <span className="ml-1 text-red-500/80">（{hint}）</span>}
+        </span>
       </motion.div>
     );
   }
