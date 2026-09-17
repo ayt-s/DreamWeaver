@@ -34,6 +34,8 @@ export async function listTasks(params: {
    * 不传 = 按 includeAssets 走老逻辑（画廊/旧面板行为不变）。
    */
   source?: 'asset' | 'work';
+  /** 关键字：按创作需求原文/提示词模糊匹配（后端已转义 % 与 _，不会当通配符） */
+  keyword?: string;
 }): Promise<TaskListResponse> {
   const {
     page = 1,
@@ -43,6 +45,7 @@ export async function listTasks(params: {
     includeAssets = false,
     status,
     source,
+    keyword,
   } = params;
   return unwrap(
     client.get('/tasks', {
@@ -55,6 +58,7 @@ export async function listTasks(params: {
         includeAssets: includeAssets || undefined,
         status: status || undefined,
         source: source || undefined,
+        keyword: keyword || undefined,
       },
     }),
   );

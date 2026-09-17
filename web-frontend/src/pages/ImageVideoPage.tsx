@@ -39,6 +39,7 @@ import {
   X,
   RefreshCw,
   Tags,
+  History,
 } from 'lucide-react';
 import {
   createVideoTask,
@@ -112,6 +113,13 @@ interface ImageNodeData {
   candidates?: string[];
   /** 结构化运镜（景别/机位/运镜），可选；空则不注入提示词 */
   cameraSpec?: CameraSpec;
+  /**
+   * 来源：从「历史作品/画布素材」加入画布时记下的源任务（只读，**不参与生成**）。
+   * 只作为追溯信息随画布保存 —— 用来回答「这张图是哪来的、当初写的什么」。
+   */
+  originTaskId?: number;
+  /** 来源任务的原始提示词（只读）；点节点上的「填入提示词」才会写进 prompt 字段 */
+  originPrompt?: string;
 }
 interface VideoNodeData {
   seconds: number;
@@ -506,6 +514,42 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
       {data.imageUrl && !isPublicImageUrl(data.imageUrl) && (
         <div className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
           本地上传图仅可预览，生成需公网图：请用历史作品或点「文生图」生成
+        </div>
+      )}
+
+      {/* 来源（只读）：从「历史作品/画布素材」入画布时记下的源任务。
+          刻意**不自动写进 prompt**：那套 [角色锚]/[镜头] 是给图模型的静态设定，
+          而图生视频要的是动作描述，塞进去还会踩「列了谁就画谁/人数措辞凑人数」的坑。
+          要不要用，由用户点一下「填入提示词」决定（填进去的是可编辑文本，源任务那份永远只读） */}
+      {data.originPrompt && (
+        <div className="mb-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
+          <div className="mb-1 flex items-center gap-1.5 text-[10px] text-slate-500">
+            <History className="h-3 w-3" />
+            来源 #{data.originTaskId}
+            <button
+              type="button"
+              className="nodrag ml-auto rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-600 hover:bg-slate-200"
+              title="把来源提示词填进本节点的提示词（填进去后可自由编辑）"
+              onClick={() => {
+                if (data.prompt.trim() && !window.confirm('会覆盖本节点现有提示词，继续？')) {
+                  return;
+                }
+                patch({ prompt: data.originPrompt ?? '' });
+              }}
+            >
+              填入提示词
+            </button>
+          </div>
+          <div className="max-h-16 overflow-y-auto whitespace-pre-wrap text-[10px] leading-relaxed text-slate-500">
+            {data.originPrompt}
+          </div>
+        </div>
+      )}
+      {/* 空提示词的后果必须说清：agent 侧会兜底成「对参考图内容做缓慢推进的动态运镜」
+          （storyboard.py:150-153）。不说的话，用户会以为画布上的提示词真的在起作用 */}
+      {data.imageUrl && !(data.prompt || '').trim() && (
+        <div className="mb-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] text-slate-500">
+          未填提示词 → 提交时用通用运镜兜底（对参考图缓慢推进）
         </div>
       )}
 
@@ -1347,7 +1391,12 @@ export default function CanvasPage() {
   );
 
   const addImageNode = useCallback(
-    (url: string, candidates?: string[]) => {
+    (
+      url: string,
+      candidates?: string[],
+      /** 来源任务（从「历史作品/画布素材」入画布时带过来，只读追溯用） */
+      origin?: { taskId: number; prompt: string },
+    ) => {
       setNodes((nds) => [
         ...nds,
         {
@@ -1363,6 +1412,12 @@ export default function CanvasPage() {
             // 而节点里本来就有「候选 N 张 · 点一张设为首帧」的切换器 ——
             // 不带的话用户在画布上永远只能拿到第 1 张（此时另一张可能才是好的）。
             ...(candidates && candidates.length > 1 ? { candidates } : {}),
+            // 来源只记录、不写进 prompt：把 [角色锚]/[镜头] 那套静态设定塞进视频提示词
+            // 会触发已知坑（列了谁就画谁、人数措辞凑人数），而图生视频要的是动作描述。
+            // 用户点节点上的「填入提示词」才算显式接管（见 ImageNodeView）。
+            ...(origin && origin.prompt.trim()
+              ? { originTaskId: origin.taskId, originPrompt: origin.prompt }
+              : {}),
           },
         },
       ]);
@@ -2199,7 +2254,9 @@ export default function CanvasPage() {
                       (t.prompt || `#${t.id}`) +
                       (urls.length > 1 ? `（该任务有 ${urls.length} 张候选，入画布后在节点里切换）` : '')
                     }
-                    onClick={() => addImageNode(urls[0], urls)}
+                    onClick={() =>
+                      addImageNode(urls[0], urls, { taskId: t.id, prompt: t.prompt || '' })
+                    }
                     className="group relative aspect-square overflow-hidden rounded-md border border-slate-400 hover:border-indigo-400"
                   >
                     <img
@@ -2244,23 +2301,29 @@ export default function CanvasPage() {
                 </div>
               )}
             </div>
-            {/* 加载更多：面板 12 格一页，作品一多就够不着了（此前是硬截断，没有入口） */}
+            {/* 加载更多：面板 12 格一页，作品一多就够不着了（此前是硬截断，没有入口）。
+                顶到 48 张上限后不继续堆（窄侧栏不适合浏览全部），改为指向画廊 ——
+                画廊有完整分页、筛选，以及「显示画布素材」开关（?assets=1 直接打开） */}
             {!historyLoading && !historyError && history && history.total > history.rows.length && (
-              <button
-                type="button"
-                onClick={() => setHistoryPages((p) => p + 1)}
-                disabled={
-                  historyFetching || HISTORY_PAGE_SIZE * historyPages >= HISTORY_MAX_SIZE
-                }
-                title={
-                  HISTORY_PAGE_SIZE * historyPages >= HISTORY_MAX_SIZE
-                    ? `面板最多展示 ${HISTORY_MAX_SIZE} 张，更多请去画廊`
-                    : '再加载一页'
-                }
-                className={`mt-2 w-full rounded-lg border px-2 py-1 text-[11px] disabled:opacity-50 ${theme.btn}`}
-              >
-                加载更多（已显示 {history.rows.length} / 共 {history.total}）
-              </button>
+              HISTORY_PAGE_SIZE * historyPages >= HISTORY_MAX_SIZE ? (
+                <Link
+                  to="/gallery?assets=1"
+                  title={`面板最多展示 ${HISTORY_MAX_SIZE} 张；更多（共 ${history.total} 张）去画廊看`}
+                  className={`mt-2 block w-full rounded-lg border px-2 py-1 text-center text-[11px] ${theme.btn}`}
+                >
+                  去画廊看全部（共 {history.total} 张）→
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setHistoryPages((p) => p + 1)}
+                  disabled={historyFetching}
+                  title="再加载一页"
+                  className={`mt-2 w-full rounded-lg border px-2 py-1 text-[11px] disabled:opacity-50 ${theme.btn}`}
+                >
+                  加载更多（已显示 {history.rows.length} / 共 {history.total}）
+                </button>
+              )
             )}
           </section>
         </aside>

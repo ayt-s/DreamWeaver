@@ -78,7 +78,7 @@ class TaskServiceImplListFilterTest {
         when(taskMapper.selectCount(any())).thenReturn(0L);
         when(taskMapper.selectList(any())).thenReturn(List.of());
 
-        service().listTasks(1, 12, "text_image", null, true, "completed", "asset");
+        service().listTasks(1, 12, "text_image", null, true, "completed", "asset", null);
 
         ArgumentCaptor<LambdaQueryWrapper<Task>> captor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
         verify(taskMapper).selectList(captor.capture());
@@ -94,12 +94,42 @@ class TaskServiceImplListFilterTest {
         when(taskMapper.selectCount(any())).thenReturn(0L);
         when(taskMapper.selectList(any())).thenReturn(List.of());
 
-        service().listTasks(1, 10, null, null, false, null, null);
+        service().listTasks(1, 10, null, null, false, null, null, null);
 
         ArgumentCaptor<LambdaQueryWrapper<Task>> captor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
         verify(taskMapper).selectList(captor.capture());
         String sql = captor.getValue().getSqlSegment();
         assertTrue(sql.contains("source"), sql);          // 画廊默认仍要排除素材
         assertFalse(sql.contains("status"), sql);         // 不传 status 就不该有 status 条件
+        assertFalse(sql.contains("prompt"), sql);         // 不传 keyword 就不该有 prompt 条件
+    }
+
+    @Test
+    @DisplayName("LIKE 通配符必须被转义（否则搜「%」会把全部记录都匹配上）")
+    void escapeLikeEscapesWildcards() {
+        assertEquals("陈浔", TaskServiceImpl.escapeLike("陈浔"));
+        assertEquals("100\\%", TaskServiceImpl.escapeLike("100%"));
+        assertEquals("a\\_b", TaskServiceImpl.escapeLike("a_b"));
+        // 反斜杠必须**先**转义，否则后面的 % 会被二次转义错误
+        assertEquals("a\\\\b", TaskServiceImpl.escapeLike("a\\b"));
+        assertEquals("\\\\\\%", TaskServiceImpl.escapeLike("\\%"));
+    }
+
+    @Test
+    @DisplayName("keyword 进 SQL 且带通配符包裹与转义（搜 % 不该等于搜全部）")
+    void wrapperCarriesEscapedKeyword() {
+        when(taskMapper.selectCount(any())).thenReturn(0L);
+        when(taskMapper.selectList(any())).thenReturn(List.of());
+
+        service().listTasks(1, 12, null, null, true, null, null, "陈浔 100%");
+
+        ArgumentCaptor<LambdaQueryWrapper<Task>> captor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(taskMapper).selectList(captor.capture());
+        String sql = captor.getValue().getSqlSegment();
+        assertTrue(sql.contains("prompt"), sql);
+        // MP 的 like 把参数包成 %val%，所以我们期望的是「包一层外层通配符 + 内层已转义」
+        assertTrue(
+                captor.getValue().getParamNameValuePairs().containsValue("%陈浔 100\\%%"),
+                captor.getValue().getParamNameValuePairs().toString());
     }
 }

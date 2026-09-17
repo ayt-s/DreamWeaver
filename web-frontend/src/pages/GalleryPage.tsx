@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
   Film,
@@ -10,8 +10,9 @@ import {
   ChevronRight,
   CheckSquare,
   Wand2,
+  Search,
 } from 'lucide-react';
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { listTasks } from '../api/tasks';
 import TaskCard from '../components/TaskCard';
 import BatchReworkPanel from '../components/BatchReworkPanel';
@@ -33,20 +34,38 @@ const PAGE_SIZE = 6;
  * 点底部"段重生"按钮打开 BatchReworkPanel，逐任务勾选段提交。
  */
 export default function GalleryPage() {
+  const [searchParams] = useSearchParams();
   const [page, setPage] = useState(1);
   const [genType, setGenType] = useState<GenType | ''>('');
   const [draft, setDraft] = useState<DraftFilter>('draft');
   // 画布「一键文生图」产出的素材任务（source=canvas_asset）默认不进画廊，
   // 否则一次批量会在草稿区刷出 N 个中间任务；但它们在别处没有入口，所以给个显式开关。
-  const [showAssets, setShowAssets] = useState(false);
+  // ?assets=1 直接打开：画布面板顶到 48 张上限时会链到这里「看全部」。
+  const [showAssets, setShowAssets] = useState(() => searchParams.get('assets') === '1');
+  // 搜索：输入框即时回显、300ms 防抖后才进查询（每敲一个字都打后端会白跑一堆请求）
+  const [kwInput, setKwInput] = useState('');
+  const [keyword, setKeyword] = useState('');
+  useEffect(() => {
+    const next = kwInput.trim();
+    const t = setTimeout(() => {
+      // 用函数式更新：next 与当前相等时返回原值，避免无意义的重查
+      setKeyword((prev) => (prev === next ? prev : next));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [kwInput]);
+  // 关键字变了就回第一页（否则用户在第 3 页搜出来的结果会是「第 3 页的前几条」）
+  useEffect(() => {
+    setPage(1);
+  }, [keyword]);
   // 批量模式
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [showBatchPanel, setShowBatchPanel] = useState(false);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['tasks', page, genType, draft, showAssets],
-    queryFn: () => listTasks({ page, size: PAGE_SIZE, genType, draft, includeAssets: showAssets }),
+    queryKey: ['tasks', page, genType, draft, showAssets, keyword],
+    queryFn: () =>
+      listTasks({ page, size: PAGE_SIZE, genType, draft, includeAssets: showAssets, keyword }),
     // 兜底轮询：任务卡会给「进行中的那一条」自己拉详情 + 分段进度（5s），并在转终态
     // 时刷一次列表，所以列表整体放宽到 20s —— 只兜「卡片不在视口里 / 卡片没挂载」的情况。
     // interrupted 也按前端终态处理（与 TaskCard 的 TERMINAL_STATUSES 保持一致，
@@ -206,6 +225,24 @@ export default function GalleryPage() {
         >
           {showAssets ? '隐藏画布素材' : '显示画布素材'}
         </button>
+        <span className="mx-1 h-4 w-px bg-slate-200" aria-hidden />
+        {/* 搜索：按需求原文/提示词模糊匹配（画布素材的结构化提示词也能搜，例如角色名） */}
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+          <input
+            type="search"
+            value={kwInput}
+            onChange={(e) => setKwInput(e.target.value)}
+            placeholder="搜提示词/需求原文…"
+            aria-label="搜索作品"
+            className="w-56 rounded-full border border-slate-200 bg-white py-1.5 pl-8 pr-3 text-xs text-slate-700 outline-none placeholder:text-slate-400 focus:border-violet-400"
+          />
+        </div>
+        {keyword && (
+          <span className="text-xs text-slate-500">
+            「{keyword}」共 {total} 条
+          </span>
+        )}
       </div>
 
       {/* Loading */}
@@ -238,12 +275,18 @@ export default function GalleryPage() {
             <Film className="h-8 w-8 text-slate-400" />
           </div>
           <p className="text-sm font-medium text-slate-700">
-            {genType === '' && draft === '' ? '还没有历史作品' : '该筛选下暂无作品'}
+            {keyword
+              ? `没搜到「${keyword}」相关的作品`
+              : genType === '' && draft === ''
+                ? '还没有历史作品'
+                : '该筛选下暂无作品'}
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            {genType === '' && draft === ''
-              ? '去创作页提交一条需求，成果会出现在这里'
-              : '换个筛选条件看看，或去创作页生成一条'}
+            {keyword
+              ? '搜索只匹配提示词/需求原文，换个关键词或清空搜索看看'
+              : genType === '' && draft === ''
+                ? '去创作页提交一条需求，成果会出现在这里'
+                : '换个筛选条件看看，或去创作页生成一条'}
           </p>
           <Link
             to="/"

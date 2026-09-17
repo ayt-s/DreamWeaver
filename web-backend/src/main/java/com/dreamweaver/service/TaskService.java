@@ -24,7 +24,7 @@ public interface TaskService {
      *                      画布的「从历史作品选取」面板传 true。
      */
     TaskListResponse listTasks(int page, int size, String genType, Boolean draft, boolean includeAssets,
-            String status, String source);
+            String status, String source, String keyword);
 
     /**
          * 删除历史作品。

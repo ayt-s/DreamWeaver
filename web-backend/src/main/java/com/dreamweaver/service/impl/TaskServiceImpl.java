@@ -82,15 +82,26 @@ public class TaskServiceImpl implements TaskService {
         return includeAssets ? SourceFilter.NO_FILTER : SourceFilter.EXCLUDE_ASSETS;
     }
 
+    /**
+     * LIKE 模式转义：用户输入里的 {@code %} / {@code _} / {@code \} 不能当通配符用。
+     *
+     * <p>不转义的后果很隐蔽：搜一个「%」会把全部记录都匹配上（看着像搜索没生效），
+     * 搜「_」同理。MySQL 的 LIKE 默认转义符就是反斜杠，所以在这里加反斜杠即可。
+     */
+    static String escapeLike(String keyword) {
+        return keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+    }
+
     @Override
     public TaskListResponse listTasks(int page, int size, String genType, Boolean draft,
-            boolean includeAssets, String status, String source) {
+            boolean includeAssets, String status, String source, String keyword) {
         int safePage = Math.max(page, 1);
         int safeSize = Math.min(Math.max(size, 1), 50);
         // count 与 list 各建一次（wrapper 可变，共用会把 LIMIT 带进 count）
-        long total = taskMapper.selectCount(listCondition(genType, draft, includeAssets, status, source));
+        long total = taskMapper.selectCount(
+                listCondition(genType, draft, includeAssets, status, source, keyword));
         List<TaskResponse> list = taskMapper.selectList(
-                listCondition(genType, draft, includeAssets, status, source)
+                listCondition(genType, draft, includeAssets, status, source, keyword)
                         .orderByDesc(Task::getId)
                         .last("LIMIT " + safeSize + " OFFSET " + ((long) (safePage - 1) * safeSize))
         ).stream().map(this::toResponse).toList();
@@ -104,8 +115,9 @@ public class TaskServiceImpl implements TaskService {
 
     /** 列表查询条件（count 与 list 共用一处，避免两侧条件漂移） */
     private LambdaQueryWrapper<Task> listCondition(String genType, Boolean draft, boolean includeAssets,
-            String status, String source) {
+            String status, String source, String keyword) {
         SourceFilter filter = sourceFilterOf(source, includeAssets);
+        boolean hasKeyword = keyword != null && !keyword.isBlank();
         return new LambdaQueryWrapper<Task>()
                 .eq(genType != null && !genType.isBlank(), Task::getGenType, genType)
                 // draft 为 null = 不按草稿筛选；true/false = 只取草稿/只取成品
@@ -113,7 +125,9 @@ public class TaskServiceImpl implements TaskService {
                 .eq(status != null && !status.isBlank(), Task::getStatus, status)
                 .eq(filter == SourceFilter.ASSETS_ONLY, Task::getSource, "canvas_asset")
                 .and(filter == SourceFilter.EXCLUDE_ASSETS, w -> w.isNull(Task::getSource)
-                        .or().ne(Task::getSource, "canvas_asset"));
+                        .or().ne(Task::getSource, "canvas_asset"))
+                // 关键字：按需求原文/提示词模糊匹配（转义见 escapeLike）
+                .like(hasKeyword, Task::getPrompt, hasKeyword ? escapeLike(keyword.trim()) : null);
     }
 
     @Override

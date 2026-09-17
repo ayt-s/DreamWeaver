@@ -390,6 +390,63 @@ describe('「从历史作品选取」面板', () => {
     }
   });
 
+  it('入画布记下来源（只读）；空提示词写明兜底；点「填入提示词」才写进 prompt', async () => {
+    vi.mocked(listTasks).mockResolvedValue(
+      historyList([{ id: 78, prompt: '陈浔闻焦味', urls: ['https://cdn.agnes-ai.space/a1.png'] }]),
+    );
+    renderPage();
+    fireEvent.click(await screen.findByAltText('陈浔闻焦味'));
+
+    // 来源只读展示：源任务 id + 原文；**不自动**写进 prompt
+    await waitFor(() => expect(screen.getByText(/来源 #78/)).toBeInTheDocument());
+    // 空提示词的后果要说清（agent 侧兜底成「对参考图缓慢推进」）
+    expect(screen.getByText(/提交时用通用运镜兜底/)).toBeInTheDocument();
+    // ⚠️ 初始画布本来就有一个图片节点（占位文本相同）→ 取最后那个 = 刚从面板加进来的
+    const descOf = () => {
+      const all = screen.getAllByPlaceholderText(/本段描述/) as HTMLTextAreaElement[];
+      return all[all.length - 1];
+    };
+    expect(descOf().value).toBe('');
+
+    // 显式动作才接管：点了才填进可编辑的 prompt
+    // ⚠️ 用 DOM 直查而不是 getByRole：React Flow 的节点内容不在可访问角色树里
+    //   （同文件里 ▲▼ 的 moveBtn 也是这么找的）
+    const fillBtn = Array.from(document.querySelectorAll('button')).find(
+      (b) => b.textContent === '填入提示词',
+    );
+    expect(fillBtn).toBeTruthy();
+    fireEvent.click(fillBtn as HTMLButtonElement);
+    await waitFor(() => expect(descOf().value).toBe('陈浔闻焦味'));
+    expect(screen.queryByText(/提交时用通用运镜兜底/)).toBeNull();
+  });
+
+  it('顶到 48 张上限后改为「去画廊看全部」链接（窄侧栏不继续堆长）', async () => {
+    vi.mocked(listTasks).mockImplementation(async (p) =>
+      historyList(
+        Array.from({ length: 60 }, (_, i) => ({
+          id: 200 - i,
+          prompt: `镜头 ${i + 1}`,
+          urls: [`https://cdn.agnes-ai.space/c${i}.png`],
+        })).slice(0, p?.size ?? 12),
+        60,
+      ),
+    );
+    renderPage();
+
+    // 12 → 24 → 36 → 48（每次点都是「再加载一页」）
+    for (let i = 0; i < 3; i += 1) {
+      const btn = await screen.findByRole('button', { name: /加载更多/ });
+      fireEvent.click(btn);
+      await waitFor(() =>
+        expect(vi.mocked(listTasks).mock.calls.length).toBeGreaterThanOrEqual(i + 2),
+      );
+    }
+
+    const link = await screen.findByRole('link', { name: /去画廊看全部/ });
+    expect(link).toHaveAttribute('href', '/gallery?assets=1');
+    expect(screen.queryByRole('button', { name: /加载更多/ })).toBeNull();
+  });
+
   it('一键文生图跑完后面板会重新取数（新素材不用刷新页面）', async () => {
     vi.mocked(listTasks).mockResolvedValue(historyList([]));
     vi.mocked(createVideoTask).mockResolvedValue({ id: 4242 } as never);

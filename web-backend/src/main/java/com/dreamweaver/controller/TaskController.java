@@ -42,8 +42,12 @@ public class TaskController {
             // 状态过滤：画布面板传 completed —— 前端先取 40 条再筛会把排队/失败任务算进名额
             @RequestParam(required = false) String status,
             // 来源过滤：asset=只要画布素材；work=只要作品（与画廊默认同义，显式写法）；不传=按 includeAssets 走
-            @RequestParam(required = false) String source) {
-        return CommonResult.ok(taskService.listTasks(page, size, genType, draft, includeAssets, status, source));
+            @RequestParam(required = false) String source,
+            // 关键字：按创作需求原文（prompt）模糊匹配。画布素材的 prompt 是预处理合成的
+            // 结构化提示词，也能搜到（例如搜角色名）
+            @RequestParam(required = false) String keyword) {
+        return CommonResult.ok(
+                taskService.listTasks(page, size, genType, draft, includeAssets, status, source, keyword));
     }
 
     /** 删除历史作品（仅终态；非终态返回 400） */
