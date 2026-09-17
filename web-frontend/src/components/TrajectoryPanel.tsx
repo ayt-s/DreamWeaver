@@ -156,7 +156,7 @@ export default function TrajectoryPanel() {
           <div className="mt-6 space-y-2">
             {events.map((ev, i) => (
               <motion.li
-                key={ev.eventId || i}
+                key={ev.event_id ?? i}
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: i * 0.05 }}
