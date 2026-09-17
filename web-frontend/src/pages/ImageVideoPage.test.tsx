@@ -473,6 +473,32 @@ describe('「从历史作品选取」面板', () => {
   }, 30000);
 });
 
+describe('新节点落点（P1-7）', () => {
+  beforeEach(() => {
+    vi.mocked(listTasks).mockReset().mockResolvedValue(historyList([]));
+    vi.mocked(createVideoTask).mockReset().mockRejectedValue(new Error('用例到此为止'));
+    vi.mocked(getTask).mockReset();
+  });
+
+  it('拿不到视口尺寸时退回固定坐标，且新增的节点互不重叠', () => {
+    /** jsdom 里 `.react-flow__pane` 的 rect 恒为 0 → `spawnPosition` 必须返回 null 走兜底
+     *  （`screenToFlowPosition` 需要真实测量，拿不到就当「视口中心」不可用）。
+     *  这里钉的是：① 不崩；② 连点多次不会把节点叠在同一个点上（看不见＝以为点了没反应）。
+     */
+    renderPage();
+    const before = document.querySelectorAll('[data-testid^="rf__node-"]').length;
+    const addImage = screen.getAllByRole('button', { name: '图片节点' })[0];
+    fireEvent.click(addImage);
+    fireEvent.click(addImage);
+    fireEvent.click(addImage);
+
+    const nodes = Array.from(document.querySelectorAll('[data-testid^="rf__node-"]'));
+    expect(nodes.length).toBe(before + 3);
+    const transforms = nodes.map((n) => (n as HTMLElement).style.transform);
+    expect(new Set(transforms).size).toBe(transforms.length);
+  });
+});
+
 describe('候选图质检打标（P0-1）', () => {
   const URLS = [
     'https://cdn.agnes-ai.space/q1.png',
