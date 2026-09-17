@@ -43,8 +43,17 @@ describe('ImageVideoPage 无限画布页', () => {
     // 素材来源
     expect(screen.getByText('本地上传')).toBeInTheDocument();
     expect(screen.getByText((t) => t.includes('从历史作品选取'))).toBeInTheDocument();
-    // 初始画布节点（文本节点 1 已在画布内）
-    expect(screen.getAllByText('自己编写').length).toBeGreaterThanOrEqual(1);
+    // 初版画布节点
+    expect(screen.getAllByText('文本节点').length).toBeGreaterThanOrEqual(1);
+    // 文本节点的「模式下拉」已按设计**移除**（四项都是 disabled 占位，属过度设计），
+    // 现在是 textarea + AI 生成/改写；`data.mode` 只为兼容老画布数据保留，
+    // 已不是可见文案 —— 见 ImageVideoPage.tsx:117-119。
+    // 所以这里锁**新契约**（而不是删掉断言）：改坏了下拉会回来、或 AI 入口丢了都会红。
+    expect(screen.getByPlaceholderText(/描述画面内容/)).toBeInTheDocument();
+    // ⚠️ 不要用 `getByRole('button', { name: 'AI' })`：这个按钮带 `title`，
+    //    可访问名的计算在 title/内容之间不稳定，改用可见文本更稳。
+    expect(screen.getAllByText('AI').length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText('自己编写')).toBeNull();
     // 比例预设 + 底部模型选择 + 提交按钮
     expect(screen.getAllByText('16:9').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('视频模型')).toBeInTheDocument();
