@@ -78,17 +78,43 @@ def traced(name: str, run_type: str = "llm"):
 
 
 def _try_wrap(fn, name: str, run_type: str):
-    """惰性包一层 `langsmith.traceable`；包不上就退回原函数。"""
+    """惰性包一层 `langsmith.traceable`；包不上就退回原函数。
+
+    ⚠️ 为什么还要 `tracing_context(enabled=True)`（2026-09-17 实测，代价是一整轮排查）：
+
+    `traceable` 到底记不记，取决于 **SDK 自己**读 `LANGSMITH_TRACING` 的结论，而它不认
+    `1` 这种写法。于是出现「我们自己的开关说开、SDK 说没开、`traceable` **静默直通**」：
+    网页上一条 run 都没有，日志里也不报错 —— 看起来接好了，其实什么都没上报。
+    既然我们已经判定「开」，就在调用处**显式打开**，两边不可能再分歧。
+
+    顺带把 config 里声明的 key / endpoint / project 真正传下去 —— 它们此前只声明、
+    从未传给 SDK（SDK 靠同名环境变量兜住了，但字段本身是死的，会误导下一个人）。
+    """
     global _warned
     try:
-        from langsmith import traceable
+        from langsmith import Client, traceable
+        from langsmith.run_helpers import tracing_context
 
-        return traceable(name=name, run_type=run_type)(fn)
+        client = Client(
+            api_key=getattr(settings, "langsmith_api_key", "") or None,
+            api_url=settings.langsmith_endpoint or None,
+        )
+        wrapped = traceable(
+            name=name, run_type=run_type, client=client,
+            project_name=settings.langsmith_project or None,
+        )(fn)
     except Exception as exc:  # noqa: BLE001 —— 可观测性不能影响主流程
         if not _warned:
             _warned = True
             logger.warning("LangSmith 包装失败，已降级为不上报（只告警一次）: %s", exc)
         return fn
+
+    @functools.wraps(fn)
+    async def _call(*args, **kwargs):
+        with tracing_context(enabled=True):
+            return await wrapped(*args, **kwargs)
+
+    return _call
 
 
 def reset_cache() -> None:

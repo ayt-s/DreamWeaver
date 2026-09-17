@@ -144,7 +144,13 @@ async def test_on_path_wraps_once_then_reuses(monkeypatch):
     assert await fn(1) == 2
     assert await fn(2) == 3
     assert len(calls) == 1, "第二次调用应命中缓存"
-    assert calls[0]["kwargs"] == {"name": "unit.on", "run_type": "tool"}
+    # 不写成 kwargs == {...} 精确相等：包装参数会随需要增长，锁关键项即可
+    assert calls[0]["kwargs"]["name"] == "unit.on"
+    assert calls[0]["kwargs"]["run_type"] == "tool"
+    # 2026-09-17：把 config 里声明的 client(endpoint/key) 与 project_name 真正传给 SDK
+    # —— 此前只声明、从未传下去（SDK 靠同名环境变量兜住，字段本身是死的）。
+    assert "client" in calls[0]["kwargs"]
+    assert "project_name" in calls[0]["kwargs"]
 
 
 @pytest.mark.asyncio
