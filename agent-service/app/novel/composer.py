@@ -62,13 +62,76 @@ def _mentioned_characters(seg: dict) -> list[str]:
     return hit or list(names)
 
 
-def _format_characters(seg: dict, analysis: dict | None = None) -> str:
-    """把本段角色名拼成 '角色名(特征)' 列表。
+# 动物 / 灵兽类角色的名字关键词 —— 决定它「进不进 [角色锚]」。
+#
+# ★ 实测（2026-09-17 同一镜 A/B/C 三组，各 3 张候选）：
+#     A 角色锚+场景都提牛           → 每张 2 头牛
+#     B 只删掉场景/镜头里的提法      → 每张仍是 2 头牛（说明「提两次」不是原因）
+#     C 角色锚只留少年、牛只在场景里  → 每张 **1 人 1 牛** ✓ 正确
+#   即：**大黑牛只要进 [角色锚]，模型就画两头**。推测是它的角色卡里
+#   「左角已断…右角完整…两只铜铃般的大眼睛…四蹄粗壮」这种并列分句被当成了两个主体。
+#   所以动物/灵兽不进角色锚，改用场景段里一句短的带出。
+_ANIMAL_HINTS = (
+    "牛", "兽", "马", "驴", "狼", "犬", "狗", "猫", "鸟", "鹰", "龙", "虎", "豹",
+    "蛇", "熊", "鹿", "羊", "猪", "兔", "狐", "猴", "猿", "鼠", "鱼", "龟", "雀",
+    "鹤", "灵兽", "妖兽", "妖", "宠",
+)
 
-    如果传了 analysis 且有角色特征卡，就用『名字(特征)』锁定描述；
-    没有特征卡时只列名字。**只列本镜真正出现的角色**（见 _mentioned_characters）。
+# 人物卡里常见的词 —— 用来把「名字像动物、其实是人」的角色捞回来。
+# 刻意不收单字「人」「老」这类过宽的词：动物的卡里「通人性」「老狗」都会被误命中。
+_HUMAN_HINTS = (
+    "少年", "少女", "青年", "中年", "老年", "老汉", "壮汉", "男子", "女子", "妇人",
+    "男人", "女人", "男孩", "女孩", "孩童", "孩子", "娃", "岁", "男", "女",
+    "哥", "姐", "弟", "妹", "叔", "婶", "婆", "爷",
+)
+
+
+def _is_animal(name: str, card: str = "") -> bool:
+    """这个角色是不是动物/灵兽。**两条判据缺一不可。**
+
+    2026-09-17 被既有测试抓出的假阳性：一个「黑牛（中年壮汉，络腮胡，戴斗笠）」的
+    **人物**，只按名字判会被当成牛、从 [角色锚] 里踢出去，白白丢掉面部一致性。
+    中国小说里拿动物词当人名/绰号太常见（黑牛、二狗、小猫），所以必须再看角色卡像不像人。
+
+    只按名字判第一层、只扫卡判第二层，是为了避免另一种假阳性：
+    人物的卡里出现「牛皮甲」「牧牛」这类词（纯扫卡会把人物判成动物）。
     """
-    names = _mentioned_characters(seg)
+    if not any(h in (name or "") for h in _ANIMAL_HINTS):
+        return False
+    return not any(w in (card or "") for w in _HUMAN_HINTS)
+
+
+def _split_characters(seg: dict, analysis: dict | None = None) -> tuple[list[str], list[str]]:
+    """把本镜角色拆成（人物, 动物/灵兽）。"""
+    card = (analysis or {}).get("characters") or {}
+    kept = _mentioned_characters(seg)
+    animals = [n for n in kept if _is_animal(n, card.get(n, ""))]
+    humans = [n for n in kept if not _is_animal(n, card.get(n, ""))]
+    return humans, animals
+
+
+def _animal_brief(names: list[str], analysis: dict | None = None) -> str:
+    """动物/灵兽的**精简**提法，用于 [场景] 段。
+
+    只取角色卡的**第一个分句**（≤30 字）—— 卡里那串并列分句正是被误当成多个主体的
+    嫌疑来源，所以这里刻意不整段搬。C 组实验里场景只说了一句「身旁黑牛盘腿而坐」
+    就出了正确的 1 头牛。
+    """
+    card = (analysis or {}).get("characters") or {}
+    parts = []
+    for name in names:
+        desc = (card.get(name) or "").split("，")[0].split("。")[0].strip()[:30]
+        parts.append(f"{name}（{desc}）" if desc else name)
+    return "、".join(parts)
+
+
+def _format_characters(seg: dict, analysis: dict | None = None) -> str:
+    """[角色锚] 只列**人物**（动物/灵兽见 _animal_brief，走 [场景] 段）。
+
+    有角色特征卡就用『名字(特征)』锁定描述，没有则只列名字。
+    **只列本镜真正出现的人物**（见 _mentioned_characters）。
+    """
+    names, _ = _split_characters(seg, analysis)
     if not names:
         return "无具体人物"
     card = (analysis or {}).get("characters") or {}
@@ -145,6 +208,16 @@ def compose_image_prompt(seg: dict, style: str, analysis: dict | None = None) ->
     """
     subject = _extract_subject(seg)
     scene = seg.get("scene", "")
+    # 动物/灵兽不进 [角色锚]（一旦进去模型就画两头），改用 [场景] 里一句短的带出
+    _, animals = _split_characters(seg, analysis)
+    if animals:
+        # 场景里已经点名过的就不再追加描述：同一角色在场景段里出现两次会不会又诱发复制，
+        # 没验证过；沿用 C 组（实测「1 人 1 牛」）的形状最稳。
+        todo = [n for n in animals if not any(a and a in scene for a in _char_aliases(n))]
+        if todo:
+            brief = _animal_brief(todo, analysis)
+            # 用「，」拼接：`；` 是本文件的分段块分隔符，用它会多切出一段、也破坏提示词结构。
+            scene = f"{scene}，{brief}" if scene else brief
     camera = _ensure_camera_terms(_sanitize_camera(seg.get("camera", "")))
     characters = _format_characters(seg, analysis)
     mood = seg.get("mood", "")

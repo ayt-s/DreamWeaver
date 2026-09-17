@@ -39,9 +39,44 @@ def test_只提到主角的镜头不该再点上一头牛():
 
 
 def test_简称黑牛也要能命中大黑牛():
-    """storyboarder 不会总写全名（「黑牛反刍保下些许大米」）。"""
-    prompt = compose_image_prompt(seg("黑牛反刍保下些许大米"), "3D 写实国漫", ANALYSIS)
-    assert "大黑牛" in _anchor(prompt)
+    """storyboarder 不会总写全名（「黑牛反刍保下些许大米」）——命中后走场景段。"""
+    p = compose_image_prompt(seg("黑牛反刍保下些许大米"), "3D 写实国漫", ANALYSIS)
+    assert "大黑牛" not in _anchor(p)
+    assert "大黑牛" in p.split("[场景]")[1].split("；")[0]
+
+
+def test_动物不进角色锚而是走场景段():
+    """★ 实测：大黑牛只要出现在 [角色锚] 里，每张都会画出两头牛（A/B/C 三组对照）。"""
+    p = compose_image_prompt(
+        seg("少年陈浔嘴叼狗尾草躺坐山坡", scene="小山村山坡，清晨，阳光斜照，身旁黑牛盘腿而坐"),
+        "3D 写实国漫",
+        ANALYSIS,
+    )
+    anchor = _anchor(p)
+    assert "陈浔" in anchor
+    assert "大黑牛" not in anchor, "动物不该进角色锚（进就会被画成两头）"
+    scene = p.split("[场景]")[1].split("；")[0]
+    assert "黑牛" in scene, "但它仍然要在场（场景段已点名）"
+    # 只带角色卡的第一个分句：那串并列分句正是被当成多个主体的嫌疑来源
+    assert "右角完整尖锐" not in scene
+
+
+def test_卡里出现动物词不会把人物误判成动物():
+    from app.novel.composer import _is_animal
+
+    assert _is_animal("大黑牛") is True
+    assert _is_animal("陈浔") is False
+    assert _is_animal("小黑子") is False
+
+
+def test_纯动物镜头也不会把动物塞回角色锚():
+    p = compose_image_prompt(
+        seg("黑牛独自反刍", scene="山洞内，黄昏", characters=("大黑牛",)),
+        "3D 写实国漫",
+        ANALYSIS,
+    )
+    assert "大黑牛" not in _anchor(p)
+    assert "大黑牛" in p.split("[场景]")[1].split("；")[0]
 
 
 def test_一个名字都没匹配到时退回全给_不劣化():
@@ -87,6 +122,18 @@ def test_一人一牛这类说法也删():
     )
     assert "一人一牛" not in p
     assert "广角长镜头从火场全景缓慢拉远" in p
+
+
+def test_场景已点名过的动物不再重复追加():
+    """C 组形状（场景自然提到黑牛、角色锚只留少年）实测就是「1 人 1 牛」，
+    所以场景点名过就别再画蛇添足重复一遍。"""
+    p = compose_image_prompt(
+        seg("少年陈浔躺坐山坡", scene="小山村山坡，清晨，身旁黑牛盘腿而坐"),
+        "3D 写实国漫",
+        ANALYSIS,
+    )
+    scene = p.split("[场景]")[1].split("；")[0]
+    assert scene.count("黑牛") == 1
 
 
 def test_六段结构与红线不受影响():
