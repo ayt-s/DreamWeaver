@@ -146,7 +146,26 @@ def test_镜头里的拍脸指令会被删掉_红线优先():
     )
     camera = p.split("[镜头]")[1].split("；")[0]
     assert "面部" not in camera and "脸" not in camera
-    assert "特写推近" in camera and "背景烟雾缭绕" in camera
+    # ★ 光删「面部」不够：只留「特写推近」实测照样是整屏一张脸 → 景别必须一起降档
+    assert "特写" not in camera
+    assert "中景推近" in camera and "背景烟雾缭绕" in camera
+
+
+def test_有人物的特写一律降成中景():
+    """红线禁面部特写，而单人物镜头里的「特写」几乎必然落在脸上。"""
+    p = compose_image_prompt({**seg("陈浔握紧开山斧"), "camera": "大特写"}, "3D 写实国漫", ANALYSIS)
+    camera = p.split("[镜头]")[1].split("；")[0]
+    assert "特写" not in camera and "中景" in camera
+
+
+def test_纯景物特写不降档():
+    """没有人物时「米袋特写」不违反红线，别乱改。"""
+    p = compose_image_prompt(
+        {**seg("一枚米袋落在门口", characters=()), "camera": "米袋特写"},
+        "3D 写实国漫",
+        ANALYSIS,
+    )
+    assert "特写" in p.split("[镜头]")[1].split("；")[0]
 
 
 def test_脸部与面部表情的分句都删():

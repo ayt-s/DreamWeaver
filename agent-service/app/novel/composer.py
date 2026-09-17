@@ -191,15 +191,26 @@ _SUBJECT_COUNT_RE = re.compile(
 # 出图就是整屏一张大脸 + 竖构图，直接踩红线。红线在末尾、权重高，所以删镜头里的拍脸指令。
 _FACE_SEGMENT_RE = re.compile(r"[^，；]*(?:面部|脸部|面孔|五官|表情|脸)[^，；]*")
 
+# 景别里的「特写」档：有人物的镜头里会直接推到脸上（见 _sanitize_camera 的注释）
+_CLOSEUP_RE = re.compile(r"(?:大特写|近景特写|特写|怼脸)")
 
-def _sanitize_camera(camera: str) -> str:
-    """清理 [镜头] 段：删掉声明主体人数的措辞、以及和红线打架的「拍脸」指令。"""
+
+def _sanitize_camera(camera: str, has_human: bool = True) -> str:
+    """清理 [镜头] 段：删主体人数措辞、删拍脸指令、把「特写」降档。
+
+    ★ 「特写」这一档本身就会把画面推成一张脸（单人物镜头必然落在脸上）。
+    实测（2026-09-17 画布 40 第 2 段 A/B）：只删「…面部」不动「特写」，
+    出图依旧是整屏一张脸 —— 所以有人的镜头里把景别降一档（特写 → 中景）。
+    """
     s = _SUBJECT_COUNT_RE.sub("", camera or "")
     # 删除含"脸"的整个分句（「从火焰快速推至少年惊愕面部」这种，删掉比留着安全：
     # 红线的约束是硬要求，镜头段少一个运镜描述不影响成片）
     if s:
         segs = [x for x in s.split("，") if not _FACE_SEGMENT_RE.fullmatch(x.strip("， "))]
         s = "，".join(x for x in segs if x.strip())
+    # 有人物时「特写/大特写」一律降到中景：红线禁面部特写，而人物特写几乎必然拍到脸
+    if has_human and s:
+        s = _CLOSEUP_RE.sub("中景", s)
     s = re.sub(r"[，、]{2,}", "，", s).strip("，、 ")
     return s
 
@@ -218,8 +229,8 @@ def compose_image_prompt(seg: dict, style: str, analysis: dict | None = None) ->
     """
     subject = _extract_subject(seg)
     scene = seg.get("scene", "")
+    humans, animals = _split_characters(seg, analysis)
     # 动物/灵兽不进 [角色锚]（一旦进去模型就画两头），改用 [场景] 里一句短的带出
-    _, animals = _split_characters(seg, analysis)
     if animals:
         # 场景里已经点名过的就不再追加描述：同一角色在场景段里出现两次会不会又诱发复制，
         # 没验证过；沿用 C 组（实测「1 人 1 牛」）的形状最稳。
@@ -228,7 +239,8 @@ def compose_image_prompt(seg: dict, style: str, analysis: dict | None = None) ->
             brief = _animal_brief(todo, analysis)
             # 用「，」拼接：`；` 是本文件的分段块分隔符，用它会多切出一段、也破坏提示词结构。
             scene = f"{scene}，{brief}" if scene else brief
-    camera = _ensure_camera_terms(_sanitize_camera(seg.get("camera", "")))
+    # 有人物的镜头才降「特写」档：纯景物的特写（米袋、斧头）不违反红线
+    camera = _ensure_camera_terms(_sanitize_camera(seg.get("camera", ""), bool(humans)))
     characters = _format_characters(seg, analysis)
     mood = seg.get("mood", "")
 
