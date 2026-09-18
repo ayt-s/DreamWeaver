@@ -40,6 +40,8 @@ import {
   RefreshCw,
   Tags,
   History,
+  Sparkles,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   createVideoTask,
@@ -76,6 +78,12 @@ import {
   type AnchorMap,
 } from '../utils/anchors';
 import {
+  bindingBadge,
+  bindingIndexesInSegments,
+  segmentRefImages,
+} from '../utils/segmentRefs';
+import { recomposePrompts, type RecomposeResult } from '../api/promptRecompose';
+import {
   CAMERA_ANGLE_OPTIONS,
   CAMERA_MOVE_OPTIONS,
   SHOT_SIZE_OPTIONS,
@@ -86,6 +94,17 @@ import {
 /* ------------------------------------------------------------------ */
 /* 工具：从项目名剥离章节标识，得到"小说名"用于下拉分组                    */
 /* ------------------------------------------------------------------ */
+
+/** 取提示词里的某一段（`；` 分段，段首形如 `[角色锚]`）—— 重算前后对照用。 */
+function blockOf(prompt: string, prefix: string): string {
+  return prompt.split('；').find((p) => p.startsWith(prefix)) ?? '';
+}
+
+/** 超长文本截断（面板里只给一眼能看完的对照长度）。 */
+function shortText(s: string, n = 140): string {
+  const t = s.trim();
+  return t.length > n ? `${t.slice(0, n)}…` : t;
+}
 
 /** 从项目名剥离章节后缀，得到小说名。
  *  "长生烬-第一章" → "长生烬"
@@ -349,6 +368,30 @@ const AnchorsCtx = createContext<{ chars: AnchorMap; scenes: AnchorMap }>({
 const FIX_PRESERVE_CLAUSE =
   '；除上述改动外，画面其余部分（人物长相、服装、姿势、背景、光线、构图、画幅）全部保持不变，不要重画整张图';
 
+/** 缩略图拿不到时的占位：**不留无声的破图**，tooltip 说清下一步该动哪里。
+ *
+ * 为什么要有（2026-09-18）：agnes 对产物 URL 的保留**官方零承诺**（我们实测 175/175
+ * 长期存活、URL 无签名），所以不做下载归档（成本不成比例），只在展示层兜底。
+ * ⚠️ 文案必须指向**真正的下一跳**：锚定图失败 ≠ 产物过期（它的下一步是重新生成/重选锚定图），
+ * 一律写「网络异常」或指错组件，比没有文案更糟（本项目已有教训）。
+ */
+function ThumbFailed({
+  title,
+  className = 'h-10 w-10 rounded object-cover',
+}: {
+  title: string;
+  className?: string;
+}) {
+  return (
+    <span
+      className={`flex shrink-0 items-center justify-center bg-slate-400/25 text-center text-[9px] leading-3 text-slate-500 dark:text-slate-300 ${className}`}
+      title={title}
+    >
+      图失效
+    </span>
+  );
+}
+
 function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
   const { updateNodeData, getNodes, setNodes } = useReactFlow();
   const queryClient = useQueryClient();
@@ -361,6 +404,11 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
   const [fixText, setFixText] = useState('');
   const [fixBusy, setFixBusy] = useState(false);
   const [fixStatus, setFixStatus] = useState('');
+  // 破图兜底（2026-09-18）：产物 URL 可能拿不到 —— agnes 对产物保留**官方零承诺**，
+  // 我们只实测到 175/175 长期存活。不留无声破图，文案指向真正的下一跳。
+  const [brokenMedia, setBrokenMedia] = useState<Record<string, true>>({});
+  const markBroken = (key: string) =>
+    setBrokenMedia((m) => (m[key] ? m : { ...m, [key]: true }));
   // 候选图质检（P0-1）：命中「严禁面部特写」红线的候选打标提示。
   // ⚠️ 只打标不自动淘汰 —— 标定样本还不够（正样本 6 张），见 image_qc.py 的说明。
   const candidateKey = ((data.candidates as string[] | undefined) ?? []).join('|');
@@ -608,11 +656,22 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
       {/* 图片预览 / 占位：有图显示图；无图但有 prompt 显示 prompt 预览（小说转画布常用）；都没有显示默认占位 */}
       <div className="relative mb-2 flex h-36 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
         {data.imageUrl ? (
-          <img
-            src={cachedImageUrl(data.imageUrl)}
-            alt="参考图"
-            className="h-full w-full object-contain"
-          />
+          brokenMedia[`main:${data.imageUrl}`] ? (
+            <div className="flex flex-col items-center justify-center gap-1 px-3 text-center">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              <div className="text-[11px] font-medium text-slate-600">首帧图加载失败</div>
+              <p className="text-[10px] leading-tight text-slate-500">
+                产物可能已被清理，点下方「文生图」可重出这一镜
+              </p>
+            </div>
+          ) : (
+            <img
+              src={cachedImageUrl(data.imageUrl)}
+              alt="参考图"
+              className="h-full w-full object-contain"
+              onError={() => markBroken(`main:${data.imageUrl}`)}
+            />
+          )
         ) : data.prompt && data.prompt.trim() ? (
           <div className="flex flex-col items-center justify-center gap-1.5 px-3 text-center">
             <Wand2 className="h-5 w-5 text-indigo-300" />
@@ -673,11 +732,21 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
                       : 'border-slate-200 hover:border-indigo-300'
                   }`}
                 >
-                  <img
-                    src={cachedImageUrl(u)}
-                    alt={`候选 ${i + 1}`}
-                    className="h-full w-full object-cover"
-                  />
+                  {brokenMedia[`cand:${u}`] ? (
+                    <span
+                      className="flex h-full w-full items-center justify-center bg-slate-200 text-center text-[8px] leading-3 text-slate-500"
+                      title="这张候选拿不到（产物可能已被清理）—— 换一张候选，或点「文生图」重出"
+                    >
+                      图失效
+                    </span>
+                  ) : (
+                    <img
+                      src={cachedImageUrl(u)}
+                      alt={`候选 ${i + 1}`}
+                      className="h-full w-full object-cover"
+                      onError={() => markBroken(`cand:${u}`)}
+                    />
+                  )}
                   {/* 命中红线的候选角标：⚠️ 只提示、不禁用（标定样本还不够，见 image_qc.py） */}
                   {bad && (
                     <span className="absolute inset-x-0 bottom-0 bg-amber-500/90 text-center text-[8px] font-medium leading-3 text-white">
@@ -1032,6 +1101,11 @@ export default function CanvasPage() {
   // 元素语义绑定：名词 → 参考图编号（<Picture N>），key = 锚定图标识，value = 剧本中的名词
   const [bindingNames, setBindingNames] = useState<Record<string, string>>({});
   const [bindingPanelOpen, setBindingPanelOpen] = useState(false);
+  // 面板侧的破图兜底（与节点内同一口径）。⚠️ 锚定图失败 ≠ 产物过期：
+  // 它的下一步是「重新生成/重选锚定图」，所以文案与产物那套**不共用**。
+  const [brokenRefs, setBrokenRefs] = useState<Record<string, true>>({});
+  const markRefBroken = (key: string) =>
+    setBrokenRefs((m) => (m[key] ? m : { ...m, [key]: true }));
   // 背景偏好持久化：localStorage 即时保存，另随项目画布数据一起保存（跨设备）
   // 默认白底（light）；用户手动切过再按 localStorage 走
   const [dark, setDark] = useState<boolean>(
@@ -1121,23 +1195,8 @@ export default function CanvasPage() {
     () => ({ chars: effectiveCharRefs, scenes: effectiveSceneRefs }),
     [effectiveCharRefs, effectiveSceneRefs],
   );
-  // agnes reference 模式硬限制 5 张图 —— 常量收在 utils/anchors.ts（唯一出处，
-  // 与 agent 侧 canvas_storyboarder_node 的截断保持一致）
-  const bindingRows = useMemo(() => {
-    const rows: { key: string; label: string; url: string; pictureIndex: number }[] = [];
-    let idx = 2; // Picture 1 是每段自己的图，锚定图从 2 开始
-    for (const [name, ref] of Object.entries(effectiveCharRefs)) {
-      rows.push({ key: `char:${name}`, label: name, url: ref.url, pictureIndex: idx++ });
-    }
-    for (const [name, ref] of Object.entries(effectiveSceneRefs)) {
-      rows.push({ key: `scene:${name}`, label: name, url: ref.url, pictureIndex: idx++ });
-    }
-    return rows;
-  }, [effectiveCharRefs, effectiveSceneRefs]);
-  // 生效的绑定行（未超出 5 张上限 + 名词非空）
-  const activeBindingRows = bindingRows.filter(
-    (r) => r.pictureIndex <= MAX_REF_PICTURES && (bindingNames[r.key] ?? r.label).trim(),
-  );
+  // 元素绑定的行与编号见下面「plan 之后」的 bindingRows ——
+  // 编号必须按**各段真实数组**现算（依赖 plan.segments），所以定义位置挪到了 plan 之后。
 
   // 切换项目时，从项目数据同步锚定图 state
   useEffect(() => {
@@ -1610,6 +1669,49 @@ export default function CanvasPage() {
   }, [plan.segments, effectiveSceneUrls]);
 
   /**
+   * 元素语义绑定的行：名词 → 锚定图（可灵式 `<Picture N>`，保证角色/道具跨镜一致）。
+   *
+   * ★ P2-9：编号**必须逐段现算**（`utils/segmentRefs.ts`，与提交时的组装共用同一个函数）。
+   * 以前这里按**全局**编号（锚定图一律从 2 起、顺序 +1），而提交时每段只带这一段真正用到的
+   * 锚定图（P0-3）→ 真实编号逐段不同。用真实画布 40 v16 实测的偏差：
+   * 面板写「山村茅屋废墟 = 图片 7」，agent 实际写进提示词的是 `<Picture 4>`；
+   * 面板写「小黑子 = 图片 4」，那一段其实根本没带它 —— 6 段里逐段都不一致。
+   * 用户照面板配的编号去改提示词，就会指到不存在的图 / 指错对象。
+   *
+   * `pictureIndex` 只保留一个用途：画布上还没有可提交段落时的**预估位**（那时无编号可算）。
+   */
+  const bindingRows = useMemo(() => {
+    const rows: {
+      key: string;
+      label: string;
+      url: string;
+      pictureIndex: number;
+      indexes: number[];
+    }[] = [];
+    let idx = 2; // 预估位：Picture 1 是每段自己的图，锚定图从 2 开始
+    const push = (key: string, label: string, url: string) => {
+      rows.push({
+        key,
+        label,
+        url,
+        pictureIndex: idx++,
+        // 各段真实编号（去重升序）；空数组 = 没有任何一段会带上它
+        indexes: bindingIndexesInSegments(url, plan.segments, effectiveCharUrls, effectiveSceneUrls),
+      });
+    };
+    for (const [name, ref] of Object.entries(effectiveCharRefs)) push(`char:${name}`, name, ref.url);
+    for (const [name, ref] of Object.entries(effectiveSceneRefs)) push(`scene:${name}`, name, ref.url);
+    return rows;
+  }, [effectiveCharRefs, effectiveSceneRefs, plan.segments, effectiveCharUrls, effectiveSceneUrls]);
+
+  // 生效的绑定行（名词非空 + **真的会被某一段带上**）。
+  // 以前用「预估位 ≤ 5」当闸门，而那是全局编号：锚定图排在第 6 位时输入框被禁用、
+  // 绑定永远发不出去 —— 可那一段其实会带上它（真实画布 40 的「山村茅草屋·午后」就是这种）。
+  const activeBindingRows = bindingRows.filter(
+    (r) => r.indexes.length > 0 && (bindingNames[r.key] ?? r.label).trim(),
+  );
+
+  /**
    * 新节点落点：优先「当前视口中心」。画布平移远了以后固定坐标会把新节点丢到视口外，
    * 用户看到的只是「点了没反应」；拿不到实例或尺寸时返回 null，调用方维持原有固定坐标。
    * 与已有节点重叠则逐个向下错开，避免连点几次叠成一摞只看得见一个。
@@ -1756,29 +1858,17 @@ export default function CanvasPage() {
       // 提交前：把画布 state 的锚定图（优先）或 URL anchorRefs（兜底）合并到每个 segment 的 reference_images
       let segmentsJson: string | undefined;
       if (plan.segments.length > 0) {
-        // 优先用画布 state（用户手动管理/从 URL 合并过），URL anchorRefs 作兜底
-        // （与 bindingRows 用同一来源，保证 <Picture N> 编号对齐）
-        const charRefsMap = effectiveCharUrls;
-        const sceneRefsMap = effectiveSceneUrls;
-        const enriched = plan.segments.map((seg) => {
-          // ★ 每段只带**这一段真正用到**的锚定图（P0-3）：agnes 对每张参考图都加权，
-          // 把无关角色/场景塞进去会被"拉"进画面；而且 5 张名额会被无关项占满，
-          // 真正该出场的角色反被静默挤掉。匹配口径与首帧描述注入完全一致
-          // （见 utils/anchors.ts，同一条规则）。角色侧未命中仍退回全给（保险），
-          // 场景侧未命中则不给（见下方 fallback: 'none' 的说明）。
-          const { picked: chars } = pickUrlsByPrompt(seg.prompt ?? '', charRefsMap);
-          // ★ 场景侧未命中时**不给**（而不是全给）：实测 19 段里 8 段（42%）未命中，
-          //   「全给」等于给这些镜头塞 2~3 张**别的场景**的锚定图（agnes 对每张参考图都加权）
-          //   → 背景被往错场景拉；宁可只靠文字描述（下方有「N 段未匹配到场景锚」提示可见）。
-          const { picked: scenes } = pickUrlsByPrompt(seg.prompt ?? '', sceneRefsMap, {
-            fallback: 'none',
-          });
-          const extraRefs: string[] = [];
-          for (const url of Object.values(chars)) extraRefs.push(url);
-          for (const url of Object.values(scenes)) extraRefs.push(url);
-          const merged = [seg.image_url, ...extraRefs].filter((u): u is string => !!u);
-          return { ...seg, reference_images: merged.slice(0, MAX_REF_PICTURES) };
-        });
+        // 优先用画布 state（用户手动管理/从 URL 合并过），URL anchorRefs 作兜底。
+        // ★ 每段只带**这一段真正用到**的锚定图（P0-3）：agnes 对每张参考图都加权，
+        // 把无关角色/场景塞进去会被"拉"进画面；而且 5 张名额会被无关项占满，
+        // 真正该出场的角色反被静默挤掉。角色侧未命中仍退回全给（保险），场景侧未命中不给
+        // （宁缺勿错）。兜底口径、组装顺序与 5 张截断全部收在 `utils/segmentRefs.ts` ——
+        // **元素绑定面板显示编号用的是同一个函数**，所以「面板写第几号」与「实际发第几号」
+        // 不可能再分叉（P2-9）。
+        const enriched = plan.segments.map((seg) => ({
+          ...seg,
+          reference_images: segmentRefImages(seg, effectiveCharUrls, effectiveSceneUrls),
+        }));
         segmentsJson = JSON.stringify(enriched);
       }
       // ④ 元素语义绑定：名词 → <Picture N>（agent 转成占位符，保证角色/道具跨镜一致）
@@ -1790,7 +1880,9 @@ export default function CanvasPage() {
           ? JSON.stringify(
               activeBindingRows.map((r) => ({
                 name: (bindingNames[r.key] ?? r.label).trim(),
-                imageIndex: r.pictureIndex,
+                // 编号只是 `imageUrl` 缺失时的兜底（agent 按 url 在各段真实数组里现算）；
+                // 各段一致时用那个真实编号，逐段不同才退回预估位
+                imageIndex: r.indexes.length === 1 ? r.indexes[0] : r.pictureIndex,
                 imageUrl: r.url,
               })),
             )
@@ -2054,6 +2146,120 @@ export default function CanvasPage() {
     return () => clearTimeout(timer);
   }, [nodes, edges, currentProjectId, serializeCanvas, resolveConflict]);
 
+  // === 存量画布提示词重算：按**当前** composer 规则重写 [角色锚] / [场景] / [镜头] ===
+  // 画布里的提示词是**预处理时**合成的，改了 agent 的 composer 规则不会自动更新存量画布
+  // （此前只能手跑技能目录里的脚本）。流程刻意分两步：
+  //   ① dry-run（纯函数端点）→ 展示「将变 N 条 + 每条改了什么 + 改前改后」；
+  //   ② 用户确认 → 用当前 version 走既有乐观锁 PUT → **回读确认**
+  //      （PUT 回执里的 version 可能是 null，不算证据）。
+  // 规则实现只有一处：agent 侧 import 真实 composer 函数，前端只展示与确认，不复制规则。
+  const [recomposeOpen, setRecomposeOpen] = useState(false);
+  const [recomposeBusy, setRecomposeBusy] = useState(false);
+  const [recomposeResult, setRecomposeResult] = useState<RecomposeResult | null>(null);
+  const [recomposeError, setRecomposeError] = useState('');
+  const [recomposeDone, setRecomposeDone] = useState('');
+
+  /** 可重算的节点：**带提示词**的图片节点（空提示词本来就会被端点判成结构异常，不必发过去） */
+  const recomposeTargets = useMemo(
+    () =>
+      nodes
+        .filter((n) => n.type === 'imageNode' && ((n.data as ImageNodeData).prompt || '').trim())
+        .map((n) => ({ id: n.id, prompt: (n.data as ImageNodeData).prompt.trim() })),
+    [nodes],
+  );
+
+  const runRecomposeDryRun = async () => {
+    setRecomposeOpen(true);
+    setRecomposeDone('');
+    setRecomposeError('');
+    if (recomposeTargets.length === 0) {
+      setRecomposeResult(null);
+      setRecomposeError('画布上还没有带提示词的图片节点，没有可重算的内容');
+      return;
+    }
+    setRecomposeBusy(true);
+    try {
+      // analysis 传 null：画布的 analysisJson 不在 `/api/canvas` 的回包里（那是小说项目的字段），
+      // 端点会退回关键词表判定动物，并在面板里**如实说明**用的是哪一种来源
+      setRecomposeResult(await recomposePrompts(recomposeTargets, null));
+    } catch (e) {
+      setRecomposeResult(null);
+      setRecomposeError(e instanceof Error ? e.message : '重算失败');
+    } finally {
+      setRecomposeBusy(false);
+    }
+  };
+
+  /** 确认写入：落库走既有乐观锁 PUT，再回读确认（不看 PUT 回执） */
+  const applyRecompose = async () => {
+    if (!recomposeResult) return;
+    if (currentProjectId === null) {
+      setRecomposeError('请先用顶栏「保存」把画布存成一个项目，再落库重算结果');
+      return;
+    }
+    const changed = new Map(
+      recomposeResult.nodes.filter((r) => r.changed).map((r) => [r.id, r] as const),
+    );
+    if (changed.size === 0) return;
+
+    const next = nodes.map((n) => {
+      const r = changed.get(n.id);
+      return r ? { ...n, data: { ...n.data, prompt: r.prompt } } : n;
+    });
+    const nodesJson = JSON.stringify({
+      nodes: next.map(({ id, type, position, data }) => ({ id, type, position, data })),
+    });
+    const edgesJson = JSON.stringify(
+      edges.map(({ id, source, target, markerEnd }) => {
+        const e: Record<string, unknown> = { id, source, target };
+        if (markerEnd) e.markerEnd = markerEnd;
+        return e;
+      }),
+    );
+
+    setRecomposeBusy(true);
+    setRecomposeError('');
+    setRecomposeDone('');
+    try {
+      const res = await saveProject(currentProjectId, {
+        nodesJson,
+        edgesJson,
+        version: versionRef.current,
+      });
+      if (res.conflict) {
+        // 并发保护：交给既有的二选一（用我的覆盖 / 载入服务端最新），不静默覆盖别人的改动
+        resolveConflict(res, nodesJson, edgesJson);
+        return;
+      }
+      versionRef.current = res.canvas?.version ?? versionRef.current + 1;
+      lastSavedSnapshotRef.current = `${nodesJson}|${edgesJson}`;
+      setNodes(next);
+
+      // ★ 回读确认：PUT 回执里的 version 可能是 null，不能当成功证据
+      const after = await getProject(currentProjectId);
+      const parsed = JSON.parse(after.nodesJson ?? '[]');
+      const rawNodes = (Array.isArray(parsed) ? parsed : (parsed.nodes ?? [])) as Array<{
+        id?: string;
+        data?: { prompt?: string };
+      }>;
+      const readBack = new Map<string, string>();
+      for (const n of rawNodes) if (n.id) readBack.set(n.id, n.data?.prompt ?? '');
+      const mismatch = [...changed.entries()]
+        .filter(([id, r]) => readBack.get(id) !== r.prompt)
+        .map(([id]) => id);
+      versionRef.current = after.version ?? versionRef.current;
+      setRecomposeDone(
+        mismatch.length === 0
+          ? `已写入画布并回读确认：${changed.size} 条提示词（画布版本 v${after.version ?? '?'}）`
+          : `回读发现 ${mismatch.length} 条没写进去（${mismatch.join('、')}），请重试`,
+      );
+    } catch (e) {
+      setRecomposeError(e instanceof Error ? e.message : '落库失败');
+    } finally {
+      setRecomposeBusy(false);
+    }
+  };
+
   // === 成片顺序写进图片节点（画布上显示「第 N 段」）===
   // chain 按 x 坐标排序 → 拖动节点即改顺序；不显示序号用户根本判断不出提交顺序。
   useEffect(() => {
@@ -2293,11 +2499,27 @@ export default function CanvasPage() {
                       覆盖掉就回不去，所以先给用户看、点了「用新图」才落库 */}
                   {anchorCandidate?.kind === 'char' && anchorCandidate.name === name ? (
                     <>
-                      <img src={cachedImageUrl(ref.url)} alt="当前" title="当前（尚未覆盖）" className="h-10 w-10 rounded object-cover opacity-40" />
-                      <img src={cachedImageUrl(anchorCandidate.url)} alt="新生成" title="新生成" className="h-10 w-10 rounded object-cover ring-2 ring-indigo-500" />
+                      {brokenRefs[`anchorCur:${ref.url}`] ? (
+                        <ThumbFailed
+                          className="h-10 w-10 rounded object-cover opacity-40"
+                          title="当前锚定图拿不到（链接可能已失效）—— 可改描述后点「重新生成」"
+                        />
+                      ) : (
+                        <img src={cachedImageUrl(ref.url)} alt="当前" title="当前（尚未覆盖）" className="h-10 w-10 rounded object-cover opacity-40" onError={() => markRefBroken(`anchorCur:${ref.url}`)} />
+                      )}
+                      {brokenRefs[`anchorNew:${anchorCandidate.url}`] ? (
+                        <ThumbFailed
+                          className="h-10 w-10 rounded object-cover ring-2 ring-indigo-500"
+                          title="新生成的锚定图拿不到（链接可能已失效）—— 可再点一次「重新生成」"
+                        />
+                      ) : (
+                        <img src={cachedImageUrl(anchorCandidate.url)} alt="新生成" title="新生成" className="h-10 w-10 rounded object-cover ring-2 ring-indigo-500" onError={() => markRefBroken(`anchorNew:${anchorCandidate.url}`)} />
+                      )}
                     </>
+                  ) : brokenRefs[`anchor:${ref.url}`] ? (
+                    <ThumbFailed title="这张锚定图拿不到（链接可能已失效）—— 可改描述后点「重新生成」，或重选这张" />
                   ) : (
-                    <img src={cachedImageUrl(ref.url)} alt={name} className="h-10 w-10 rounded object-cover" />
+                    <img src={cachedImageUrl(ref.url)} alt={name} className="h-10 w-10 rounded object-cover" onError={() => markRefBroken(`anchor:${ref.url}`)} />
                   )}
                   <div className="min-w-0 flex-1 truncate text-xs" title={ref.desc || undefined}>
                     {name}
@@ -2307,12 +2529,14 @@ export default function CanvasPage() {
                       用户以为绑上了、实际被静默丢弃（P0-3 的可见性尾巴） */}
                   {(() => {
                     const row = bindingRows.find((r) => r.key === `char:${name}`);
-                    return row && row.pictureIndex > MAX_REF_PICTURES ? (
+                    // 判据是**事实**：各段都没带上它（提示词里没有它的名字 / 被 5 张上限截断）
+                    const notSent = !!row && plan.segments.length > 0 && row.indexes.length === 0;
+                    return notSent ? (
                       <span
                         className={`shrink-0 rounded px-1 text-[10px] ${dark ? 'bg-amber-900/50 text-amber-200' : 'bg-amber-100 text-amber-700'}`}
-                        title={`参考图上限 ${MAX_REF_PICTURES} 张（含每段自己的首帧图），这张排在第 ${row.pictureIndex} 位，本片不会用到`}
+                        title={`每段最多带 ${MAX_REF_PICTURES} 张参考图（含每段自己的首帧图），而各段提示词里都没有它的名字 → 本片不会用到它`}
                       >
-                        超出上限
+                        不会随段发送
                       </span>
                     ) : null;
                   })()}
@@ -2391,11 +2615,27 @@ export default function CanvasPage() {
                 <div key={name} className={`mt-2 flex items-center gap-2 rounded border p-1.5 ${dark ? 'border-slate-700 bg-slate-900/40' : 'border-slate-200 bg-slate-50'}`}>
                   {anchorCandidate?.kind === 'scene' && anchorCandidate.name === name ? (
                     <>
-                      <img src={cachedImageUrl(ref.url)} alt="当前" title="当前（尚未覆盖）" className="h-10 w-10 rounded object-cover opacity-40" />
-                      <img src={cachedImageUrl(anchorCandidate.url)} alt="新生成" title="新生成" className="h-10 w-10 rounded object-cover ring-2 ring-indigo-500" />
+                      {brokenRefs[`anchorCur:${ref.url}`] ? (
+                        <ThumbFailed
+                          className="h-10 w-10 rounded object-cover opacity-40"
+                          title="当前锚定图拿不到（链接可能已失效）—— 可改描述后点「重新生成」"
+                        />
+                      ) : (
+                        <img src={cachedImageUrl(ref.url)} alt="当前" title="当前（尚未覆盖）" className="h-10 w-10 rounded object-cover opacity-40" onError={() => markRefBroken(`anchorCur:${ref.url}`)} />
+                      )}
+                      {brokenRefs[`anchorNew:${anchorCandidate.url}`] ? (
+                        <ThumbFailed
+                          className="h-10 w-10 rounded object-cover ring-2 ring-indigo-500"
+                          title="新生成的锚定图拿不到（链接可能已失效）—— 可再点一次「重新生成」"
+                        />
+                      ) : (
+                        <img src={cachedImageUrl(anchorCandidate.url)} alt="新生成" title="新生成" className="h-10 w-10 rounded object-cover ring-2 ring-indigo-500" onError={() => markRefBroken(`anchorNew:${anchorCandidate.url}`)} />
+                      )}
                     </>
+                  ) : brokenRefs[`anchor:${ref.url}`] ? (
+                    <ThumbFailed title="这张锚定图拿不到（链接可能已失效）—— 可改描述后点「重新生成」，或重选这张" />
                   ) : (
-                    <img src={cachedImageUrl(ref.url)} alt={name} className="h-10 w-10 rounded object-cover" />
+                    <img src={cachedImageUrl(ref.url)} alt={name} className="h-10 w-10 rounded object-cover" onError={() => markRefBroken(`anchor:${ref.url}`)} />
                   )}
                   <div className="min-w-0 flex-1 truncate text-xs" title={ref.desc || undefined}>
                     {name}
@@ -2403,12 +2643,14 @@ export default function CanvasPage() {
                   </div>
                   {(() => {
                     const row = bindingRows.find((r) => r.key === `scene:${name}`);
-                    return row && row.pictureIndex > MAX_REF_PICTURES ? (
+                    // 判据是**事实**：各段都没带上它（提示词里没有它的名字 / 被 5 张上限截断）
+                    const notSent = !!row && plan.segments.length > 0 && row.indexes.length === 0;
+                    return notSent ? (
                       <span
                         className={`shrink-0 rounded px-1 text-[10px] ${dark ? 'bg-amber-900/50 text-amber-200' : 'bg-amber-100 text-amber-700'}`}
-                        title={`参考图上限 ${MAX_REF_PICTURES} 张（含每段自己的首帧图），这张排在第 ${row.pictureIndex} 位，本片不会用到`}
+                        title={`每段最多带 ${MAX_REF_PICTURES} 张参考图（含每段自己的首帧图），而各段提示词里都没有它的名字 → 本片不会用到它`}
                       >
-                        超出上限
+                        不会随段发送
                       </span>
                     ) : null;
                   })()}
@@ -2554,12 +2796,22 @@ export default function CanvasPage() {
                     }
                     className="group relative aspect-square overflow-hidden rounded-md border border-slate-400 hover:border-indigo-400"
                   >
-                    <img
-                      src={cachedImageUrl(urls[0])}
-                      alt={t.prompt || `任务 ${t.id}`}
-                      className="h-full w-full object-cover"
-                      loading="lazy"
-                    />
+                    {brokenRefs[`hist:${urls[0]}`] ? (
+                      <span
+                        className="flex h-full w-full items-center justify-center bg-slate-400/25 text-center text-[10px] leading-tight text-slate-500 dark:text-slate-300"
+                        title="这件作品的图拿不到（产物可能已被清理）—— 先回画廊重新生成，或换一件"
+                      >
+                        图失效
+                      </span>
+                    ) : (
+                      <img
+                        src={cachedImageUrl(urls[0])}
+                        alt={t.prompt || `任务 ${t.id}`}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                        onError={() => markRefBroken(`hist:${urls[0]}`)}
+                      />
+                    )}
                     {/* 候选数角标：候选已带进节点可在节点里切换，面板不提示用户就不知道 */}
                     {urls.length > 1 && (
                       <span className="absolute bottom-0 right-0 rounded-tl-md bg-black/60 px-1 text-[9px] font-medium text-white">
@@ -2747,21 +2999,38 @@ export default function CanvasPage() {
                   ) : (
                     <div className="max-h-[220px] space-y-2 overflow-y-auto">
                       {bindingRows.map((row) => {
-                        const overLimit = row.pictureIndex > MAX_REF_PICTURES;
+                        // 徽标即事实：直接用「各段真实编号」渲染，不再自己发明一个全局编号
+                        const badge = bindingBadge(
+                          row.indexes,
+                          row.pictureIndex,
+                          plan.segments.length > 0,
+                        );
+                        const notSent = badge.text === '未随段发送';
+                        const overLimit = badge.overLimit;
                         return (
                           <div key={row.key} className="flex items-center gap-2">
-                            <img
-                              src={cachedImageUrl(row.url)}
-                              alt={row.label}
-                              className="h-9 w-9 shrink-0 rounded-md border border-slate-600 object-cover"
-                            />
+                            {brokenRefs[`bind:${row.url}`] ? (
+                              <ThumbFailed
+                                className="h-9 w-9 rounded-md border border-slate-600"
+                                title="这张参考图拿不到（链接可能已失效）—— 可重新生成该锚定图；画布上的绑定名不受影响"
+                              />
+                            ) : (
+                              <img
+                                src={cachedImageUrl(row.url)}
+                                alt={row.label}
+                                className="h-9 w-9 shrink-0 rounded-md border border-slate-600 object-cover"
+                                onError={() => markRefBroken(`bind:${row.url}`)}
+                              />
+                            )}
                             <span
                               className={`shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold ${
-                                overLimit ? 'bg-amber-500/20 text-amber-500' : 'bg-indigo-500/20 text-indigo-400'
+                                overLimit || notSent
+                                  ? 'bg-amber-500/20 text-amber-500'
+                                  : 'bg-indigo-500/20 text-indigo-400'
                               }`}
-                              title={overLimit ? `超出 ${MAX_REF_PICTURES} 张上限，不会随段发给模型` : '对应的 <Picture N> 编号'}
+                              title={badge.title}
                             >
-                              图片 {row.pictureIndex}
+                              {badge.text}
                             </span>
                             <input
                               type="text"
@@ -2770,19 +3039,113 @@ export default function CanvasPage() {
                                 setBindingNames((prev) => ({ ...prev, [row.key]: e.target.value }))
                               }
                               placeholder="剧本中的名词，如：我 / 破旧摩托车"
-                              disabled={overLimit}
+                              disabled={overLimit || notSent}
                               className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-[11px] outline-none disabled:opacity-40 ${theme.input}`}
                             />
-                            {overLimit && (
-                              <span className="shrink-0 text-[10px] text-amber-500">超限</span>
+                            {(overLimit || notSent) && (
+                              <span className="shrink-0 text-[10px] text-amber-500">
+                                {overLimit ? '超限' : '不发送'}
+                              </span>
                             )}
                           </div>
                         );
                       })}
                       <p className={`pt-1 text-[10px] leading-relaxed ${theme.hint}`}>
-                        图片 1 是每个片段自己的画面，逐段不同，因此不参与绑定；锚定图从图片 2 起编号。
+                        图片 1 是每个片段自己的画面，逐段不同，因此不参与绑定。锚定图的编号是
+                        **逐段现算**的（每段只带这一段用到的参考图）：各段一致时显示「图片 N」，
+                        逐段不同时显示「逐段 …」，没有任何一段用到它就显示「未随段发送」。
+                        agent 写进提示词的 &lt;Picture N&gt; 与这里显示的编号**同源**（同一个组装函数）。
                       </p>
                     </div>
+                  )}
+                </div>
+              )}
+
+              {/* 存量提示词重算面板：先预览（dry-run）→ 确认 → 乐观锁写入 → 回读确认 */}
+              {recomposeOpen && (
+                <div className={`pointer-events-auto w-[620px] max-w-[92vw] rounded-2xl border ${theme.bar} p-4 shadow-lg backdrop-blur`}>
+                  <div className={`mb-2 flex items-center gap-1.5 text-[11px] font-semibold ${theme.headText}`}>
+                    <Sparkles className="h-3.5 w-3.5" />
+                    按当前规则重算提示词
+                    <span className={`font-normal ${theme.hint}`}>
+                      画布里的提示词是预处理时合成的；改过 agent 的合成规则后，这里按**现在的**规则重写一遍
+                    </span>
+                  </div>
+                  {recomposeBusy && <p className={`text-[11px] ${theme.hint}`}>计算中…</p>}
+                  {recomposeError && <p className="text-[11px] text-rose-500">{recomposeError}</p>}
+                  {recomposeDone && <p className="text-[11px] text-emerald-500">{recomposeDone}</p>}
+                  {recomposeResult && !recomposeBusy && (
+                    <>
+                      <p className={`text-[11px] ${theme.hint}`}>
+                        将变 <b className={theme.headText}>{recomposeResult.changed_count}</b> 条 / 共{' '}
+                        {recomposeResult.nodes.length} 条（动物判定来源：{recomposeResult.animal_source}
+                        ）
+                      </p>
+                      <div className="mt-2 max-h-[240px] space-y-2 overflow-y-auto">
+                        {recomposeResult.nodes.map((n) => {
+                          const node = nodes.find((x) => x.id === n.id);
+                          const beforePrompt = ((node?.data as ImageNodeData | undefined)?.prompt || '');
+                          return (
+                            <div
+                              key={n.id}
+                              className={`rounded-lg border p-2 text-[10px] leading-relaxed ${theme.input}`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <b>{n.id}</b>
+                                {n.skipped ? (
+                                  <span className="text-amber-500">跳过（结构不对，不硬改）</span>
+                                ) : n.changed ? (
+                                  <span className="text-indigo-400">将改动</span>
+                                ) : (
+                                  <span className={theme.hint}>无需改动</span>
+                                )}
+                              </div>
+                              {n.changed && (
+                                <div className="mt-1 space-y-0.5">
+                                  {['[角色锚]', '[场景]', '[镜头]'].map((pfx) => {
+                                    const a = blockOf(beforePrompt, pfx);
+                                    const b2 = blockOf(n.prompt, pfx);
+                                    if (a === b2) return null;
+                                    return (
+                                      <div key={pfx}>
+                                        <span className={theme.hint}>{pfx} </span>
+                                        <span className="text-rose-400 line-through">
+                                          {shortText(a.replace(pfx, '')) || '（空）'}
+                                        </span>
+                                        <span className={theme.hint}> → </span>
+                                        <span className="text-emerald-500">
+                                          {shortText(b2.replace(pfx, '')) || '（空）'}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {n.reasons.length > 0 && (
+                                <div className={`mt-1 ${theme.hint}`}>{n.reasons.join('；')}</div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="mt-2 flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setRecomposeOpen(false)}
+                          className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium ${theme.btn}`}
+                        >
+                          取消
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void applyRecompose()}
+                          disabled={recomposeBusy || recomposeResult.changed_count === 0}
+                          className="rounded-lg bg-indigo-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+                        >
+                          确认写入画布（{recomposeResult.changed_count} 条）
+                        </button>
+                      </div>
+                    </>
                   )}
                 </div>
               )}
@@ -2829,6 +3192,22 @@ export default function CanvasPage() {
                 {activeBindingRows.length > 0 && (
                   <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-indigo-500" />
                 )}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (recomposeOpen) {
+                    setRecomposeOpen(false);
+                    return;
+                  }
+                  setControlPanelOpen(false);
+                  setBindingPanelOpen(false);
+                  void runRecomposeDryRun();
+                }}
+                title="按 agent 当前的合成规则重算画布上的提示词（先预览将变几条、每条改了什么，确认后才写入画布）"
+                className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${theme.btn} ${recomposeOpen ? 'ring-1 ring-indigo-400' : ''}`}
+              >
+                <Sparkles className="h-3.5 w-3.5" /> 重算提示词
               </button>
               {(pendingImageNodes.length > 0 || batchRunning) && (
                 <>

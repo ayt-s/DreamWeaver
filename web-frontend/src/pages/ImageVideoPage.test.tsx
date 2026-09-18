@@ -6,6 +6,8 @@ import ImageVideoPage from './ImageVideoPage';
 import { createVideoTask, getTask, listTasks, uploadImage } from '../api/tasks';
 import { editImage } from '../api/imageEdit';
 import { countCandidates } from '../api/candidateQc';
+import { getProject, saveProject } from '../api/canvas';
+import { recomposePrompts } from '../api/promptRecompose';
 import type { TaskListResponse, TaskResponse } from '../types/task';
 
 // 只替换「提交任务」这一个函数：断言单节点「文生图」确实走了直出短路。
@@ -33,6 +35,23 @@ vi.mock('../api/candidateQc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/candidateQc')>();
   return { ...actual, countCandidates: vi.fn() };
 });
+
+// 画布读写：重算落库那条链路要断言「用当前 version PUT + 回读确认」，
+// 所以只替换这几个函数（其余保留真实实现）。默认返回**已 resolve 的空结果** ——
+// 页面有自动保存（1.2s 防抖），返回 undefined 会让 `.then` 炸在别的用例里。
+vi.mock('../api/canvas', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/canvas')>();
+  return {
+    ...actual,
+    saveProject: vi.fn().mockResolvedValue({ conflict: false, canvas: { id: 1, version: 1 } }),
+    getProject: vi
+      .fn()
+      .mockResolvedValue({ id: 1, name: 'x', nodesJson: null, edgesJson: null, version: 0 }),
+  };
+});
+
+// 提示词重算端点：只替换调用本身（用例逐条设置返回值）
+vi.mock('../api/promptRecompose', () => ({ recomposePrompts: vi.fn() }));
 
 // React Flow 在 jsdom 下需要 ResizeObserver（白屏回归防护：保证页面无运行时错误挂载）
 beforeAll(() => {
@@ -891,5 +910,289 @@ describe('场景锚未匹配的处理（未命中不再「全给」）', () => {
     // 单节点「文生图」只回填 1 张 imageUrl（不产生 candidates）→ 计数不该被触发
     await new Promise((r) => setTimeout(r, 80));
     expect(vi.mocked(countCandidates)).not.toHaveBeenCalled();
+  });
+});
+
+describe('元素绑定面板的编号（P2-9：显示的第 N 张 == 实际提交的第 N 张）', () => {
+  beforeEach(() => {
+    vi.mocked(listTasks).mockReset();
+    vi.mocked(createVideoTask).mockReset().mockResolvedValue({ id: 1 } as never);
+    vi.mocked(getTask).mockReset();
+  });
+
+  it('★ 逐段现算：面板显示「图片 N / 逐段 N/M / 未随段发送」，与提交的数组逐段对得上', async () => {
+    // 3 个角色锚 + 1 个场景锚：段 1 只提陈浔、段 2 提陈浔+大黑牛（小黑子两段都没提）
+    // → 场景锚在两段里的位置不同（3 / 4），小黑子任何一段都不带。
+    // 这些差异是**全局编号**（从 2 起顺序 +1：陈浔=2、大黑牛=3、小黑子=4、场景=5）说不出来的。
+    const anchors = {
+      characters: {
+        陈浔: { url: 'https://cdn.example.com/chen.png' },
+        大黑牛: { url: 'https://cdn.example.com/bull.png' },
+        小黑子: { url: 'https://cdn.example.com/hei.png' },
+      },
+      scenes: {
+        '山洞内部，黄昏，篝火微燃，岩壁粗糙斑驳': { url: 'https://cdn.example.com/scene.png' },
+      },
+    };
+    vi.mocked(listTasks).mockResolvedValue(
+      historyList([
+        { id: 5, prompt: '分镜一', urls: ['https://cdn.example.com/frame1.png'] },
+        { id: 6, prompt: '分镜二', urls: ['https://cdn.example.com/frame2.png'] },
+      ]),
+    );
+    renderPage(`/canvas?anchorRefs=${encodeURIComponent(JSON.stringify(anchors))}`);
+
+    fireEvent.click(await screen.findByAltText('分镜一'));
+    fireEvent.click(await screen.findByAltText('分镜二'));
+    const areas = (await waitFor(() => {
+      const all = screen.getAllByPlaceholderText(/本段描述/) as HTMLTextAreaElement[];
+      // ⚠️ 初版画布自带一个空提示词的图片节点（n2），新加的这两段在**末尾**
+      expect(all.length).toBeGreaterThanOrEqual(3);
+      return all;
+    })) as HTMLTextAreaElement[];
+    const first = areas[areas.length - 2];
+    const second = areas[areas.length - 1];
+
+    fireEvent.change(first, {
+      target: {
+        value: '[角色锚] 陈浔；[场景] 山洞内部，黄昏，篝火微燃，岩壁粗糙斑驳；[镜头] 中景',
+      },
+    });
+    fireEvent.change(second, {
+      target: {
+        value:
+          '[角色锚] 陈浔、大黑牛；[场景] 山洞内部，黄昏，篝火微燃，岩壁粗糙斑驳；[镜头] 中景',
+      },
+    });
+
+    // 打开元素绑定面板
+    fireEvent.click(screen.getByRole('button', { name: /元素绑定/ }));
+
+    // 陈浔：两段都在第 2 张 → 图片 2
+    expect(await screen.findByText('图片 2')).toBeInTheDocument();
+    // 大黑牛：只在段 2 命中（段 1 只提了陈浔 → 角色侧只带命中的）→ 图片 3
+    expect(screen.getByText('图片 3')).toBeInTheDocument();
+    // ★ 场景锚：段 1 是第 3 张、段 2 是第 4 张 → 逐段，不再挑一个数字骗用户
+    expect(screen.getByText('逐段 3/4')).toBeInTheDocument();
+    // ★ 小黑子：两段提示词都没提到它 → 一段都不带（旧口径会说「图片 4」）
+    expect(screen.getByText('未随段发送')).toBeInTheDocument();
+    expect(screen.queryByText('图片 4')).toBeNull();
+
+    // 与实际提交核对：面板说「逐段 3/4」，那两段的数组里场景锚就必须正好在下标 2 / 3
+    fireEvent.click(screen.getByRole('button', { name: '生成成片' }));
+    await waitFor(() => expect(vi.mocked(createVideoTask)).toHaveBeenCalled());
+    const req = vi.mocked(createVideoTask).mock.calls[0][0] as {
+      segments?: string;
+      referenceBindings?: string;
+    };
+    const segs = JSON.parse(String(req.segments)) as Array<{ reference_images: string[] }>;
+    const sceneAt = segs
+      .map((s) => s.reference_images.indexOf('https://cdn.example.com/scene.png') + 1)
+      .sort();
+    expect(sceneAt).toEqual([3, 4]);
+    // 陈浔两段都带、且都在第 2 张 → 与面板的「图片 2」一致
+    expect(
+      segs.map((s) => s.reference_images.indexOf('https://cdn.example.com/chen.png') + 1),
+    ).toEqual([2, 2]);
+    // 小黑子一段都没带
+    expect(
+      segs.every((s) => !s.reference_images.includes('https://cdn.example.com/hei.png')),
+    ).toBe(true);
+
+    // 绑定载荷按同一个函数算出的编号提交（大黑牛=3；小黑子没被任何一段带上 → 不提交它的绑定）
+    const binds = JSON.parse(String(req.referenceBindings)) as Array<{
+      name: string;
+      imageIndex: number;
+      imageUrl: string;
+    }>;
+    const names = binds.map((x) => x.name);
+    expect(names).toContain('陈浔');
+    expect(names).toContain('大黑牛');
+    expect(names).not.toContain('小黑子');
+    expect(binds.find((x) => x.name === '大黑牛')?.imageIndex).toBe(3);
+    // 绑定一律带 url（agent 按 url 在各段数组里现算，编号只是兜底）
+    expect(binds.every((x) => !!x.imageUrl)).toBe(true);
+  });
+});
+
+describe('「按当前规则重算提示词」入口（存量画布）', () => {
+  const OLD_PROMPT =
+    '[角色锚] 陈浔（17岁少年）、大黑牛（通体漆黑的灵兽牛）；[主体动作] 一人一牛席地而坐；[场景] 山洞内部，黄昏；[镜头] 中景固定';
+  const NEW_PROMPT =
+    '[角色锚] 陈浔（17岁少年）；[主体动作] 一人一牛席地而坐；[场景] 山洞内部，黄昏，大黑牛（通体漆黑的灵兽牛）；[镜头] 中景固定';
+
+  beforeEach(() => {
+    vi.mocked(listTasks).mockReset().mockResolvedValue(historyList([]));
+    vi.mocked(recomposePrompts).mockReset();
+    vi.mocked(saveProject).mockReset();
+    vi.mocked(getProject).mockReset();
+  });
+
+  it('★ 先 dry-run 预览（含改前改后）→ 确认后用当前 version PUT → 回读确认', async () => {
+    // 模拟服务端画布：版本 3，一个带提示词的图片节点
+    let serverNodesJson = JSON.stringify({
+      nodes: [
+        {
+          id: 'imgA',
+          type: 'imageNode',
+          position: { x: 0, y: 0 },
+          data: { prompt: OLD_PROMPT, imageUrl: 'https://cdn.example.com/f1.png' },
+        },
+      ],
+    });
+    let serverVersion = 3;
+
+    vi.mocked(getProject).mockImplementation(async (id: number) => ({
+      id,
+      name: '老画布',
+      nodesJson: serverNodesJson,
+      edgesJson: '[]',
+      version: serverVersion,
+    }));
+    vi.mocked(saveProject).mockImplementation(async (id: number, body) => {
+      serverNodesJson = body.nodesJson ?? serverNodesJson;
+      serverVersion += 1;
+      return { conflict: false, canvas: { id, name: '老画布', version: serverVersion } };
+    });
+    // dry-run：按「当前规则」把动物移出角色锚（真实端点的行为）
+    vi.mocked(recomposePrompts).mockImplementation(async (nodes) => ({
+      nodes: nodes.map((n) => ({
+        id: n.id,
+        prompt: NEW_PROMPT,
+        changed: true,
+        skipped: false,
+        reasons: ['[角色锚] 移出：大黑牛（改到 [场景] 里带出）'],
+      })),
+      changed_count: nodes.length,
+      animal_source: '关键词表（未携带分析结果）',
+    }));
+
+    renderPage('/canvas?project=7');
+
+    // 等到项目加载完（节点带上了 OLD_PROMPT）
+    await waitFor(() =>
+      expect(
+        (screen.getAllByPlaceholderText(/本段描述/)[0] as HTMLTextAreaElement).value,
+      ).toBe(OLD_PROMPT),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /重算提示词/ }));
+
+    // ① dry-run 只算不改：请求带的是节点 id + 当前提示词，analysis 为 null
+    await waitFor(() => expect(vi.mocked(recomposePrompts)).toHaveBeenCalled());
+    const [sentNodes, sentAnalysis] = vi.mocked(recomposePrompts).mock.calls[0];
+    expect(sentNodes).toEqual([{ id: 'imgA', prompt: OLD_PROMPT }]);
+    expect(sentAnalysis).toBeNull();
+    expect(vi.mocked(saveProject)).not.toHaveBeenCalled(); // 未确认前绝不落库
+
+    // 预览里要说清「将变几条」+ 改前改后对照 + 判定来源
+    expect(await screen.findByText(/将变/)).toBeInTheDocument();
+    expect(screen.getByText(/关键词表（未携带分析结果）/)).toBeInTheDocument();
+    // 改「前」的锚点仍在（会同时命中提示词 textarea 与对照行，所以用 getAllBy）
+    expect(screen.getAllByText(/大黑牛（通体漆黑的灵兽牛）/).length).toBeGreaterThan(1);
+    expect(screen.getByText(/\[角色锚\] 移出：大黑牛/)).toBeInTheDocument();
+
+    // ② 确认：用当前 version（3）走既有乐观锁 PUT，nodesJson 里是**重算后**的提示词
+    fireEvent.click(screen.getByRole('button', { name: /确认写入画布/ }));
+    await waitFor(() => expect(vi.mocked(saveProject)).toHaveBeenCalled());
+    const [savedId, savedBody] = vi.mocked(saveProject).mock.calls[0];
+    expect(savedId).toBe(7);
+    expect(savedBody.version).toBe(3);
+    expect(savedBody.nodesJson).toContain('大黑牛（通体漆黑的灵兽牛）；[镜头]');
+    expect(savedBody.nodesJson).toContain('"[角色锚] 陈浔（17岁少年）；[主体动作]');
+
+    // ③ 回读确认（PUT 回执里的 version 可能是 null，不算证据）
+    await waitFor(() =>
+      expect(screen.getByText(/已写入画布并回读确认：1 条提示词/)).toBeInTheDocument(),
+    );
+    expect(vi.mocked(getProject).mock.calls.length).toBeGreaterThanOrEqual(2);
+    // 画布上的提示词已经变成重算后的那一版
+    expect((screen.getAllByPlaceholderText(/本段描述/)[0] as HTMLTextAreaElement).value).toBe(
+      NEW_PROMPT,
+    );
+  });
+
+  it('失败如实显示（用户主动点的按钮，不能静默降级）', async () => {
+    vi.mocked(getProject).mockResolvedValue({
+      id: 7,
+      name: '老画布',
+      nodesJson: JSON.stringify({
+        nodes: [
+          {
+            id: 'imgA',
+            type: 'imageNode',
+            position: { x: 0, y: 0 },
+            data: { prompt: OLD_PROMPT, imageUrl: 'https://cdn.example.com/f1.png' },
+          },
+        ],
+      }),
+      edgesJson: '[]',
+      version: 3,
+    });
+    vi.mocked(recomposePrompts).mockRejectedValue(new Error('提示词重算失败 (500): boom'));
+
+    renderPage('/canvas?project=7');
+    await waitFor(() =>
+      expect(
+        (screen.getAllByPlaceholderText(/本段描述/)[0] as HTMLTextAreaElement).value,
+      ).toBe(OLD_PROMPT),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /重算提示词/ }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/提示词重算失败 \(500\): boom/)).toBeInTheDocument(),
+    );
+    expect(vi.mocked(saveProject)).not.toHaveBeenCalled();
+  });
+});
+
+describe('产物拿不到时的兜底（不留无声破图）', () => {
+  beforeEach(() => {
+    vi.mocked(listTasks).mockReset();
+    vi.mocked(createVideoTask).mockReset();
+    vi.mocked(getTask).mockReset();
+  });
+
+  it('★ 首帧图加载失败 → 说清是什么 + 下一步按哪个按钮（不写「网络异常」）', async () => {
+    // agnes 对产物 URL 的保留官方零承诺（我们只实测到 175/175 长期存活），
+    // 所以展示层必须有兜底 —— 破图留空白，用户不知道是网慢还是产物没了。
+    vi.mocked(listTasks).mockResolvedValue(
+      historyList([
+        { id: 7, prompt: '陈浔站在茅屋前', urls: ['https://cdn.example.com/dead.png'] },
+      ]),
+    );
+    renderPage('/canvas');
+
+    // 从「从历史作品选取」面板加一张有图的节点 → 它就是一个分镜
+    fireEvent.click(await screen.findByAltText('陈浔站在茅屋前'));
+    const img = await screen.findByAltText('参考图');
+    fireEvent.error(img);
+
+    expect(await screen.findByText('首帧图加载失败')).toBeInTheDocument();
+    // 文案必须指向真正的下一跳（本项目教训：指错组件比没有文案更糟）
+    expect(screen.getByText(/点下方「文生图」/)).toBeInTheDocument();
+    expect(screen.queryByText(/网络异常/)).toBeNull();
+  });
+
+  it('★ 候选图拿不到 → 只替换坏的那张，且提示可操作的下一步', async () => {
+    vi.mocked(listTasks).mockResolvedValue(
+      historyList([
+        {
+          id: 8,
+          prompt: '陈浔站在茅屋前',
+          urls: ['https://cdn.example.com/a.png', 'https://cdn.example.com/dead.png'],
+        },
+      ]),
+    );
+    renderPage('/canvas');
+
+    fireEvent.click(await screen.findByAltText('陈浔站在茅屋前'));
+    fireEvent.error(await screen.findByAltText('候选 2'));
+
+    const failed = await screen.findByText('图失效');
+    expect(failed.getAttribute('title')).toMatch(/点「文生图」重出/);
+    // 没坏的那张不能被一起替换掉（否则「挑一张设为首帧」就无从挑起）
+    expect(screen.getByAltText('候选 1')).toBeInTheDocument();
   });
 });
