@@ -250,6 +250,13 @@ public class TaskServiceImpl implements TaskService {
         request.setPrompt(original.getPrompt());
         request.setGenType(original.getGenType());
         request.setUserId(original.getUserId() == null ? null : String.valueOf(original.getUserId()));
+        // ★ 画布任务（segments 型）必须把**段**一起带过去（2026-09-18 修）：
+        //   `gen_params_json` 里**不存 segments**（只存 stylePrompt / 时间轴 / 元素绑定等），
+        //   而原来的重生只还原 genParams ⇒ 画布任务一生重就丢段，Agent 收不到 segments，
+        //   只能退化成「按 prompt 重新分镜」—— 实测产出与画布内容**完全无关**
+        //   （重试那次提交的视频提示词是一句英文，全库没有任何任务含这句话），
+        //   既白烧额度又污染画廊。段里的 image_url 是**输入**（首帧），产物在 result_json，所以带过来安全。
+        request.setSegments(original.getSegmentsJson());
         // 还原精细控制参数（风格/负面词/时间轴/元素绑定），否则重生成会丢设定
         taskJsonCodec.applyGenParamsJson(original.getGenParamsJson(), request);
         // 用户在画廊「编辑参数」里改过的值覆盖历史值（非空字段才覆盖）
