@@ -148,11 +148,15 @@ def test_blur_ratio_uses_all_sample_points_not_first(patch_capture):
     assert r["flat_frame_ratio"] == 0.0, "低细节内容不该被当成空帧"
 
 
-def test_majority_blurry_fails(patch_capture):
-    """过半采样帧低细节 → 判不通过（越过边界的另一侧）。
+def test_majority_low_detail_no_longer_fails(patch_capture):
+    """★ 2026-09-18 判定口径修正：低细节帧过半**不再**判不通过（旧契约已反转）。
 
-    90 帧、fps=30 → frame_interval=30 → 采样第 0/30/60 帧（第 90 帧不存在）。
-    第 0 帧清晰、第 30/60 帧低细节 → blur = 2/3 > BLUR_RATIO_LIMIT。
+    旧契约（本用例的前身）是「过半采样帧低细节 → 判不通过」。推翻它的证据是
+    44 个唯一真实段里被判「低细节过半」的 4 段：逐帧抽图目视 **6/6 全部清晰**
+    （夜景浅景深、柔光人脸、暗场光束特效）—— 这个指标测的是**画面高频细节量**，
+    与「人眼觉得糊」是两件事，换任何细节量指标两组分布都重叠。
+
+    指标本身仍然如实上报（`blur_frame_ratio`），只是不再否决产物。
     """
     frames = [_sharp()] * 30 + [_low_detail()] * 60
     patch_capture(frames, fps=30.0)
@@ -160,8 +164,9 @@ def test_majority_blurry_fails(patch_capture):
     r = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
 
     assert r["total_frames"] == 3
-    assert r["blur_frame_ratio"] == pytest.approx(2 / 3, abs=0.01)
-    assert r["passed"] is False
+    assert r["blur_frame_ratio"] == pytest.approx(2 / 3, abs=0.01), "指标必须如实上报"
+    assert r["passed"] is True, "低细节不再是失败原因（它曾让 4/44 段误报，等于狼来了）"
+    assert r["failed_reasons"] == [], "失败成因里不该出现模糊/低细节"
 
 
 def test_blur_ratio_is_fraction_of_sampled_frames(patch_capture):
@@ -206,7 +211,7 @@ def test_report_shape_includes_flat_ratio(patch_capture):
     r = qc.analyze_video_frames("dummy.mp4")
     assert set(r) >= {"total_frames", "declared_frames", "truncated",
                       "black_frame_ratio", "blur_frame_ratio",
-                      "flat_frame_ratio", "passed"}
+                      "flat_frame_ratio", "passed", "failed_reasons"}
     assert r["flat_frame_ratio"] == 0.0
     assert r["truncated"] is False
 
@@ -296,6 +301,56 @@ def test_all_sharp_video_passes(patch_capture):
 
     assert r["blur_frame_ratio"] == pytest.approx(0.0)
     assert r["passed"] is True
+
+
+# ------------------------------------------------- 失败成因（2026-09-18 新增字段）
+
+def test_failed_reasons_lists_only_deterministic_causes(patch_capture):
+    """★ `failed_reasons` 是上层的分流依据（自愈挑修正后缀 / 文案归因），
+    必须只由**确定性**判据组成，且与 `passed` 严格一致。
+
+    「低细节」永远不该出现在里面 —— 那是参考指标（见模块 docstring）。
+    """
+    # 空帧（纯色）→ 只有 flat_frames
+    patch_capture([_sharp() for _ in range(30)] + [_flat() for _ in range(30)], fps=30.0)
+    r = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
+    assert r["passed"] is False
+    assert r["failed_reasons"] == ["flat_frames"], (
+        "空帧虽然也会进 blur 桶，但它是最确定的缺陷，成因必须只报 flat_frames"
+    )
+
+    # 下载残片 → 只有 truncated
+    patch_capture([_sharp() for _ in range(30)], fps=30.0, declared=200)
+    r2 = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
+    assert r2["failed_reasons"] == ["truncated"]
+
+    # 黑帧过半 → black_frames；暗噪声帧方差高，不是空帧
+    patch_capture([_dark()] * 30 * 5 + [_sharp()] * 30 * 5, fps=30.0)
+    r3 = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
+    assert r3["failed_reasons"] == ["black_frames"], "暗噪声帧不是空帧（方差 > 阈值）"
+
+    # 干净产物 → 空列表
+    patch_capture([_sharp() for _ in range(60)], fps=30.0)
+    r4 = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
+    assert r4["passed"] is True
+    assert r4["failed_reasons"] == []
+
+
+def test_passed_and_failed_reasons_never_disagree(patch_capture):
+    """`passed` 必须恒等于「failed_reasons 为空」—— 两者各自演化必然漂移。"""
+    cases = [
+        ([_sharp()] * 60, {}),
+        ([_sharp()] * 30 + [_flat()] * 30, {}),
+        ([_dark()] * 150 + [_sharp()] * 150, {}),
+        ([_sharp()] * 30, {"declared": 200}),
+        ([_low_detail()] * 60, {}),
+    ]
+    for frames, kw in cases:
+        patch_capture(frames, fps=30.0, **kw)
+        r = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
+        assert r["passed"] is (not r["failed_reasons"]), (
+            f"passed={r['passed']} 与 failed_reasons={r['failed_reasons']} 矛盾"
+        )
 
 
 def test_black_frames_are_detected(patch_capture):

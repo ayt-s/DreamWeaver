@@ -22,14 +22,37 @@
 
 修法：用独立的 `frame_index` 判定采样点，`total` 只在采样时自增。
 
-## 阈值尚未按真实产物标定（Task A6，进行中）
+## 低 Laplacian 方差 ≠ 人眼觉得糊（2026-09-18 定论）
 
-标定脚本见 `scripts/calibrate_qc_thresholds.py`。注意核心陷阱：
+核心陷阱：**低 Laplacian 方差 ≠ 人眼觉得模糊**。以下天然低方差但人看着没问题，
+会被误判为「模糊」：大面积平坦背景（天空/雪景/纯色幕布）、浅景深/柔化光斑、
+动漫/水彩/柔光风格、特写人脸。
 
-**低 Laplacian 方差 ≠ 人眼觉得模糊**。以下天然低方差但人看着没问题，会被误判为「模糊」：
-大面积平坦背景（天空/雪景/纯色幕布）、浅景深/柔化光斑、动漫/水彩/柔光风格、特写人脸。
 实测（2026-09-18，逐帧看过）：夜间浅景深人像方差 11~20、柔光人脸特写 3~4、
-暗场特效镜头 0/87/87，而 QC 判通过的对照段是 105~236 —— 所以标定必须**按内容/风格分组**。
+暗场特效镜头 0/87/87，而 QC 判通过的对照段是 105~236。
+
+早先的结论是「标定必须**按内容/风格分组**」—— 本轮做了分组标定尝试后**否掉了它**：
+换任何细节量指标（分块上分位、纹理块占比）两组分布都重叠，**分组阈值也不成立**
+（运行时无从知道内容属于哪一类）。定论见下面「blur 降级为参考指标」一节。
+标定脚本仍在：`scripts/calibrate_qc_thresholds.py`。
+
+## blur 降级为参考指标（2026-09-18 判定口径修正）
+
+**`blur_frame_ratio` 不再参与 `passed`。** 它继续被计算、被返回、被日志与
+`fix_looping` 的成因映射使用，但**不再否决任何产物**。
+
+为什么：全图 Laplacian 方差测的是**画面高频细节量**，而「细节少」与「人眼觉得糊」
+是两件事，且**任何**基于细节量的指标都分不开它们 —— 实测（44 个唯一真实段）：
+
+- 判「低细节过半」的 4 段，逐帧抽图目视 **6/6 全部清晰**：夜间浅景深人像、
+  柔光人脸特写、蓝色光束暗场特效。它们不是「糊」，是内容本身就低细节。
+- 试过换指标（分块 Laplacian 方差的上分位数 p90 / p95、纹理块占比），
+  误报段与对照段的分布**互相重叠**（误报段 p90 最高 141，对照段最低 126），
+  换指标解决不了 —— 因为病因不是阈值位置，是「低细节 ≠ 糊」。
+
+代价与补偿：失去这条判据后，`passed` 只由三条**确定性**判据决定（残片 / 黑帧 /
+空帧），碰巧这三条在生产产物里是零误报的，于是「质检未通过」重新变得可信
+（此前 4/44 全是误报，等于狼来了）。真·糊由候选机制与人工目视兜底。
 
 ## 黑帧 / 空帧：量纲与语义（2026-09-18 修正）
 
@@ -61,10 +84,14 @@ BLACK_RATIO_THRESHOLD = BLACK_PIXEL_RATIO_THRESHOLD
 # ⚠️ 此前 `passed` 拿这个位置去比 BLACK_RATIO_THRESHOLD（0.95），量纲不对：
 #    于是「90% 的帧全黑」也算通过。p5 之外留了余量：开头一帧淡入黑不该否决整段。
 BLACK_FRAME_RATIO_LIMIT = 0.2
-# Laplacian 方差低于此值 → 这一帧算「模糊帧」（低细节）。
-# ⚠️ 未标定：低细节 ≠ 人眼觉得糊（见模块 docstring 的实测清单）
+# Laplacian 方差低于此值 → 这一帧算「低细节帧」。
+# ⚠️ 2026-09-18 起**只进报告，不决定 passed**（见模块 docstring）：
+#    这个指标测的是「画面高频细节量」，低细节内容（夜景/柔光/暗场特效）
+#    会被算成本桶，而实测那 4 段人眼都清晰。
 BLUR_VARIANCE_THRESHOLD = 50.0
-# 判「不通过」的模糊帧比例上限（0.5 = 过半采样帧模糊才算糊）
+# 低细节帧比例的**参考线**：超过它只意味着「值得人工看一眼」，
+# **不再参与 passed**。保留是因为 `scripts/calibrate_qc_thresholds.py`
+# 与 `fix_looping._pick_hint` 的成因映射仍以它为观察口径。
 BLUR_RATIO_LIMIT = 0.5
 # Laplacian 方差低于此值 → 「空帧」：纯色/纯黑，画面里没有任何内容。
 # 与「低细节」严格区分：实测真实内容最低到 3~4（柔光人脸特写），
@@ -100,9 +127,11 @@ def analyze_video_frames(
         qc_report: {
             total_frames: int,          # **已采样**帧数（不是视频总帧数）
             black_frame_ratio: float,   # 采样帧里黑帧的占比
-            blur_frame_ratio: float,    # 采样帧里模糊帧的占比
+            blur_frame_ratio: float,    # 采样帧里低细节帧的占比（**参考，不决定 passed**）
             flat_frame_ratio: float,    # 采样帧里空帧（纯色/纯黑无内容）的占比
             passed: bool,               # 见下方 passed 的判据
+            failed_reasons: list[str],  # passed=False 时的确定性成因
+                                        #   ("truncated" / "black_frames" / "flat_frames")
         }
     """
     cap = cv2.VideoCapture(video_url)
@@ -162,17 +191,18 @@ def analyze_video_frames(
     decoded_ratio = (frame_index / declared_frames) if declared_frames > 0 else 1.0
     truncated = declared_frames > 0 and decoded_ratio < TRUNCATED_DECODE_RATIO
 
-    # 通过条件：
+    # 通过条件（**全部是确定性判据**，零误报；低细节 blur 自 2026-09-18 起只报告）：
     #   文件完整（不是下载残片）
     #   黑帧占比 ≤ 帧级上限（**不是**像素比例阈值 —— 这里曾把两者混用）
-    #   模糊帧占比 ≤ BLUR_RATIO_LIMIT
     #   没有空帧（零容忍：真内容不会出现方差 < 1 的帧）
-    passed = (
-        not truncated
-        and black_ratio <= black_frame_ratio_limit
-        and blur_ratio <= BLUR_RATIO_LIMIT
-        and flat_ratio == 0.0
-    )
+    reasons: list[str] = []
+    if truncated:
+        reasons.append("truncated")
+    if black_ratio > black_frame_ratio_limit:
+        reasons.append("black_frames")
+    if flat_ratio > 0.0:
+        reasons.append("flat_frames")
+    passed = not reasons
 
     return {
         "total_frames": total,
@@ -182,4 +212,5 @@ def analyze_video_frames(
         "blur_frame_ratio": round(blur_ratio, 4),
         "flat_frame_ratio": round(flat_ratio, 4),
         "passed": passed,
+        "failed_reasons": reasons,
     }

@@ -27,18 +27,19 @@ A1~A4 把「下载到本地」前置成 `asset_fetch` 节点后，QC 才第一�
   探测是附加信息，缺了不该否决整个镜。
 - 单镜异常不中断其它镜（与 `synthesizer` 的降级哲学一致）。
 
-## 阈值
+## 阈值与判据（2026-09-18 定稿）
 
-`app/tools/qc.py` 里的黑帧/模糊阈值**尚未按真实产物标定**（见 Task A6）：
-Laplacian 方差低 ≠ 人眼觉得模糊（浅景深 / 柔光 / 纯色背景 / 特写人脸天然低方差）。
-在 A6 完成前，本节点的判定结果应当视为「参考」而非「结论」。
+进 `passed` 的只有三类**确定性**判据：文件残片（下载不全）/ 黑帧过半 / 空帧（零容忍）。
+「低细节（blur）」自 2026-09-18 起**只报告、不判定** —— 实测被判「低细节过半」的
+4 段逐帧目视 **6/6 全部清晰**（夜景浅景深、柔光人脸、暗场光束特效），
+换任何「细节量」指标两组分布都重叠。理由与数据见 `app/tools/qc.py` 的模块 docstring。
 """
 import asyncio
 import logging
 from pathlib import Path
 
 from app.state import CreativeSessionState, TaskStatus
-from app.tools.qc import analyze_video_frames
+from app.tools.qc import BLACK_FRAME_RATIO_LIMIT, analyze_video_frames
 from app.utils.media import probe_dimensions, probe_duration
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,9 @@ async def _check_one(idx: int, path: str, shot: dict) -> dict:
         "duration_expected": expected_seconds,
         "aspect_ratio": expected_aspect,
         "passed": False,
+        # passed=False 时的确定性成因（truncated / black_frames / flat_frames）。
+        # 此前只有自由文本 error，上层想按成因分流（如自愈的修正后缀）只能去猜文案。
+        "failed_reasons": [],
         "error": "",
     }
 
@@ -115,18 +119,29 @@ async def _check_one(idx: int, path: str, shot: dict) -> dict:
             entry["blur_frame_ratio"] = report.get("blur_frame_ratio", 0.0)
             entry["flat_frame_ratio"] = report.get("flat_frame_ratio", 0.0)
             if not report.get("passed", False):
-                if report.get("truncated"):
+                # 成因由 tools/qc.py 给出（确定性判据）。低细节（blur）自 2026-09-18 起
+                # **不再是失败原因** —— 它测的是画面细节量，实测被判「低细节过半」的
+                # 4 段逐帧目视 6/6 全清晰（夜景/柔光/暗场特效），报它等于误导用户。
+                reasons = list(report.get("failed_reasons") or [])
+                if not reasons:
+                    # 兼容旧形状的报告（stub / 历史数据）：按比例回推，不臆造成因
+                    if report.get("truncated"):
+                        reasons.append("truncated")
+                    if float(entry["flat_frame_ratio"] or 0.0) > 0:
+                        reasons.append("flat_frames")
+                    if float(entry["black_frame_ratio"] or 0.0) > BLACK_FRAME_RATIO_LIMIT:
+                        reasons.append("black_frames")
+                entry["failed_reasons"] = reasons
+                if "truncated" in reasons:
                     # 最确定的缺陷：文件不完整（下载残片）。此时上面的比例都是拿
-                    # 十几个采样点（甚至 1 个）算出来的，不该再往下报「模糊」。
+                    # 十几个采样点（甚至 1 个）算出来的，不该再往下报别的成因。
                     errors.append(
                         "产物不完整（只能解码 {} 帧 / 共 {} 帧，疑似下载残片）".format(
                             report.get("total_frames", 0),
                             report.get("declared_frames", 0),
                         )
                     )
-                # 空帧优先报：它是最确定的缺陷（纯色/全黑画面没有任何内容），
-                # 而「模糊」受未标定阈值影响、可能只是低细节内容。
-                elif float(entry["flat_frame_ratio"] or 0.0) > 0:
+                elif "flat_frames" in reasons:
                     errors.append(
                         "画面质检未通过（空帧 {:d} 个：纯色/全黑的无内容帧，占总采样 {:.0%}）"
                         .format(
@@ -134,13 +149,16 @@ async def _check_one(idx: int, path: str, shot: dict) -> dict:
                             float(entry["flat_frame_ratio"]),
                         )
                     )
-                else:
+                elif "black_frames" in reasons:
                     errors.append(
-                        "画面质检未通过（黑帧比例 {:.0%}，模糊帧比例 {:.0%}）".format(
+                        "画面质检未通过（黑帧比例 {:.0%}，超过上限 {:.0%}）".format(
                             float(entry["black_frame_ratio"] or 0.0),
-                            float(entry["blur_frame_ratio"] or 0.0),
+                            BLACK_FRAME_RATIO_LIMIT,
                         )
                     )
+                else:
+                    # 不臆造成因：宁可说「报告未给出判据」，也不写一句可能是假的理由
+                    errors.append("画面质检未通过（报告未给出具体判据）")
         else:
             errors.append("画面质检返回非法结果")
     except Exception as exc:

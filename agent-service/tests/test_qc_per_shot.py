@@ -58,9 +58,14 @@ async def test_reports_every_shot_not_just_first(monkeypatch, tmp_path):
     files = _mkfiles(tmp_path, 3)
 
     def analyze(p):
-        blurry = p.endswith("001.mp4")
+        # 用「空帧」触发失败：低细节（blur）自 2026-09-18 起不再判失败。
+        # 这里仍保留 blur=0.9，顺带验证「参考指标照样透传给上层」。
+        bad = p.endswith("001.mp4")
         return {"total_frames": 30, "black_frame_ratio": 0.0,
-                "blur_frame_ratio": 0.9 if blurry else 0.0, "passed": not blurry}
+                "blur_frame_ratio": 0.9 if bad else 0.0,
+                "flat_frame_ratio": 0.5 if bad else 0.0,
+                "failed_reasons": ["flat_frames"] if bad else [],
+                "passed": not bad}
 
     _patch(monkeypatch, tmp_path, analyze)
     state = {"session_id": "q", "local_video_paths": files, "storyboard": _shots()}
@@ -224,3 +229,85 @@ async def test_uses_local_paths_not_video_urls(monkeypatch, tmp_path):
 
     assert rep["total_shots"] == 1
     assert rep["shots"][0]["path"] == files[0]
+
+
+# ------------------------- 判定口径（2026-09-18）：低细节只报告、不判定
+
+@pytest.mark.asyncio
+async def test_low_detail_only_is_not_a_failure(monkeypatch, tmp_path):
+    """★ 只有「低细节」（blur 高、无确定性缺陷）时，该镜必须**通过**且 error 为空。
+
+    这条锁住口径修正：全图 Laplacian 方差测的是画面细节量，实测被判「低细节过半」
+    的 4 段逐帧目视 6/6 全部清晰（夜景浅景深 / 柔光人脸 / 暗场光束特效）。
+    它曾让 4/44 段误报，而误报的代价是「质检未通过」这句话失去可信度。
+    """
+    files = _mkfiles(tmp_path, 1)
+
+    def analyze(_p):
+        return {"total_frames": 30, "black_frame_ratio": 0.0, "blur_frame_ratio": 1.0,
+                "flat_frame_ratio": 0.0, "failed_reasons": [], "passed": True}
+
+    _patch(monkeypatch, tmp_path, analyze)
+    state = {"session_id": "q", "local_video_paths": files,
+             "storyboard": _shots(seconds=("5",))}
+
+    rep = (await qc.qc_checker_node(state))["qc_report"]
+
+    assert rep["shots"][0]["passed"] is True
+    assert rep["shots"][0]["error"] == "", "低细节不该产出任何失败文案"
+    assert rep["shots"][0]["blur_frame_ratio"] == 1.0, "参考指标仍要透传给轨迹/前端"
+    assert rep["passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_failed_reasons_are_exposed_on_the_shot_entry(monkeypatch, tmp_path):
+    """★ 成因要结构化透传（`failed_reasons`），且文案必须与成因一致。
+
+    上层（自愈挑修正后缀、轨迹面板）此前只能靠猜中文文案来分流失败原因。
+    """
+    files = _mkfiles(tmp_path, 1)
+
+    def analyze(_p):
+        return {"total_frames": 30, "black_frame_ratio": 0.0, "blur_frame_ratio": 0.0,
+                "flat_frame_ratio": 0.5, "failed_reasons": ["flat_frames"],
+                "passed": False}
+
+    _patch(monkeypatch, tmp_path, analyze)
+    state = {"session_id": "q", "local_video_paths": files,
+             "storyboard": _shots(seconds=("5",))}
+
+    rep = (await qc.qc_checker_node(state))["qc_report"]
+
+    assert rep["shots"][0]["failed_reasons"] == ["flat_frames"]
+    assert "空帧" in rep["shots"][0]["error"], (
+        f"文案必须说是空帧，实际: {rep['shots'][0]['error']!r}"
+    )
+    assert "模糊" not in rep["shots"][0]["error"], "低细节已不是失败成因，文案里不该出现"
+
+
+@pytest.mark.asyncio
+async def test_legacy_report_without_failed_reasons_still_attributes(monkeypatch, tmp_path):
+    """兼容旧形状报告（无 `failed_reasons`，如历史数据/第三方 stub）：按比例回推成因。
+
+    回推不出来时**不许臆造**成因 —— 宁可写「报告未给出具体判据」，
+    也不能编一句可能是假的理由（本项目「文案不说谎」的规矩）。
+    """
+    files = _mkfiles(tmp_path, 2)
+
+    def analyze(p):
+        if p.endswith("000.mp4"):   # 空帧可回推
+            return {"total_frames": 30, "black_frame_ratio": 0.0,
+                    "blur_frame_ratio": 0.0, "flat_frame_ratio": 0.5, "passed": False}
+        return {"total_frames": 30, "black_frame_ratio": 0.0,   # 只有 blur → 回推不出成因
+                "blur_frame_ratio": 0.9, "flat_frame_ratio": 0.0, "passed": False}
+
+    _patch(monkeypatch, tmp_path, analyze)
+    state = {"session_id": "q", "local_video_paths": files,
+             "storyboard": _shots(seconds=("5", "5"))}
+
+    rep = (await qc.qc_checker_node(state))["qc_report"]
+
+    assert rep["shots"][0]["failed_reasons"] == ["flat_frames"]
+    assert "空帧" in rep["shots"][0]["error"]
+    assert rep["shots"][1]["failed_reasons"] == [], "回推不出成因时不许编"
+    assert "未给出具体判据" in rep["shots"][1]["error"]
