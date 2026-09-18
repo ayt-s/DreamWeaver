@@ -66,6 +66,7 @@ import { createContext, useContext } from 'react';
 import { reorderShotX, sortShots } from '../utils/shotOrder';
 import {
   augmentPromptWithAnchors,
+  firstFrameRefsFor,
   MAX_REF_PICTURES,
   parseAnchorRefs,
   pickUrlsByPrompt,
@@ -153,17 +154,26 @@ export function isPublicImageUrl(url: string): boolean {
   return true;
 }
 
+/** 把参考图数组编码成 Java 侧要的 JSON 字符串；空数组 = 不传（保持旧行为）。 */
+function refImagesField(refs: string[]): string | undefined {
+  return refs.length > 0 ? JSON.stringify(refs) : undefined;
+}
+
 /**
  * 文生图单张：提交 text_image 任务并轮询到完成，返回图片 URL。
  *
  * 抽成模块级函数是为了「一键文生图」批量流程与单节点按钮共用同一套超时/失败语义，
  * 免得两处各写一套轮询逻辑、各自演化。
+ *
+ * `referenceImages`：锚定图（角色在前、场景在后）。传了就变图生图 ——
+ * 2026-09-18 A/B 实测场景侧明显收益、角色侧弱收益，空数组不传即旧行为。
  */
 async function generateOneImage(
   prompt: string,
   count = 1,
   ratio = '16:9',
   timeoutMs = 180_000,
+  referenceImages: string[] = [],
 ): Promise<string[]> {
   const res = await createVideoTask({
     prompt,
@@ -174,6 +184,9 @@ async function generateOneImage(
     // ★ 画幅必须传：不传 agnes 按 1:1 出图（实测 1024×1024 正方形，
     //   而视频是 16:9）—— 首帧是画面的真正基底，画幅错了整条链都错
     imageRatio: ratio || '16:9',
+    // ★ 锚定图当参考图（2026-09-18 A/B 实测）：场景侧明显收益（把参考场景带进首帧），
+    //   角色侧弱收益。空数组不传，行为与改动前逐字一致。
+    referenceImages: refImagesField(referenceImages),
     // 素材标记：画廊默认不展示（否则一次批量会在草稿区刷出 N 个任务）
     source: 'canvas_asset',
   });
@@ -473,21 +486,25 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
 
   const startTextToImage = async () => {
     // ★ P0-1：把本节点提示词里提到的角色/场景**描述**拼进去。
-    // 首帧才是画面的真正基底（锚定图此前只在视频阶段当参考图），而 agnes 图片接口
-    // 只能靠**文字**描述角色 —— 图生图（extra_body.image）实测只能做「局部修正」，
-    // 对角色一致性/锁脸没有优势（2026-09-18 两轮实测），所以首帧的角色还是要靠文字。
-    // 描述来自生成锚定图时那段设定（见 utils/anchors.ts）。
-    const prompt = augmentPromptWithAnchors(
-      (data.prompt || '').trim(),
-      anchors.chars,
-      anchors.scenes,
-    );
+    // 描述仍然有用（它对「名字 → 长相」的约束比图更明确），但 2026-09-18 A/B 实测
+    // 说明它不够：同一提示词下，**带锚定图当参考图**的产物能把参考图里的村庄/梯田
+    // 环境带出来（纯文生只有普通山坡），角色服装色系也更贴角色卡。
+    // ⚠️ 但别指望它锁脸 —— i2i 对「跨镜脸一致」没有优势（两轮实测一致）。
+    const rawPrompt = (data.prompt || '').trim();
+    const prompt = augmentPromptWithAnchors(rawPrompt, anchors.chars, anchors.scenes);
     if (!prompt) {
       setStatus('请先填写提示词');
       return;
     }
+    // 参考图用**原始**提示词算命中的锚定图：augment 后的文本里必然含锚定图名字，
+    // 拿它匹配会「自证命中」（agent 侧 `_SEG_TEXT_FIELDS` 刻意排除已生成的提示词，同一道理）。
+    const refs = firstFrameRefsFor(
+      rawPrompt,
+      urlMapOf(anchors.chars),
+      urlMapOf(anchors.scenes),
+    );
     setGenerating(true);
-    setStatus('文生图进行中…');
+    setStatus(refs.length > 0 ? `文生图进行中（带 ${refs.length} 张锚定图参考）…` : '文生图进行中…');
     try {
       const res = await createVideoTask({
         prompt,
@@ -498,6 +515,7 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
         directImage: true,
         // 画幅取本节点的 ratio（不传 = agnes 默认 1:1 正方形）
         imageRatio: data.ratio || '16:9',
+        referenceImages: refImagesField(refs),
       });
       const taskId = Number(res.id);
       const t0 = Date.now();
@@ -1784,12 +1802,18 @@ export default function CanvasPage() {
   const batchStopRef = useRef(false);
 
   const runBatchTextToImage = async () => {
-    const targets = pendingImageNodes.map((n) => ({
-      id: n.id,
-      prompt: ((n.data as ImageNodeData).prompt || '').trim(),
-      // 画幅随节点走：不传 agnes 按 1:1 出图（实测正方形），与节点的 16:9 不一致
-      ratio: (n.data as ImageNodeData).ratio || '16:9',
-    }));
+    const targets = pendingImageNodes.map((n) => {
+      const rawPrompt = ((n.data as ImageNodeData).prompt || '').trim();
+      return {
+        id: n.id,
+        prompt: rawPrompt,
+        // 画幅随节点走：不传 agnes 按 1:1 出图（实测正方形），与节点的 16:9 不一致
+        ratio: (n.data as ImageNodeData).ratio || '16:9',
+        // ★ 锚定图当参考图（2026-09-18 A/B 实测：场景侧明显收益、角色侧弱收益）。
+        //   用**原始**提示词匹配 —— 见 startTextToImage 里「自证命中」的说明。
+        refs: firstFrameRefsFor(rawPrompt, effectiveCharUrls, effectiveSceneUrls),
+      };
+    });
     if (targets.length === 0) return;
     batchStopRef.current = false;
     setBatchRunning(true);
@@ -1803,10 +1827,13 @@ export default function CanvasPage() {
       try {
         // ★ P0-1：首帧提示词同样拼上命中的角色/场景**描述**
         //   （与单节点「文生图」共用 augmentPromptWithAnchors，同一套匹配口径）
+        //   + 带上命中的锚定图当参考图（2026-09-18 A/B：场景侧明显收益）
         const urls = await generateOneImage(
           augmentPromptWithAnchors(t.prompt, effectiveCharRefs, effectiveSceneRefs),
           candidateCount,
           t.ratio,
+          180_000,
+          t.refs,
         );
         setNodes((nds) =>
           nds.map((n) =>

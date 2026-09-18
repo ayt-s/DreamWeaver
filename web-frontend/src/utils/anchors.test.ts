@@ -21,6 +21,8 @@ import {
   COSTUME_MAX_CHARS,
   COSTUME_RED_LINE,
   costumeOf,
+  FIRST_FRAME_REF_LIMIT,
+  firstFrameRefsFor,
   parseAnchorRefs,
   pickUrlsByPrompt,
   serializeAnchorRefs,
@@ -412,5 +414,39 @@ describe('未命中兜底策略（fallback）', () => {
     expect(Object.keys(r.chars)).toEqual(['陈浔']);
     expect(Object.keys(r.scenes)).toEqual([]);
     expect(chars['陈浔']).toBe(URL_A); // 防止变量未使用告警
+  });
+});
+
+describe('firstFrameRefsFor（首帧出图带的参考图，2026-09-18 A/B 后接线）', () => {
+  const charUrls = { 陈浔: URL_A, 大黑牛: URL_B };
+  const sceneUrls = { 破旧山洞: URL_C, 小山村山坡: 'https://cdn.example.com/d.png' };
+
+  it('角色在前、场景在后（与提交视频时的组装顺序一致）', () => {
+    expect(firstFrameRefsFor('陈浔在破旧山洞里整理草药', charUrls, sceneUrls))
+      .toEqual([URL_A, URL_C]);
+  });
+
+  it('★ 场景未命中 → 不给（与提交视频同一兜底：给错场景比不给更糟）', () => {
+    expect(firstFrameRefsFor('陈浔站在崖边', charUrls, sceneUrls)).toEqual([URL_A]);
+  });
+
+  it('★ 角色未命中 → 全给（同一口径的保险侧；漏角色比多画更难发现）', () => {
+    expect(firstFrameRefsFor('少年站在崖边', charUrls, sceneUrls))
+      .toEqual([URL_A, URL_B]);
+  });
+
+  it('截断到 FIRST_FRAME_REF_LIMIT（图片接口多图上限没有官方承诺）', () => {
+    const many = { a: '1', b: '2', c: '3', d: '4', e: '5', f: '6' };
+    expect(firstFrameRefsFor('a b c d e f', many, {})).toHaveLength(FIRST_FRAME_REF_LIMIT);
+  });
+
+  it('空提示词 → 走兜底口径（角色全给、场景不给），与提交视频同一规则', () => {
+    // 注意：产品路径不会出现空提示词（单节点按钮会先提示「请先填写提示词」，
+    // 批量只挑有 prompt 的节点），所以这里只是把兜底口径钉住。
+    expect(firstFrameRefsFor('', charUrls, sceneUrls)).toEqual([URL_A, URL_B]);
+  });
+
+  it('没有配置任何锚定图 → 空数组（不传字段 = 改动前的纯文生行为）', () => {
+    expect(firstFrameRefsFor('陈浔', {}, {})).toEqual([]);
   });
 });

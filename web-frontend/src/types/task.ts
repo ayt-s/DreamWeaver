@@ -270,6 +270,15 @@ export interface CreateTaskRequest {
    */
   imageRatio?: string;
   /**
+   * 参考图 JSON 数组字符串（如 `["https://…"]`）。
+   *
+   * 用途：① 标准模式 = 用户提供的参考图（agent 侧有它就不自动生图，尊重用户输入）；
+   * ② 直出图（画布节点「一键文生图」）= **锚定图**，会作为 `extra_body.image`
+   * 走图生图（2026-09-18 实测：场景锚图能明显把参考场景带进首帧，
+   * 角色锚图收益弱但不会锁脸 —— 见 utils/anchors.ts `firstFrameRefsFor`）。
+   */
+  referenceImages?: string;
+  /**
    * 首帧锁定（keyframe）：把首帧图当作视频的**实际第一帧**。
    *
    * agnes 的 reference 模式官方定义是「内容/风格/运动参考，可能重新构图、重新计时」

@@ -773,4 +773,58 @@ describe('场景锚未匹配的处理（未命中不再「全给」）', () => {
     const segs = JSON.parse(String(req.segments)) as Array<{ reference_images: string[] }>;
     expect(segs[0].reference_images).toContain('https://cdn.example.com/scene2.png');
   });
+
+  it('★ 首帧「文生图」把命中的锚定图当参考图发出去（2026-09-18 A/B 后接线）', async () => {
+    // 前面几条用例也调过 createVideoTask，不清会让 calls[0] 指向别的调用
+    vi.mocked(createVideoTask).mockClear();
+    const anchors = {
+      characters: { 陈浔: { url: 'https://cdn.example.com/chen.png', desc: '少年陈浔' } },
+      scenes: {
+        '山洞内部，黄昏，篝火微燃，岩壁粗糙斑驳': { url: 'https://cdn.example.com/scene2.png' },
+      },
+    };
+
+    renderPage(`/canvas?anchorRefs=${encodeURIComponent(JSON.stringify(anchors))}`);
+
+    const desc = (screen.getAllByPlaceholderText(/本段描述/) as HTMLTextAreaElement[])[0];
+    fireEvent.change(desc, {
+      target: { value: '[角色锚] 陈浔；[场景] 山洞内部，黄昏，篝火微燃，岩壁粗糙斑驳；[镜头] 中景固定' },
+    });
+
+    const btn = screen
+      .getAllByText('文生图')
+      .map((el) => el.closest('button'))
+      .find(Boolean) as HTMLButtonElement;
+    fireEvent.click(btn);
+
+    await waitFor(() => expect(vi.mocked(createVideoTask)).toHaveBeenCalled());
+    const arg = vi.mocked(createVideoTask).mock.calls[0][0];
+
+    expect(arg.directImage).toBe(true);
+    // 载荷是 JSON 数组字符串（Java 侧字段是 String，agent 侧按数组解析）
+    const refs = JSON.parse(String(arg.referenceImages)) as string[];
+    // 顺序：角色在前、场景在后 —— 与提交视频时组装顺序一致
+    expect(refs).toEqual([
+      'https://cdn.example.com/chen.png',
+      'https://cdn.example.com/scene2.png',
+    ]);
+  });
+
+  it('没有引用任何锚定图时：首帧不带 referenceImages（保持纯文生旧行为）', async () => {
+    vi.mocked(createVideoTask).mockClear();
+
+    renderPage();
+
+    const desc = (screen.getAllByPlaceholderText(/本段描述/) as HTMLTextAreaElement[])[0];
+    fireEvent.change(desc, { target: { value: '一只猫在窗台打盹' } });
+
+    const btn = screen
+      .getAllByText('文生图')
+      .map((el) => el.closest('button'))
+      .find(Boolean) as HTMLButtonElement;
+    fireEvent.click(btn);
+
+    await waitFor(() => expect(vi.mocked(createVideoTask)).toHaveBeenCalled());
+    expect(vi.mocked(createVideoTask).mock.calls[0][0].referenceImages).toBeUndefined();
+  });
 });

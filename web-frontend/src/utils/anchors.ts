@@ -338,3 +338,35 @@ export function augmentPromptWithAnchors(
   // 有人抠到 → 红线落在**整段末尾**（模型对末尾更敏感，与 agent 侧 `_IMAGE_RED_LINES` 同一落点）。
   return costumeAdded ? `${body}。${COSTUME_RED_LINE}` : body;
 }
+
+/** 首帧出图带的参考图上限。
+ *
+ * 比视频侧的 `MAX_REF_PICTURES`（5）更保守：图片接口的多图上限没有官方承诺
+ * （实测 2 张 OK），而这里只需覆盖「1~2 个角色 + 1 个场景」的常见情形。
+ */
+export const FIRST_FRAME_REF_LIMIT = 4;
+
+/**
+ * 首帧出图该带哪几张**参考图**（不是描述）。顺序与提交视频时一致：角色在前、场景在后。
+ *
+ * ## 为什么带（2026-09-18 A/B 实测，画布 40 的真实提示词 + 真实锚定图，同 prompt 各 2 张）
+ *
+ * - **场景锚图 → 明显收益**：产物带出了参考图里的村庄/梯田/茅屋环境（纯文生只有普通山坡草地）
+ * - **角色锚图 → 弱收益**：服装色系更贴角色卡（土黄粗布短衫），但脸不会因此锁定 ——
+ *   与「i2i 对锁脸无优势」的两轮实测一致，别指望它治「跨镜脸不一致」
+ * - **不会复制主体**：参考图里本身是「1 人 1 牛」，6 张产物也都是 1 人 1 牛
+ * - 画幅不受影响：带不带参考图产物都是 2624×1472（由 ratio 决定）
+ *
+ * 兜底口径与提交视频时**逐字一致**：角色 `'all'`、场景 `'none'`
+ * （宁可不给，也不给一张别的场景的图 —— agnes 对每张参考图都加权）。
+ */
+export function firstFrameRefsFor(
+  prompt: string,
+  charUrls: Record<string, string>,
+  sceneUrls: Record<string, string>,
+  limit = FIRST_FRAME_REF_LIMIT,
+): string[] {
+  const { picked: chars } = pickUrlsByPrompt(prompt, charUrls);
+  const { picked: scenes } = pickUrlsByPrompt(prompt, sceneUrls, { fallback: 'none' });
+  return [...Object.values(chars), ...Object.values(scenes)].slice(0, Math.max(0, limit));
+}
