@@ -118,6 +118,10 @@ async def preprocess_novel(
     # 4) 拼装 prompt（无 LLM），并 clamp 秒数到 [4, 12]
     for seg in raw_segments:
         seg["seconds"] = max(4, min(12, int(seg.get("seconds", seconds_per_segment))))
+        # 场景的**结构化绑定**：分镜器只给序号（`scene_ref`），由代码取参考原文。
+        # ⚠️ 必须落在 compose **之前**：`_mentioned_characters` 会读 `scene` 决定角色锚要不要裁剪，
+        #    而参考原文里常常点名了角色（如「…少年躺坐其中…」）—— 晚一步就会把本该保留的角色裁掉。
+        seg["scene"] = composer.resolve_scene(seg, analysis)
         seg["imagePrompt"] = composer.compose_image_prompt(seg, effective_style, analysis)
         seg["videoPrompt"] = composer.compose_video_prompt(seg, effective_style, analysis)
         # 补齐 id / chapter 兜底

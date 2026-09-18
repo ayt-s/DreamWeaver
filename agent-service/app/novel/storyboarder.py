@@ -35,6 +35,10 @@ class NovelSegmentPydantic(BaseModel):
     plot: str = Field(..., description="2-3 句原文精简，50-120 字")
     characters: list[str] = Field(..., description="本段出现的角色名，0-3 个")
     scene: str = Field(..., description="具体场景：地点+时间+天气，如『江南小山村山坡，春日午后』")
+    scene_ref: int = Field(
+        default=0,
+        description="本镜场景对应『场景参考』清单里的序号（1 起）；不属于任何一条时填 0",
+    )
     camera: str = Field(
         ...,
         description="专业镜头术语，如『广角长镜头缓慢横移』、『特写俯拍』、『推拉固定』",
@@ -67,6 +71,38 @@ class NovelSegmentPydantic(BaseModel):
     def _clamp_seconds(cls, v: int) -> int:
         return max(MIN_SECONDS, min(MAX_SECONDS, int(v)))
 
+    @field_validator("scene_ref", mode="before")
+    @classmethod
+    def _coerce_scene_ref(cls, v) -> int:
+        """把场景参考序号收敛成「非负整数或 0」。
+
+        ⚠️ 必须 `mode="before"`：让 pydantic 先按 `int` 严格校验的话，模型一旦写出
+        `scene_ref: "山坡"` 这种值，**整次分镜生成**会以 ValidationError 挂掉 ——
+        一个辅助字段不该有这种杀伤力。越界（> 清单长度）由 `composer.resolve_scene`
+        按**实际清单长度**兜底 —— 校验器此刻还不知道清单有多长。
+        """
+        try:
+            n = int(v)
+        except (TypeError, ValueError, OverflowError):
+            # 模型可能给 "2" / 2.0 / " 2 " —— 都可能；给"第2条"这类文字则收敛成 0
+            try:
+                n = int(float(str(v).strip() or 0))
+            except (TypeError, ValueError, OverflowError):
+                return 0
+        return n if n > 0 else 0
+
+
+def _numbered_scenes(scenes: Any) -> str:
+    """场景参考渲染成**带序号**的清单。
+
+    序号是给 `scene_ref` 用的（代码据此取原文），所以序号与条目必须一一对应、
+    且顺序与 `analysis.scenes` **严格一致**（越界/错位都会取错场景）。
+    """
+    items = [s.strip() for s in (scenes or []) if isinstance(s, str) and s.strip()]
+    if not items:
+        return "（本片没有给出场景参考：请按规则 2 新造场景，并把 scene_ref 填 0）"
+    return "\n".join(f"{i}. {s}" for i, s in enumerate(items, 1))
+
 
 SYSTEM_PROMPT_TEMPLATE = """你是小说转漫剧分镜器。请根据输入的小说内容和已有分析，切出 {target} 个（不超过 {target} 个）4-12 秒的短片分镜。
 
@@ -78,7 +114,7 @@ SYSTEM_PROMPT_TEMPLATE = """你是小说转漫剧分镜器。请根据输入的�
 
 硬性要求：
 - 严格输出 JSON 数组，不要输出 JSON 以外的任何文字（不要 markdown 代码块、不要注释、不要解释）。
-- 每个片段字段：id / chapter / title / plot / characters / scene / camera / seconds / mood。
+- 每个片段字段：id / chapter / title / plot / characters / scene / scene_ref / camera / seconds / mood。
 - id 形如 s1、s2、…，按顺序编号，与数组下标 +1 一致。
 - seconds 必须在 4-12 之间；宁可让片段偏多内容，也不要塞超过 12 秒。
 - 内容不足 target 时，可以少于 target（不要硬凑空段）。
@@ -113,21 +149,24 @@ SYSTEM_PROMPT_TEMPLATE = """你是小说转漫剧分镜器。请根据输入的�
 角色卡（用于 characters 字段名保持与角色卡一致）：
 {characters_json}
 
-已有场景参考（scene 字段的**第一优先级来源**；每条都是场景锚定图的 key，逐字相同才对得上）：
+已有场景参考（**带序号**；每条都是场景锚定图的 key，`scene` 必须与它逐字相同才对得上）：
 {scenes_json}
 
-scene 取值规则（三条，必须照办）：
-1. 【同一场景 → 整串逐字复制】本镜的场景与上面某一条**完全一致**（同一地点 + 同一时间 +
-   同一天气/光线）时，**必须把该条整串原样复制进 scene**：一个字都不许改，不许缩写或扩写、
-   不许只取其中几个分句、不许合并两条、不许增删或改动标点、不许调整语序。
+scene / scene_ref 取值规则（四条，必须照办）：
+1. 【同一场景 → 填序号 + 整串逐字复制】本镜的场景与上面某一条**完全一致**（同一地点 + 同一时间 +
+   同一天气/光线）时：`scene_ref` 填**那一条的序号**（1 起），且 `scene` **必须把该条整串原样
+   复制**：一个字都不许改，不许缩写或扩写、不许只取其中几个分句、不许合并两条、不许增删或改动
+   标点、不许调整语序。序号与 scene 必须**指向同一条**，不许错位。
    ★ 场景锚定图是**按字面**比对的：改一个字就等于换了一个场景，这一镜会拿不到任何场景参考图
    （背景与全片对不上），比多写几个字严重得多。
-2. 【确实不属于任何一条 → 才新造】仅当本镜的场景在上面这些条目里**没有任何对应**
+2. 【确实不属于任何一条 → scene_ref 填 0 并新造】仅当本镜的场景在上面这些条目里**没有任何对应**
    （换了地点，或同一地点换了时间/光线/天气）时才新造，且仍按 25-60 字写全：
    地点 + 时间 + 天气/光线 + 主色调 + 关键视觉元素 + 氛围。
 3. 【禁止「像但不等」】禁止在已有条目上改几个字凑数：把『破败茅草屋，日间…』写成
    『破败茅草屋内，日间…』既不是复用（不是逐字）也不是新造（并没有换场景）。
-   复用要一字不差；确实是新场景就按第 2 条独立新造。
+   复用要一字不差（`scene_ref` 也跟着填）；确实是新场景就按第 2 条独立新造（`scene_ref` 填 0）。
+4. 【scene_ref 只填数字】只填序号本身（如 `2`）：不要写「第2条」这类文字、不要留空、不要编清单
+   以外的序号。拿不准是不是同一条 → 按第 2 条填 0 并新造，**别猜一个序号**。
 
 整体视觉风格：{visual_style}
 """
@@ -154,7 +193,7 @@ async def storyboard(
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
         target=target_segments,
         characters_json=json.dumps(analysis.get("characters", {}), ensure_ascii=False, indent=2),
-        scenes_json=json.dumps(analysis.get("scenes", []), ensure_ascii=False),
+        scenes_json=_numbered_scenes(analysis.get("scenes", [])),
         visual_style=analysis.get("visual_style", ""),
     )
     if rewrite_hint:

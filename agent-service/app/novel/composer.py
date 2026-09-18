@@ -348,6 +348,35 @@ def _props_brief(seg: dict, analysis: dict | None = None, limit: int = 3) -> str
     return "，".join(hits[:limit])
 
 
+def resolve_scene(seg: dict, analysis: dict | None = None) -> str:
+    """把这一镜的场景解析成「按当前规则最终该用的文本」。
+
+    `scene_ref` 是分镜器给的**场景参考序号**（1 起；0 / 缺失 / 非法 = 本镜不属于任何一条参考）。
+    给了合法序号就**逐字取参考原文**：场景锚定图的 key 就是那串原文，前端按字面匹配
+    （整串包含，否则分句覆盖率 ≥ 0.5），差一个字这一镜就拿不到场景锚图 —— 背景与全片
+    对不上，比多写几个字严重得多。
+
+    ## 为什么要「代码取」而不是「让模型抄」
+    「同一场景必须整串逐字复制」这条提示词规则实测只能做到 64%（36 镜里 23 镜逐字），
+    剩下的是「像但不等」的变体。让模型**从清单里选一个序号**是受约束选择（只需输出一个
+    整数），再由代码取原文 —— 文本一致性因此变成确定性的，模型只需要判断「是哪一条」。
+    真机实验（2026-09-18）见技能 `references/`。
+
+    兜底口径：序号非法 / 越界 / 对应条目为空 → 原样返回 `seg["scene"]`（**老数据没有这个
+    字段，行为与改动前逐字一致**）。
+    """
+    scenes = (analysis or {}).get("scenes") or []
+    try:
+        ref = int(seg.get("scene_ref") or 0)
+    except (TypeError, ValueError):
+        ref = 0
+    if isinstance(scenes, (list, tuple)) and 1 <= ref <= len(scenes):
+        text = scenes[ref - 1]
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    return str(seg.get("scene") or "")
+
+
 def compose_image_prompt(seg: dict, style: str, analysis: dict | None = None) -> str:
     """拼一段图像生成 prompt（六段式，按优先级从高到低排列）。
 
