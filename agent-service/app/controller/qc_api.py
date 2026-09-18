@@ -87,6 +87,13 @@ async def qc_images(req: ImageQcRequest) -> dict:
 MAX_CANDIDATES = 6
 # 并发上限：串行 3 张实测 139s 太慢；全并发怕撞限流（未实测），取中间值。
 _CANDIDATE_CONCURRENCY = 2
+# ★ 进程级闸门：**跨请求**生效。
+# 为什么需要（2026-09-18 自审发现的真问题）：画布上「一键文生图」会让**每个节点各发一次**
+# 计数请求 —— 6 个节点 × 3 张候选 = 18 张图。若每个请求各自并发 2，就有 12 张同时在跑，
+# 而上游连续多图是会限流的（实测串行 6s 间隔才 13/13 成功）。
+# 有了它，无论前端一次打进来几个请求，全局在跑的计数始终不超过 2 —— 代价是排队变慢，
+# 但前端是异步 query，用户无感。
+_CANDIDATE_GATE = asyncio.Semaphore(_CANDIDATE_CONCURRENCY)
 # 送进模型前先把图缩到长边 1024（产物是 2624x1472 PNG ≈5MB，base64 太大）
 _MAX_SIDE = 1024
 
@@ -162,13 +169,13 @@ async def qc_candidates(req: CandidateQcRequest) -> dict:
     候选缩略图上的数字是唯一能让用户一眼挑出来的东西（标定 13/13 一致）。
 
     ⚠️ **慢**：实测 3 张串行要 139s（每张约 46s —— 下载 5MB 原图 + 模型带推理读图）。
-    所以这里**并发 2**（串行太慢、全并发怕撞限流），并且前端是异步 query：
+    所以这里**并发 2**，而且用的是**进程级**闸门（`_CANDIDATE_GATE`，跨请求生效）——
+    画布上一个节点发一次请求，各自并发会让上游限流。前端是异步 query：
     候选缩略图先出，数字晚到，不阻塞任何操作。
     """
-    sem = asyncio.Semaphore(_CANDIDATE_CONCURRENCY)
 
     async def _run(idx: int, url: str) -> dict:
-        async with sem:
+        async with _CANDIDATE_GATE:
             item = await _count_one(url)
         item["index"] = idx      # 序号按**入参位置**，与下载/调用失败无关
         return item

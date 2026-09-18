@@ -873,4 +873,23 @@ describe('场景锚未匹配的处理（未命中不再「全给」）', () => {
       'https://cdn.fixed/one.png',
     ]);
   });
+
+  it('候选只有 1 张时不调主体计数（没有可比较对象，别白烧一次模型调用）', async () => {
+    vi.mocked(countCandidates).mockClear();
+    vi.mocked(createVideoTask).mockClear();
+
+    renderPage();
+    const desc = (screen.getAllByPlaceholderText(/本段描述/) as HTMLTextAreaElement[])[0];
+    fireEvent.change(desc, { target: { value: '一只猫在窗台打盹' } });
+    fireEvent.click(
+      screen.getAllByText('文生图')
+        .map((el) => el.closest('button'))
+        .find(Boolean) as HTMLButtonElement,
+    );
+
+    await waitFor(() => expect(vi.mocked(createVideoTask)).toHaveBeenCalled());
+    // 单节点「文生图」只回填 1 张 imageUrl（不产生 candidates）→ 计数不该被触发
+    await new Promise((r) => setTimeout(r, 80));
+    expect(vi.mocked(countCandidates)).not.toHaveBeenCalled();
+  });
 });

@@ -374,12 +374,15 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
   const qcByUrl = new Map((qc?.results ?? []).map((r) => [r.url, r]));
   // 候选主体计数（多模态，2026-09-18 标定 13/13）：治「三张候选一起多出一头牛」。
   // 串行调用，角标会比缩略图晚 15~25s 到 —— 晚到没关系，失败就什么都不显示。
+  const candidateUrls = (data.candidates as string[] | undefined) ?? [];
   const { data: subjects } = useQuery({
     queryKey: ['candidate-subjects', candidateKey],
-    enabled: candidateKey.length > 0,
+    // ⚠️ 只有 1 张候选时不调：没有「与其余不同」可比，白烧一次模型调用
+    //   （画布上 6 个节点各一次 = 6 次；这也是与候选块「length > 1 才渲染」同一口径）
+    enabled: candidateKey.length > 0 && candidateUrls.length > 1,
     // temperature=0 + 同一批 URL → 判定稳定，缓存到会话结束
     staleTime: Infinity,
-    queryFn: () => countCandidates(data.candidates as string[]),
+    queryFn: () => countCandidates(candidateUrls),
   });
   const subjectsByUrl = new Map((subjects?.results ?? []).map((r) => [r.url, r]));
   // 「与其余候选不同」的那些（相对多数口径，只提示不淘汰）
