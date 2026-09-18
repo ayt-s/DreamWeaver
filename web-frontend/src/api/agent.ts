@@ -68,7 +68,13 @@ export interface QcShotReport {
   path?: string;
   total_frames?: number;
   black_frame_ratio?: number;
+  /** 低细节帧占比（Laplacian 方差口径）。**参考指标**：自 2026-09-18 起不再参与判定，
+   *  因为实测被判「低细节过半」的段人眼都清晰（夜景/柔光/暗场特效）。 */
   blur_frame_ratio?: number;
+  /** 空帧（纯色/全黑无内容）占比，零容忍 */
+  flat_frame_ratio?: number;
+  /** 确定性失败成因（"truncated" / "black_frames" / "flat_frames"）——比 error 文案更适合分流 */
+  failed_reasons?: string[];
   duration?: number;
   duration_expected?: number | null;
   aspect_ratio?: string;
