@@ -16,12 +16,17 @@ logger = logging.getLogger(__name__)
 async def generate_video_tool(prompt: str, seconds: str, mode: str,
                               aspect_ratio: str, reference_images: list,
                               session_id: str, shot_index: int,
-                              model: str | None = None) -> dict:
+                              model: str | None = None,
+                              first_frame: str | None = None,
+                              last_frame: str | None = None) -> dict:
     """提交视频任务，立即返回，由独立 VideoPoller 异步轮询。
 
     多 provider 场景：submit_video 内部按 session 粘性选 client，失败时切下一个
     provider 重试。返回 dict 额外带 provider 字段，poller 用它查询该视频，同时
     同步更新 session 粘附（避免后续 poll 用错账号）。
+
+    `mode="keyframe"` 时用 `first_frame`/`last_frame` 锁定首/尾帧（此时参考图被
+    网关忽略 —— 官方禁止两种媒体字段混用）；`mode="reference"` 时才走参考图。
 
     返回契约：{"video_id": str, "status": "submitted", "provider": str}
     - 调用方通过 poller.get_future(video_id) 获取结果 Future
@@ -32,6 +37,8 @@ async def generate_video_tool(prompt: str, seconds: str, mode: str,
         mode=mode,
         aspect_ratio=aspect_ratio,
         reference_images=reference_images or [],
+        first_frame=first_frame,
+        last_frame=last_frame,
         model=model,
         session_id=session_id,
     )

@@ -94,6 +94,9 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
             mode=shot.get("mode", "text"),
             aspect_ratio=shot["aspect_ratio"],
             reference_images=shot.get("reference_images", []),
+            # keyframe 模式用（首帧锁定）；非 keyframe 时网关会忽略，见 submit_video 的互斥守卫
+            first_frame=shot.get("first_frame"),
+            last_frame=shot.get("last_frame"),
             session_id=state["session_id"],
             shot_index=idx,
             model=state.get("video_model"),

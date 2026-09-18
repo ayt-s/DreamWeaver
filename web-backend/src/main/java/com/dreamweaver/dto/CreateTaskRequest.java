@@ -86,4 +86,26 @@ public class CreateTaskRequest {
      * agent 转成 agnes reference 模式的 &lt;Picture N&gt; 占位符，保证角色/道具跨镜一致。
      */
     private String referenceBindings;
+
+    /**
+     * 出图画幅（如 {@code 16:9} / {@code 9:16}）。
+     *
+     * <p>⚠️ <b>必须传</b>：agnes 图片接口不传 {@code ratio} 时按 1:1 出图 ——
+     * 2026-09-18 实测项目真实产物 18/18 全是 1024x1024 正方形，而视频链路是 16:9
+     * （首帧是画面的真正基底，正方形基底会被视频模型先重构图一次）。
+     * 画布节点的「一键文生图」取节点自己的 ratio；标准模式取分镜画幅。
+     */
+    private String imageRatio;
+
+    /**
+     * 首帧锁定（keyframe 模式）：true 时把首帧图当作视频的**实际第一帧**。
+     *
+     * <p>agnes 的 reference 模式官方定义是「内容/风格/运动参考，<b>可能重新构图、
+     * 重新计时</b>」—— 所以此前那个「首帧图」根本不是视频起点。keyframe 才是
+     * 「尝试把输入图作为实际第一帧」。agent 侧默认开；显式传 false 回到旧行为。
+     */
+    private Boolean lockFirstFrame;
+
+    /** 段间衔接：把下一段的首帧当本段尾帧（last_frame），让相邻段首尾接得上。默认关 */
+    private Boolean chainFrames;
 }

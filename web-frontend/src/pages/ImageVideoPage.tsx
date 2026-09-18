@@ -161,6 +161,7 @@ export function isPublicImageUrl(url: string): boolean {
 async function generateOneImage(
   prompt: string,
   count = 1,
+  ratio = '16:9',
   timeoutMs = 180_000,
 ): Promise<string[]> {
   const res = await createVideoTask({
@@ -169,6 +170,9 @@ async function generateOneImage(
     // 直出图：跳过 agent 侧需求解析/剧本/分镜，一次出 count 张同 prompt 候选
     directImage: true,
     imageCount: count,
+    // ★ 画幅必须传：不传 agnes 按 1:1 出图（实测 1024×1024 正方形，
+    //   而视频是 16:9）—— 首帧是画面的真正基底，画幅错了整条链都错
+    imageRatio: ratio || '16:9',
     // 素材标记：画廊默认不展示（否则一次批量会在草稿区刷出 N 个任务）
     source: 'canvas_asset',
   });
@@ -397,6 +401,8 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
         // `direct_image`，agent 会**按 prompt 重新拆镜** → 一次白出 3~5 张不同画面的图，
         // 而这里只用得上第 1 张（实测过的额度浪费，见 TaskServiceImpl.java:380-383）。
         directImage: true,
+        // 画幅取本节点的 ratio（不传 = agnes 默认 1:1 正方形）
+        imageRatio: data.ratio || '16:9',
       });
       const taskId = Number(res.id);
       const t0 = Date.now();
@@ -803,6 +809,13 @@ export default function CanvasPage() {
   // 可灵式精细控制（画布全局）：风格 + 负面词，提交时透传给 agent
   const [stylePrompt, setStylePrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
+  // 首帧锁定（默认开）：把每段首帧图当视频的**实际第一帧**（agnes keyframe 模式）。
+  // 官方对 reference 模式的定义是「内容/风格/运动参考，**可能重新构图、重新计时**」——
+  // 于是此前那张首帧图根本不是视频起点（用户看到的「视频和我的图不像」是预期行为）。
+  // 关掉 = 退回 reference 模式（首帧图只当参考图）。
+  const [lockFirstFrame, setLockFirstFrame] = useState(true);
+  // 段间衔接（默认关）：用下一段的首帧当本段尾帧，让相邻段首尾接得上
+  const [chainFrames, setChainFrames] = useState(false);
   const [controlPanelOpen, setControlPanelOpen] = useState(false);
   // 元素语义绑定：名词 → 参考图编号（<Picture N>），key = 锚定图标识，value = 剧本中的名词
   const [bindingNames, setBindingNames] = useState<Record<string, string>>({});
@@ -1580,6 +1593,9 @@ export default function CanvasPage() {
         // 可灵式精细控制：全局风格 + 负面词（折进每镜提示词正文）
         stylePrompt: stylePrompt.trim() || undefined,
         negativePrompt: negativePrompt.trim() || undefined,
+        // 首帧锁定 / 段间衔接（agent 侧 lock_first_frame 默认开，关掉必须显式传 false）
+        lockFirstFrame,
+        chainFrames,
         // ④ 元素语义绑定：名词 → <Picture N>
         referenceBindings,
       });
@@ -1615,6 +1631,8 @@ export default function CanvasPage() {
     const targets = pendingImageNodes.map((n) => ({
       id: n.id,
       prompt: ((n.data as ImageNodeData).prompt || '').trim(),
+      // 画幅随节点走：不传 agnes 按 1:1 出图（实测正方形），与节点的 16:9 不一致
+      ratio: (n.data as ImageNodeData).ratio || '16:9',
     }));
     if (targets.length === 0) return;
     batchStopRef.current = false;
@@ -1632,6 +1650,7 @@ export default function CanvasPage() {
         const urls = await generateOneImage(
           augmentPromptWithAnchors(t.prompt, effectiveCharRefs, effectiveSceneRefs),
           candidateCount,
+          t.ratio,
         );
         setNodes((nds) =>
           nds.map((n) =>
@@ -2446,6 +2465,40 @@ export default function CanvasPage() {
                         placeholder="如：手指畸形、面部崩坏、穿模、画面抖动、水印logo"
                         className={`w-full rounded-lg border p-2 text-[11px] leading-relaxed outline-none ${theme.input}`}
                       />
+                    </div>
+                    {/* 首帧锁定 / 段间衔接：agnes 的 keyframe 模式开关。
+                        面板在画布外（pointer-events-auto 的悬浮栏），不需要 nodrag */}
+                    <div className={`space-y-1.5 rounded-lg border p-2 text-[11px] ${theme.input}`}>
+                      <label className="flex cursor-pointer items-start gap-2">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+                          checked={lockFirstFrame}
+                          onChange={(e) => setLockFirstFrame(e.target.checked)}
+                        />
+                        <span>
+                          <b>锁定首帧</b>
+                          <span className={theme.hint}>
+                            {' '}
+                            · 视频从每段首帧图开始（keyframe）；不勾 = 只当参考图，模型可能重新构图
+                          </span>
+                        </span>
+                      </label>
+                      <label className="flex cursor-pointer items-start gap-2">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+                          checked={chainFrames}
+                          onChange={(e) => setChainFrames(e.target.checked)}
+                        />
+                        <span>
+                          <b>段间衔接</b>
+                          <span className={theme.hint}>
+                            {' '}
+                            · 用下一段首帧当本段尾帧，相邻段首尾接得上（会压住本段运动，按题材开）
+                          </span>
+                        </span>
+                      </label>
                     </div>
                   </div>
                 </div>

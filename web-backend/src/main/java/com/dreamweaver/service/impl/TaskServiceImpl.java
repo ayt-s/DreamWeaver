@@ -422,6 +422,18 @@ public class TaskServiceImpl implements TaskService {
             body.put("direct_image", Boolean.TRUE);
             body.put("image_count", request.getImageCount() == null ? 1 : request.getImageCount());
         }
+        // 出图画幅：**必须透传** —— 不传时 agent 侧按服务端默认出 1:1 正方形
+        // （2026-09-18 实测项目真实产物 18/18 都是 1024x1024，而视频是 16:9）
+        if (request.getImageRatio() != null && !request.getImageRatio().isBlank()) {
+            body.put("image_ratio", request.getImageRatio());
+        }
+        // 首帧锁定：agent 侧默认开，所以**显式 false 也必须发**（不能只发 true）
+        if (request.getLockFirstFrame() != null) {
+            body.put("lock_first_frame", request.getLockFirstFrame());
+        }
+        if (request.getChainFrames() != null) {
+            body.put("chain_frames", request.getChainFrames());
+        }
         if (request.getReferenceBindings() != null && !request.getReferenceBindings().isBlank()) {
             body.put("reference_bindings", request.getReferenceBindings());
         }

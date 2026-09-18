@@ -60,11 +60,12 @@ class CountingGateway:
         return ('[{"shot_id":1,"visual":"镜头一","camera":"推","duration":5,"style_note":"a"},'
                 '{"shot_id":2,"visual":"镜头二","camera":"移","duration":5,"style_note":"b"}]')
 
-    async def generate_image(self, prompt, model=None, session_id=None):
+    async def generate_image(self, prompt, model=None, session_id=None, size=None, ratio=None, seed=None):
         return [f"http://mock/image/{prompt[:6]}.png"]
 
     async def submit_video(self, prompt, model=None, seconds=None, aspect_ratio=None,
-                           mode="text", reference_images=None, session_id=None) -> dict:
+                           mode="text", reference_images=None, session_id=None,
+                           first_frame=None, last_frame=None, size=None, seed=None) -> dict:
         self.video_submits += 1
         self.submitted_prompts.append(str(prompt))
         return {"video_id": f"vid{self.video_submits}",

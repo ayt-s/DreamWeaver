@@ -52,6 +52,15 @@ class CreativeSessionState(TypedDict):
     direct_image: NotRequired[bool]
     # 直出图的候选张数（1~5）：同 prompt 多次请求，产出多个候选供人选一张
     image_count: NotRequired[int]
+    # 出图画幅（如 "16:9"）：**必须显式传**，不传服务端按 1:1 出正方形
+    # （2026-09-18 实测：项目真实产物 18/18 都是 1024x1024，而视频是 16:9）。
+    # 画布节点来自 data.ratio；标准模式兜底用分镜的 aspect_ratio。
+    image_ratio: NotRequired[str]
+    # 首帧锁定（keyframe）：有首帧图时把它作为视频的**实际第一帧**，
+    # 而不是塞进参考图数组（reference 模式官方明确「可能重新构图/重新计时」）
+    lock_first_frame: NotRequired[bool]
+    # 段间衔接：把下一段的首帧当本段尾帧（last_frame），让相邻段首尾接得上
+    chain_frames: NotRequired[bool]
     # 全局运镜倾向：{shot_size, angle, movement}（标准模式 LLM 自由分镜时注入）
     shot_language: NotRequired[dict]
     # 元素语义绑定：[{name, image_index}]，image_index 为 1-based（对应 <Picture N>）

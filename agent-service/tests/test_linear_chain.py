@@ -59,12 +59,12 @@ class MockGateway:
             return "A futuristic product showcase, slow camera push-in, neon lighting"
         return '[{"shot_id": 1, "visual": "产品特写旋转", "camera": "推", "duration": 3, "style_note": "霓虹灯光"}, {"shot_id": 2, "visual": "产品场景切换", "camera": "移", "duration": 2, "style_note": "冷色调"}]'
 
-    async def generate_image(self, prompt, model=None, session_id=None) -> list[str]:
+    async def generate_image(self, prompt, model=None, session_id=None, size=None, ratio=None, seed=None) -> list[str]:
         return [f"http://mock/image/img_{prompt[:8]}.png"]
 
     async def submit_video(self, prompt, model=None, seconds=None,
                            aspect_ratio=None, mode="text", reference_images=None,
-                           session_id=None) -> dict:
+                           session_id=None, first_frame=None, last_frame=None, size=None, seed=None) -> dict:
         return {
             "video_id": f"video_{mode}_{len(reference_images or [])}",
             "model_name": "agnes-video-2.5-flash",
@@ -141,11 +141,13 @@ async def test_linear_chain_with_image_gen():
     assert len(result["image_urls"]) == 2
     assert all(u.startswith("http://mock/image/") for u in result["image_urls"])
 
-    # 4. 图生视频：每个 shot 有 reference_images，mode 改为 "reference"
+    # 4. 图生视频：每个 shot 有 reference_images，mode 改为 "keyframe"（首帧锁定，默认开）
     assert result["storyboard"][0]["reference_images"] == [result["image_urls"][0]]
-    assert result["storyboard"][0]["mode"] == "reference"
+    assert result["storyboard"][0]["mode"] == "keyframe"
+    assert result["storyboard"][0]["first_frame"] == result["image_urls"][0]
     assert result["storyboard"][1]["reference_images"] == [result["image_urls"][1]]
-    assert result["storyboard"][1]["mode"] == "reference"
+    assert result["storyboard"][1]["mode"] == "keyframe"
+    assert result["storyboard"][1]["first_frame"] == result["image_urls"][1]
 
     # 5. video_urls 与 storyboard 一一对应
     assert len(result["video_urls"]) == 2
@@ -251,9 +253,10 @@ async def test_canvas_segments_pipeline(monkeypatch):
     assert not result.get("brief")
     assert not result.get("script")
 
-    # 2. 画布分镜：每段一镜，图生视频模式
+    # 2. 画布分镜：每段一镜，图生视频模式。★ 首帧锁定默认开 → keyframe + first_frame
     assert len(result["storyboard"]) == 2
-    assert result["storyboard"][0]["mode"] == "reference"
+    assert result["storyboard"][0]["mode"] == "keyframe"
+    assert result["storyboard"][0]["first_frame"] == "http://mock/img/a.png"
     assert result["storyboard"][0]["reference_images"] == ["http://mock/img/a.png"]
     assert result["storyboard"][1]["reference_images"] == ["http://mock/img/b.png"]
     assert result["storyboard"][0]["seconds"] == "5"

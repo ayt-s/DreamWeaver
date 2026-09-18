@@ -69,7 +69,8 @@ def patch_video(monkeypatch):
 
     async def _fake_generate_video_tool(prompt, seconds, mode, aspect_ratio,
                                         reference_images, session_id,
-                                        shot_index, model=None) -> dict:
+                                        shot_index, model=None,
+                                        first_frame=None, last_frame=None) -> dict:
         return {"video_id": f"vid{shot_index}", "status": "pending"}
 
     monkeypatch.setattr(video_mod, "generate_video_tool", _fake_generate_video_tool)
@@ -126,7 +127,7 @@ async def test_video_rework_resume_keeps_existing_prefix(patch_video):
 class _FailingGateway:
     """含 'fail' 的 prompt 返回空列表（模拟生成失败）。"""
 
-    async def generate_image(self, prompt, model=None) -> list[str]:
+    async def generate_image(self, prompt, model=None, size=None, ratio=None, seed=None) -> list[str]:
         if "fail" in prompt:
             return []
         return [f"http://mock/image/{prompt}.png"]

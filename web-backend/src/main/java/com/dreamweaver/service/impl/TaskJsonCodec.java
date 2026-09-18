@@ -85,7 +85,10 @@ public class TaskJsonCodec {
                 && request.getTotalSeconds() == null
                 && request.getShotCount() == null
                 && isBlank(request.getShotLanguage())
-                && isBlank(request.getReferenceBindings());
+                && isBlank(request.getReferenceBindings())
+                && isBlank(request.getImageRatio())
+                && request.getLockFirstFrame() == null
+                && request.getChainFrames() == null;
         if (empty) {
             return null;
         }
@@ -96,6 +99,10 @@ public class TaskJsonCodec {
         params.put("shotCount", request.getShotCount());
         params.put("shotLanguage", request.getShotLanguage());
         params.put("referenceBindings", request.getReferenceBindings());
+        // 出图画幅与首帧锁定：不落库的话「重新生成」会退回 1:1 正方形 / reference 模式
+        params.put("imageRatio", request.getImageRatio());
+        params.put("lockFirstFrame", request.getLockFirstFrame());
+        params.put("chainFrames", request.getChainFrames());
         try {
             return objectMapper.writeValueAsString(params);
         } catch (Exception e) {
@@ -121,6 +128,9 @@ public class TaskJsonCodec {
             request.setShotCount(asInt(params.get("shotCount")));
             request.setShotLanguage(asText(params.get("shotLanguage")));
             request.setReferenceBindings(asText(params.get("referenceBindings")));
+            request.setImageRatio(asText(params.get("imageRatio")));
+            request.setLockFirstFrame(asBool(params.get("lockFirstFrame")));
+            request.setChainFrames(asBool(params.get("chainFrames")));
         } catch (Exception e) {
             log.warn("解析 gen_params_json 失败: {}", e.getMessage());
         }
@@ -228,5 +238,30 @@ public class TaskJsonCodec {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    /**
+     * 还原布尔值。**null 与 false 必须区分**：「首帧锁定」在 agent 侧默认开，
+     * 所以「字段不存在」（老任务）必须回 null（让 agent 走默认），
+     * 而「用户显式关掉」是 false。把缺失当 false 会让老任务静默丢掉锁定。
+     */
+    static Boolean asBool(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Boolean b) {
+            return b;
+        }
+        String s = String.valueOf(value).trim();
+        if (s.isEmpty()) {
+            return null;
+        }
+        if ("true".equalsIgnoreCase(s)) {
+            return Boolean.TRUE;
+        }
+        if ("false".equalsIgnoreCase(s)) {
+            return Boolean.FALSE;
+        }
+        return null;
     }
 }

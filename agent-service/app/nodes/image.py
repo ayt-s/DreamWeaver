@@ -191,7 +191,11 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
                               {"tool_name": "generate_image", "segment_index": i})
 
             start = time.time()
-            urls = await gateway.generate_image(prompt=cn, model=settings.image_model)
+            urls = await gateway.generate_image(
+                prompt=cn, model=settings.image_model,
+                # 画幅显式传（段配置里有）；不传服务端按 1:1 出正方形 —— 与视频画幅不匹配
+                ratio=str(seg.get("aspect_ratio") or state.get("image_ratio") or ""),
+            )
             latency_ms = int((time.time() - start) * 1000)
 
             # 逐张真耗时（这里是顺序生成，耗时能归因到具体一张；与 video 的批量
@@ -228,6 +232,8 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
                 "prompt_en": str(seg.get("prompt_en", "")),
                 "image_url": image_urls[i],
                 "reference_images": list(seg.get("reference_images") or []),
+                # 画幅随段落库：否则下次「段重生」拿不到比例，只能退回 1:1 正方形
+                "aspect_ratio": str(seg.get("aspect_ratio") or ""),
             })
 
         await events.emit(session_id, "node_completed",
@@ -248,9 +254,13 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
 
     # ---- 直出图（画布节点「一键文生图」）：跳过流水线，按 prompt 直接出 N 张候选 ----
     #
-    # 为什么连续请求 N 次而不是一次请求 n 张：agnes 的 /images/generations 只认
-    # model + prompt（塞未知字段会被 400 拒，negative_prompt 就是这么被发现的），
-    # 所以"多候选"只能靠同 prompt 多次请求拿到。
+    # 为什么连续请求 N 次而不是一次请求 n 张：`/images/generations` 的 `n` 不受支持
+    # （2026-09-18 实测：官方参数表里根本没有 `n`），所以"多候选"只能靠同 prompt
+    # 多次请求拿到。
+    # ⚠️ 旧注释写「只认 model + prompt，塞未知字段会被 400 拒」——**那是错的**：
+    #    `size` / `ratio` / `extra_body.image`（图生图、多图合成）都是受支持的字段
+    #    （实测单图 i2i 返回 `/images/i2i/` 路径）。当初是被 `negative_prompt` 的 400
+    #    外推出来的结论，别再据此少传画幅（少传 = 出 1024x1024 正方形）。
     # 与 standard 路径的区别：不会经过 requirement_parser/script_writer/storyboarder，
     # 因此不会出现「一镜的 prompt 被 LLM 拆成多镜、白生成一堆用不上的图」。
     if state.get("direct_image"):
@@ -267,7 +277,11 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
                               {"tool_name": "generate_image", "shot_index": k})
             start = time.time()
             try:
-                got = await gateway.generate_image(prompt=prompt, model=settings.image_model)
+                got = await gateway.generate_image(
+                    prompt=prompt, model=settings.image_model,
+                    # 画幅来自本节点（data.ratio）——不传服务端给 1:1 正方形
+                    ratio=str(state.get("image_ratio") or ""),
+                )
             except Exception as exc:  # 单张失败不影响其余候选
                 logger.warning("直出图第 %d 张失败: %s", k + 1, exc)
                 got = []
@@ -332,15 +346,28 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
                           {"tool_name": "generate_image", "shot_index": idx})
 
         start = time.time()
-        urls = await gateway.generate_image(prompt=prompt_en, model=settings.image_model)
+        urls = await gateway.generate_image(
+            prompt=prompt_en, model=settings.image_model,
+            # 画幅取本镜的 aspect_ratio（storyboard 已归一）；不传 = 1:1 正方形
+            ratio=str(shot.get("aspect_ratio") or state.get("image_ratio") or ""),
+        )
         latency_ms = int((time.time() - start) * 1000)
 
         if urls:
             image_url = urls[0]
             image_urls.append(image_url)
-            # 回填到对应 shot 的 reference_images
+            # 回填到对应 shot，供 video_generator 用
             shot["reference_images"] = [image_url]
-            shot["mode"] = "reference"  # 参考图模式(agnès Video 2.5: text/keyframe/reference)
+            # ★ 首帧锁定（默认开，2026-09-18 起）：把这张图当视频的**实际第一帧**。
+            #   reference 模式官方定义是「当作内容/风格/运动参考，**可能重新构图、重新计时**」
+            #   —— 于是用户认可的首帧根本不是视频起点（实测「视频和我出的图不像」）。
+            #   keyframe 模式官方定义才是「尝试把输入图作为实际第一帧」。
+            #   关掉（lock_first_frame=False）即回到旧的 reference 行为。
+            if state.get("lock_first_frame", True):
+                shot["mode"] = "keyframe"
+                shot["first_frame"] = image_url
+            else:
+                shot["mode"] = "reference"
         else:
             image_urls.append("")  # 生成失败，占位保持索引对齐
 

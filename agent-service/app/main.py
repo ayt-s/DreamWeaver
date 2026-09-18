@@ -37,7 +37,7 @@ from app import abort, events, session_store
 from app.errors import AppError, friendly_error_message, register_exception_handlers
 from app.graph import compiled_graph
 from app.state import CreativeSessionState, TaskStatus
-from app.utils.prompting import normalize_camera_spec
+from app.utils.prompting import normalize_camera_spec, normalize_image_ratio
 from app.poller import poller
 from app.scheduler import scheduler
 from app.agent.chat_api import router as agent_chat_router
@@ -115,6 +115,14 @@ class CreateVideoTaskRequest(BaseModel):
     direct_image: Optional[bool] = False
     # 直出图候选张数（1~5）；同一 prompt 多次请求，产出多个候选供人选一张
     image_count: Optional[int] = 1
+    # 出图画幅（如 "16:9" / "9:16"）。**必须显式传** —— 不传时服务端按 1:1 出正方形：
+    # 2026-09-18 实测项目真实产物 18/18 都是 1024x1024，而视频链路是 16:9。
+    image_ratio: Optional[str] = None
+    # 首帧锁定（keyframe，默认开）：有首帧图时把它当视频的**实际第一帧**，
+    # 而不是塞进 images 参考数组（reference 模式官方明确「可能重新构图、重新计时」）
+    lock_first_frame: Optional[bool] = None
+    # 段间衔接（默认关）：把下一段的首帧当本段尾帧，让相邻段首尾接得上
+    chain_frames: Optional[bool] = None
 
 
 class CreateVideoTaskResponse(BaseModel):
@@ -378,6 +386,8 @@ async def _startup() -> None:
 
 @app.post("/v1/tasks/video", status_code=202, response_model=ApiResponse)
 async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
+    from app.config import settings
+
     if not req.prompt.strip():
         raise AppError("prompt 不能为空", status_code=422)
 
@@ -410,6 +420,11 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
         # 直出图：跳过流水线直接出图；候选张数夹紧到 1~5
         "direct_image": bool(req.direct_image),
         "image_count": max(1, min(5, int(req.image_count or 1))),
+        # 出图画幅：脏值一律回落默认（agnes 对非法取值直接 400）
+        "image_ratio": normalize_image_ratio(req.image_ratio, settings.default_aspect_ratio),
+        # 首帧锁定：None（未传）按开 —— 有首帧图时这才是「视频从这张图长出来」的路
+        "lock_first_frame": True if req.lock_first_frame is None else bool(req.lock_first_frame),
+        "chain_frames": bool(req.chain_frames),
         "status": TaskStatus.QUEUED,
         "fix_round": 0,
         "max_fix_rounds": 3,

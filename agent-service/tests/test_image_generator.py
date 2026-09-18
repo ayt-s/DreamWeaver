@@ -10,7 +10,7 @@ from app.state import CreativeSessionState, TaskStatus
 class FakeGateway:
     """fake 网关：按 prompt 返回固定 URL。"""
 
-    async def generate_image(self, prompt, model=None) -> list[str]:
+    async def generate_image(self, prompt, model=None, size=None, ratio=None, seed=None) -> list[str]:
         return [f"http://mock/image/{prompt[:16]}.png"]
 
 
@@ -47,9 +47,13 @@ async def test_image_generator_per_shot():
 
     # storyboard 被回填
     assert result["storyboard"][0]["reference_images"] == [result["image_urls"][0]]
-    assert result["storyboard"][0]["mode"] == "reference"
+    # ★ 首帧锁定（默认开）：生成的首帧图作为 keyframe 的 first_frame，
+    #   而不是只塞进 reference_images（reference 模式官方明确「可能重新构图/重新计时」）
+    assert result["storyboard"][0]["mode"] == "keyframe"
+    assert result["storyboard"][0]["first_frame"] == result["image_urls"][0]
     assert result["storyboard"][1]["reference_images"] == [result["image_urls"][1]]
-    assert result["storyboard"][1]["mode"] == "reference"
+    assert result["storyboard"][1]["mode"] == "keyframe"
+    assert result["storyboard"][1]["first_frame"] == result["image_urls"][1]
 
     # 状态更新
     assert result["status"] == TaskStatus.ASSET_GENERATING

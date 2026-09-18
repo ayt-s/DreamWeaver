@@ -178,6 +178,42 @@ class TaskJsonCodecTest {
     }
 
     @Test
+    @DisplayName("gen_params_json：出图画幅与首帧锁定也往返（否则重新生成退回 1:1 正方形）")
+    void genParamsRoundTripCarriesImageRatioAndFrameLock() {
+        CreateTaskRequest src = new CreateTaskRequest();
+        src.setImageRatio("16:9");
+        src.setLockFirstFrame(Boolean.FALSE);
+        src.setChainFrames(Boolean.TRUE);
+
+        String json = codec.buildGenParamsJson(src);
+        assertNotNull(json, "只配了这三项也算配过精细控制");
+
+        CreateTaskRequest restored = new CreateTaskRequest();
+        codec.applyGenParamsJson(json, restored);
+
+        assertEquals("16:9", restored.getImageRatio());
+        assertEquals(Boolean.FALSE, restored.getLockFirstFrame());
+        assertEquals(Boolean.TRUE, restored.getChainFrames());
+    }
+
+    @Test
+    @DisplayName("gen_params_json：lockFirstFrame 的「未设置」与「显式关」必须区分")
+    void missingLockFirstFrameStaysNullSoAgentDefaultApplies() {
+        // agent 侧 lock_first_frame **默认开**（有首帧图就当视频的实际第一帧）。
+        // 老任务的 gen_params_json 里没有这个字段 → 必须回 null 让 agent 走默认；
+        // 若当成 false，老任务「重新生成」会静默退回 reference 模式（画面基底丢失）。
+        CreateTaskRequest src = new CreateTaskRequest();
+        src.setStylePrompt("写实");
+        String json = codec.buildGenParamsJson(src);
+
+        CreateTaskRequest restored = new CreateTaskRequest();
+        codec.applyGenParamsJson(json, restored);
+
+        assertNull(restored.getLockFirstFrame(), "未设置必须是 null，不能变成 false");
+        assertNull(restored.getChainFrames());
+    }
+
+    @Test
     @DisplayName("applyGenParamsJson：空/坏 JSON 不抛异常，也不清掉请求里已有的值")
     void applyGenParamsJsonIsFaultTolerant() {
         CreateTaskRequest req = new CreateTaskRequest();

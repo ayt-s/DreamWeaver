@@ -17,6 +17,11 @@ import httpx
 
 from app.config import settings
 from app.utils.observability import traced
+from app.utils.prompting import (
+    normalize_image_ratio,
+    normalize_image_size,
+    normalize_video_size,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -301,20 +306,50 @@ class AgnesGateway:
     @traced("agnes.generate_image", run_type="tool")
     async def generate_image(self, prompt: str,
                              model: str | None = None,
-                             session_id: str | None = None) -> list[str]:
-        """同步调用图像 API，返回图片 URL 列表。多 provider 按 session 粘性路由。"""
+                             session_id: str | None = None,
+                             size: str | None = None,
+                             ratio: str | None = None,
+                             seed: int | None = None) -> list[str]:
+        """同步调用图像 API，返回图片 URL 列表。多 provider 按 session 粘性路由。
+
+        ⚠️ `size` / `ratio` **必须显式传**（2026-09-18 实测修正）：
+        不传时服务端按 1:1 出图 —— 实测项目真实产物 18/18 全是 1024x1024 正方形，
+        而视频链路是 16:9；首帧是画面的真正基底，正方形基底会被视频模型先重构图一次。
+        传 `size="2K", ratio="16:9"` 实测得到 2624x1472（比例 1.783）。
+        图片当前所有档位免费（官方 pricing），所以升档没有成本代价。
+        """
         client = await self.pick_client(session_id=session_id)
+        payload: dict[str, Any] = {
+            "model": model or settings.image_model,
+            "prompt": prompt,
+            "size": normalize_image_size(size or settings.image_size),
+            "ratio": normalize_image_ratio(ratio, settings.default_aspect_ratio),
+            # 官方要求 URL 输出走 extra_body（顶层 response_format 会 400）；
+            # 不写时靠服务端默认，写死更可预期
+            "extra_body": {"response_format": "url"},
+        }
+        if seed is not None:
+            payload["seed"] = int(seed)
         resp = await _with_retry(
-            lambda: client._client.post("/images/generations", json={
-                "model": model or settings.image_model,
-                "prompt": prompt,
-            }),
+            lambda: client._client.post("/images/generations", json=payload),
             f"图像({client.name})",
         )
         resp.raise_for_status()
         data = resp.json()
         urls: list[str] = [item["url"] for item in data["data"]]
         return urls
+
+    @staticmethod
+    def _resolve_video_size(model: str, requested: str | None) -> str:
+        """解析视频分辨率档，并**按模型夹紧**。
+
+        ⚠️ Flash（`agnes-video-2.5-flash`）**硬限 720P**，传别的档直接 400
+        `size must be 720P` —— 所以无论调用方给什么，Flash 一律按 720P 发。
+        非 Flash（`agnes-video-2.5`）才吃 960P / 2K，此时用请求值 / 配置值。
+        """
+        if "flash" in (model or "").lower():
+            return "720P"
+        return normalize_video_size(requested or settings.video_size, "720P")
 
     # ---------- 视频 ----------
     @traced("agnes.submit_video", run_type="tool")
@@ -323,7 +358,11 @@ class AgnesGateway:
                            aspect_ratio: str | None = None,
                            mode: str = "text",
                            reference_images: list[str] | None = None,
-                           session_id: str | None = None) -> dict[str, Any]:
+                           session_id: str | None = None,
+                           first_frame: str | None = None,
+                           last_frame: str | None = None,
+                           size: str | None = None,
+                           seed: int | None = None) -> dict[str, Any]:
         """提交视频生成任务，返回包含 video_id / model_name / provider 的 dict。
 
         多 provider 场景：
@@ -332,19 +371,63 @@ class AgnesGateway:
         3. 如果同 client 全部失败，切到下一个 provider 再试一轮（粘附切换）
         4. 全部 provider 都失败则抛原错误
         返回 dict 额外带 provider 字段，poller 用它查询该视频。
+
+        ## 三种模式与媒体字段互斥（官方 Generation Mode Rules，混用直接 400）
+
+        | mode | 用途 | 必给 | **禁止** |
+        |---|---|---|---|
+        | text | 纯文生视频 | 无 | 所有媒体字段 |
+        | keyframe | **首帧/尾帧锁定** | first_frame 或 last_frame | images / audios / videos |
+        | reference | 参考图/音频 | images 或 audios 非空 | first_frame / last_frame |
+
+        ★ keyframe 与 reference 的差别是**语义级**的（官方原文）：
+        keyframe「尝试把输入图作为**实际第一帧**」；reference「可能**重新构图、重新计时**」。
+        手里已有用户认可的首帧图时，keyframe 才是那条「视频从这张图长出来」的路。
         """
+        resolved_model = model or settings.video_model_fast
+        resolved_mode = mode if mode in ("text", "keyframe", "reference") else "text"
+        refs = [str(u).strip() for u in (reference_images or []) if str(u).strip()]
+        first = str(first_frame or "").strip()
+        last = str(last_frame or "").strip()
+
+        # 模式与媒体字段互斥：这里兜一层，免得上游多传一个字段就整段失败（一次 400 =
+        # 白等一轮重试 + 该镜没有产物）。降级方向取「信息量更小但一定合法」的那一种。
+        if resolved_mode == "keyframe" and not (first or last):
+            resolved_mode = "reference" if refs else "text"
+            logger.warning("keyframe 没有首/尾帧，降级为 %s（session=%s）", resolved_mode, session_id)
+        if resolved_mode == "keyframe":
+            if refs:
+                logger.info("keyframe 模式不使用参考图（%d 张，官方禁止与 images 混用），已忽略",
+                            len(refs))
+        elif resolved_mode == "reference":
+            if first or last:
+                logger.info("reference 模式不接受 first_frame/last_frame，已忽略")
+                first = last = ""
+            if not refs:
+                resolved_mode = "text"
+        else:  # text
+            refs = []
+            first = last = ""
+
         payload: dict[str, Any] = {
-            "model": model or settings.video_model_fast,
+            "model": resolved_model,
             "prompt": prompt,
-            "mode": mode,
+            "mode": resolved_mode,
             "seconds": seconds or settings.default_seconds,
-            "size": "720P",
+            "size": self._resolve_video_size(resolved_model, size),
             "aspect_ratio": aspect_ratio or settings.default_aspect_ratio,
             "n": 1,
         }
-        if reference_images:
+        if resolved_mode == "keyframe":
+            if first:
+                payload["first_frame"] = first
+            if last:
+                payload["last_frame"] = last
+        elif resolved_mode == "reference":
             # 图生视频/参考模式：图片需公网可访问 URL
-            payload["images"] = reference_images
+            payload["images"] = refs
+        if seed is not None:
+            payload["seed"] = int(seed)
         logger.warning("submit_video payload (session=%s): %s", session_id, _json_compact(payload))
 
         # 单 provider 内尝试次数（每个 provider 独立预算）

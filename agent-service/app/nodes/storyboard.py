@@ -137,14 +137,14 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
     bindings = state.get("reference_bindings") or []
     storyboard = []
     for idx, seg in enumerate(segments):
+        # 本段自己的首帧图（画布图片节点的产物）—— keyframe 模式用它锁首帧
+        own_image = str(seg.get("image_url", "")).strip()
         # 多参考图：优先读前端透传的 reference_images 数组
         # （用户源图 + 角色锚定图 + 场景锚定图），兼容旧 image_url 单张。
         # agnes reference 模式硬限制 5 张。
         ref_images = list(seg.get("reference_images") or [])
-        if not ref_images:
-            image_url = str(seg.get("image_url", "")).strip()
-            if image_url:
-                ref_images.append(image_url)
+        if not ref_images and own_image:
+            ref_images.append(own_image)
         if len(ref_images) > 5:
             ref_images = ref_images[:5]
         cn = str(seg.get("prompt", "")).strip()
@@ -179,6 +179,8 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
             "seconds": str(seconds),
             "aspect_ratio": ratio,
             "reference_images": ref_images,
+            # 本段首帧图（后面按 lock_first_frame 决定它当 first_frame 还是只当参考图）
+            "first_frame": own_image,
             "cn_description": cn,
             # 重生模式：已有视频 URL → 直接复用，跳过 agnes 重新生成
             "existing_video_url": str(seg.get("existing_video_url") or "").strip(),
@@ -191,6 +193,41 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
             "negative_prompt": seg_negative,
         })
 
+    # === 首帧锁定 / 段间衔接（2026-09-18）===
+    #
+    # 背景：此前把本段首帧图塞进 `reference_images`（mode=reference）。官方对 reference
+    # 的定义是「当作内容/风格/运动参考，**可能重新构图、重新计时**」—— 也就是说用户
+    # 认可的这张首帧图**不是**视频的起点，用户看到的「视频和我出的图不像」是预期行为。
+    # keyframe 模式的定义才是「尝试把输入图作为实际第一帧」。
+    #
+    # ⚠️ 官方约束：keyframe 与 reference **互斥**（keyframe 不许带 images），所以
+    #   「锁定首帧」和「锚定图参考」不能同时生效。默认选前者，理由：本段首帧图本身
+    #   就是按该段提示词（含角色/场景描述）生成的，已承载该段的角色形象与场景；
+    #   而跨段一致性由每段各自的、已被用户认可的首帧图承担。
+    #   要回到旧行为：请求里 lock_first_frame=false（前端「首帧锁定」开关关掉）。
+    lock = bool(state.get("lock_first_frame", True))
+    chain = bool(state.get("chain_frames", False))
+    locked = 0
+    for idx, sb_shot in enumerate(storyboard):
+        first = str(sb_shot.get("first_frame") or "").strip()
+        if lock and first:
+            sb_shot["mode"] = "keyframe"
+            sb_shot["first_frame"] = first
+            # 段间衔接：下一段的首帧当本段尾帧（last_frame）——让相邻段首尾接得上。
+            # 默认关：强制结尾构图会压住本段的运动，不是所有题材都想要。
+            if chain and idx + 1 < len(storyboard):
+                nxt = str(storyboard[idx + 1].get("first_frame") or "").strip()
+                if nxt and nxt != first:
+                    sb_shot["last_frame"] = nxt
+            locked += 1
+        else:
+            # 没锁首帧时不要留 first_frame：reference 模式下网关会打日志丢弃它
+            sb_shot.pop("first_frame", None)
+            sb_shot["mode"] = "reference" if sb_shot.get("reference_images") else "text"
+
+    if locked:
+        await events.emit(state["session_id"], "progress",
+                          {"phase": f"首帧锁定：{locked}/{len(storyboard)} 段以 keyframe 模式生成"})
     await events.emit(state["session_id"], "node_completed",
                       {"node_id": "canvas_storyboarder", "summary": f"画布分镜 {len(storyboard)} 段"})
     return {"storyboard": storyboard, "status": TaskStatus.STORYBOARD_WRITING}

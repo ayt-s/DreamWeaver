@@ -261,6 +261,23 @@ export interface CreateTaskRequest {
   directImage?: boolean;
   /** 直出图候选张数（1~5，默认 1）：同 prompt 多次请求，产出多张供人选一张 */
   imageCount?: number;
+  /**
+   * 出图画幅（如 '16:9' / '9:16'）。
+   *
+   * ⚠️ **必须传**：agnes 图片接口不传 ratio 时按 1:1 出图 —— 实测 18/18 张真实产物
+   * 都是 1024×1024 正方形，而视频链路是 16:9（首帧是画面的真正基底，正方形基底
+   * 会被视频模型先重构图一次）。取所在节点的 ratio。
+   */
+  imageRatio?: string;
+  /**
+   * 首帧锁定（keyframe）：把首帧图当作视频的**实际第一帧**。
+   *
+   * agnes 的 reference 模式官方定义是「内容/风格/运动参考，可能重新构图、重新计时」
+   * —— 所以此前那张首帧图并不是视频起点。agent 侧默认开；传 false 回旧行为。
+   */
+  lockFirstFrame?: boolean;
+  /** 段间衔接：下一段的首帧当本段尾帧（last_frame），让相邻段首尾接得上。默认关 */
+  chainFrames?: boolean;
   /** 产物来源：默认 default（进画廊）；canvas_asset = 画布素材（画廊默认过滤） */
   source?: string;
 }

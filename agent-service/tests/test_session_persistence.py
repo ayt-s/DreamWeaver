@@ -214,7 +214,8 @@ async def test_video_node_reuses_merged_noncontiguous_segments(monkeypatch):
     generated: list[int] = []
 
     async def _fake_tool(prompt, seconds, mode, aspect_ratio, reference_images,
-                         session_id, shot_index, model=None) -> dict:
+                         session_id, shot_index, model=None,
+                         first_frame=None, last_frame=None) -> dict:
         generated.append(shot_index)
         return {"video_id": f"new{shot_index}", "status": "submitted"}
 
@@ -245,7 +246,8 @@ async def test_video_node_reuses_inflight_pending_video_id(monkeypatch):
     generated: list[int] = []
 
     async def _fake_tool(prompt, seconds, mode, aspect_ratio, reference_images,
-                         session_id, shot_index, model=None) -> dict:
+                         session_id, shot_index, model=None,
+                         first_frame=None, last_frame=None) -> dict:
         generated.append(shot_index)
         return {"video_id": f"new{shot_index}", "status": "submitted"}
 
@@ -569,7 +571,7 @@ async def test_image_guard_skips_regeneration_on_reentry(monkeypatch):
     calls: list[str] = []
 
     class _GW:
-        async def generate_image(self, prompt, model=None, session_id=None):
+        async def generate_image(self, prompt, model=None, session_id=None, size=None, ratio=None, seed=None):
             calls.append(prompt)
             return [f"http://mock/{prompt}.png"]
 
@@ -609,7 +611,7 @@ async def test_image_guard_regenerates_only_missing(monkeypatch):
     calls: list[str] = []
 
     class _GW:
-        async def generate_image(self, prompt, model=None, session_id=None):
+        async def generate_image(self, prompt, model=None, session_id=None, size=None, ratio=None, seed=None):
             calls.append(prompt)
             return [f"http://mock/{prompt}.png"]
 
@@ -662,7 +664,8 @@ async def test_video_id_persisted_at_submit_time(monkeypatch):
             return fut
 
     async def _fake_tool(prompt, seconds, mode, aspect_ratio, reference_images,
-                         session_id, shot_index, model=None) -> dict:
+                         session_id, shot_index, model=None,
+                         first_frame=None, last_frame=None) -> dict:
         return {"video_id": f"vid{shot_index}", "status": "submitted"}
 
     monkeypatch.setattr(session_store, "mark_submitted", _fake_mark_submitted)
@@ -743,7 +746,8 @@ async def test_full_chain_recovery_zero_cost_resume(monkeypatch):
     submitted: list[int] = []
 
     async def _fake_tool(prompt, seconds, mode, aspect_ratio, reference_images,
-                         session_id, shot_index, model=None) -> dict:
+                         session_id, shot_index, model=None,
+                         first_frame=None, last_frame=None) -> dict:
         submitted.append(shot_index)
         return {"video_id": f"new{shot_index}", "status": "submitted"}
 

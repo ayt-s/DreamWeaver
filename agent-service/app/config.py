@@ -56,6 +56,20 @@ class Settings:
     default_seconds: str = "5"          # 视频时长字符串 "4"~"12"
     default_aspect_ratio: str = "16:9"  # 画幅白名单见设计文档
 
+    # === 出图尺寸档 / 画幅（2026-09-18 新增）===
+    # ★ 此前出图请求**完全不传 size/ratio** → 服务端默认给 1:1：实测项目真实产物
+    #   18/18 全是 1024x1024 正方形，而视频链路是 16:9（首帧是画面的真正基底，
+    #   正方形基底喂给宽银幕视频会先被模型重构图一次）。
+    # 画幅按每次请求的上下文决定（画布节点 ratio / 分镜 aspect_ratio），此处只是兜底。
+    # 图片当前**所有档位免费**（官方 pricing），2K 的 16:9 = 2624x1472。
+    image_size: str = _env("AGNES_IMAGE_SIZE", "2K")
+
+    # === 视频分辨率档（2026-09-18 新增）===
+    # Flash 硬限 720P（其余值 400），只有 agnes-video-2.5 能吃 960P/2K。
+    # 默认保持 720P：非 Flash 的 2K 是 $0.055/秒（720P 的两倍多），
+    # 不能替用户默默抬价 —— 想要高清就改这里 + 在 UI 选 HD 模型。
+    video_size: str = _env("AGNES_VIDEO_SIZE", "720P")
+
     # 轮询（Phase 1 内联轮询用，Phase 2 移交独立 Poller）
     poll_interval_s: int = 5
     video_timeout_s: int = 900          # 单任务轮询上限 15 分钟

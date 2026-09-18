@@ -46,6 +46,40 @@ SHOT_SIZE_OPTIONS = list(SHOT_SIZE_EN)
 CAMERA_ANGLE_OPTIONS = list(CAMERA_ANGLE_EN)
 CAMERA_MOVE_OPTIONS = list(CAMERA_MOVE_EN)
 
+# === 图片接口的画幅/尺寸白名单（官方 agnes-image-2.5-flash 文档的 supported values）===
+# 与视频的 aspect_ratio 不同：图片多支持 2:3 / 3:2，且不接受 auto。
+IMAGE_RATIOS: tuple[str, ...] = ("1:1", "3:4", "4:3", "16:9", "9:16", "2:3", "3:2", "21:9")
+# 输出尺寸档（1K/2K/3K/4K）；官方也接受 1024x768 这类精确值，但会被「就近归一化」，
+# 所以只认档位，避免出现「以为给了 1920x1080，实际拿到 1312x736」的误解。
+IMAGE_SIZE_TIERS: tuple[str, ...] = ("1K", "2K", "3K", "4K")
+# 视频分辨率档（720P/960P/2K；Flash 硬限 720P）
+VIDEO_SIZE_TIERS: tuple[str, ...] = ("720P", "960P", "2K")
+
+
+def normalize_image_ratio(value: object, default: str = "16:9") -> str:
+    """清洗出图画幅为 agnes 认的 ratio（白名单外回落默认，绝不透传脏值）。
+
+    ★ 为什么必须有这个函数：**出图请求此前完全不传画幅**，服务端按默认给 1:1 ——
+    2026-09-18 实测项目真实产物 18/18 全是 1024x1024 正方形，而视频链路是 16:9。
+    画幅值来自前端下拉与段配置，可能是全角冒号「：」或带空格，
+    而 agnes 对非法取值是**直接 400**（一次 400 = 一张图白等一轮重试），所以归一化后再发。
+    """
+    s = str(value or "").strip().replace("：", ":").replace("／", "/")
+    return s if s in IMAGE_RATIOS else default
+
+
+def normalize_image_size(value: object, default: str = "2K") -> str:
+    """清洗出图尺寸档（1K/2K/3K/4K）；未知值回落默认，避免 400 或静默归一化。"""
+    s = str(value or "").strip().upper()
+    return s if s in IMAGE_SIZE_TIERS else default
+
+
+def normalize_video_size(value: object, default: str = "720P") -> str:
+    """清洗视频分辨率档（720P/960P/2K）；未知值回落默认。"""
+    s = str(value or "").strip().upper()
+    return s if s in VIDEO_SIZE_TIERS else default
+
+
 
 def camera_phrase(spec: object) -> str:
     """把结构化运镜 spec 拼成英文提示词片段。
