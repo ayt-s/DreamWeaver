@@ -77,7 +77,10 @@ async def test_never_mutates_prompt_en(monkeypatch):
         storyboard=_shots(2),
         qc_report=_qc([1], shots_entries=[
             {"index": 0, "error": ""},
-            {"index": 1, "error": "画面质检未通过", "blur_frame_ratio": 0.9},
+            # ⚠️ 别再用 blur 当「标准失败原因」：它 2026-09-18 起不参与 passed，
+            #    且不再映射修正后缀（见 fix_looping._pick_hint）。改用可映射的黑帧。
+            {"index": 1, "error": "画面质检未通过（黑帧比例 90%）",
+             "black_frame_ratio": 0.9, "failed_reasons": ["black_frames"]},
         ], total=2),
     ))
 
@@ -100,14 +103,15 @@ async def test_hint_replaced_not_appended_across_rounds(monkeypatch):
     out1 = await fl.fix_looping_node(st)
     hint1 = out1["storyboard"][1]["fix_hint"]
 
-    # 第二轮：换成模糊原因
+    # 第二轮：换成另一个成因（画幅 → 黑帧），后缀应当被替换而不是叠加
     st2 = dict(st)
     st2["storyboard"] = out1["storyboard"]
     st2["fix_round"] = 1
     st2["fix_history"] = out1["fix_history"]
     st2["qc_report"] = _qc([1], shots_entries=[
         {"index": 0, "error": ""},
-        {"index": 1, "error": "画面质检未通过", "blur_frame_ratio": 0.9},
+        {"index": 1, "error": "画面质检未通过（黑帧比例 90%）",
+         "black_frame_ratio": 0.9, "failed_reasons": ["black_frames"]},
     ], total=2)
     out2 = await fl.fix_looping_node(st2)
     hint2 = out2["storyboard"][1]["fix_hint"]
@@ -122,10 +126,25 @@ async def test_hint_mapping_by_reason(monkeypatch):
     monkeypatch.setattr(fl.settings, "fix_hint_mode", "mechanism", raising=False)
 
     cases = [
-        ({"error": "画面质检未通过", "blur_frame_ratio": 0.9}, "camera"),
-        ({"error": "画面质检未通过", "black_frame_ratio": 0.9}, "well-lit"),
+        # ── 新口径：成因读结构化 failed_reasons（tools/qc.py 给出），不猜文案 ──
+        # 唯一允许贴画质后缀的成因是黑帧
+        ({"error": "画面质检未通过（黑帧比例 62%）", "black_frame_ratio": 0.62,
+          "failed_reasons": ["black_frames"]}, "well-lit"),
+        # ★ 空帧：flat 阈值（方差 <1.0）严格包含在 blur（<50.0）里，所以凡是空帧
+        #   必然 blur_frame_ratio 也超线。旧实现因此**必然**给它贴
+        #   「slow steady camera / sharp focus」—— 病灶是纯色帧，加运镜词改不到。
+        ({"error": "画面质检未通过（空帧比例 30%）", "blur_frame_ratio": 0.9,
+          "failed_reasons": ["flat_frames"]}, ""),
+        # ★ 下载残片：病灶是文件不完整，提示词无责 → 原样重生
+        ({"error": "产物不完整（下载残留）", "blur_frame_ratio": 0.7,
+          "failed_reasons": ["truncated"]}, ""),
+        # 结构性问题优先于成因
         ({"error": "时长偏离（期望 5s，实测 12.0s）"}, "continuous"),
         ({"error": "画幅不符（期望 9:16，实测 1280x720）"}, "aspect"),
+        # ── 兼容旧报告（无 failed_reasons）：只按黑帧比例回推 ──
+        ({"error": "画面质检未通过", "black_frame_ratio": 0.9}, "well-lit"),
+        # ★ 旧报告里「只有 blur 超线」不再当成因（那批正是被判为误报的那批）
+        ({"error": "画面质检未通过", "blur_frame_ratio": 0.9}, ""),
         ({"error": "产物缺失，未下载成功"}, ""),          # 不知成因 → 原样重生
         ({"error": "本地文件不存在"}, ""),
     ]
@@ -202,13 +221,15 @@ async def test_random50_arm_is_consistent_within_a_round(monkeypatch):
     """
     monkeypatch.setattr(fl.settings, "fix_hint_mode", "random50", raising=False)
 
-    # 给两个失败镜都配上可判定的成因（模糊 / 黑帧），这样 arm 与写入应当一致
+    # 给两个失败镜都配上**可判定**的成因（两条都是黑帧），这样 arm 与写入应当一致
     def mk():
         st = _state(failed=[1, 2])
         st["qc_report"] = _qc([1, 2], shots_entries=[
             {"index": 0, "error": ""},
-            {"index": 1, "error": "画面质检未通过", "blur_frame_ratio": 0.9},
-            {"index": 2, "error": "画面质检未通过", "black_frame_ratio": 0.9},
+            {"index": 1, "error": "画面质检未通过（黑帧比例 90%）",
+             "black_frame_ratio": 0.9, "failed_reasons": ["black_frames"]},
+            {"index": 2, "error": "画面质检未通过（黑帧比例 90%）",
+             "black_frame_ratio": 0.9, "failed_reasons": ["black_frames"]},
             {"index": 3, "error": ""},
         ], total=4)
         return st

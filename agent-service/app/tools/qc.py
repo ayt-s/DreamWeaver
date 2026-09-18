@@ -91,7 +91,9 @@ BLACK_FRAME_RATIO_LIMIT = 0.2
 BLUR_VARIANCE_THRESHOLD = 50.0
 # 低细节帧比例的**参考线**：超过它只意味着「值得人工看一眼」，
 # **不再参与 passed**。保留是因为 `scripts/calibrate_qc_thresholds.py`
-# 与 `fix_looping._pick_hint` 的成因映射仍以它为观察口径。
+# 仍以它为观察口径。
+# ⚠️ 2026-09-18 起 `fix_looping._pick_hint` **不再**用它当成因 ——
+#    空帧阈值（1.0）严格包含在它里面，用它映射等于必然给空帧失败贴错指令。
 BLUR_RATIO_LIMIT = 0.5
 # Laplacian 方差低于此值 → 「空帧」：纯色/纯黑，画面里没有任何内容。
 # 与「低细节」严格区分：实测真实内容最低到 3~4（柔光人脸特写），

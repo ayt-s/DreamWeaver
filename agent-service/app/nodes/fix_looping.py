@@ -8,8 +8,9 @@
    Java 的心跳会回 `tracked=false` → agent 置中止位；不检查就会继续自动烧钱
    （与已修的 P1-3 同类问题）。
 3. **修正后缀按失败原因映射到「可执行的具体指令」**，不堆通用形容词 ——
-   通用形容词对扩散/视频模型的因果性弱，而「镜头运动过猛导致模糊」这种
-   具体成因对应的指令（steady shot / slow camera）才有作用。
+   通用形容词对扩散/视频模型的因果性弱，而「黑帧过半」这种具体成因对应的指令
+   （well-lit scene / no dark frames）才有作用。成因取自结构化的 `failed_reasons`，
+   **已不再把「低细节」当成因**（它 2026-09-18 退出了 `passed`；详见 `_pick_hint`）。
    策略可配（`settings.fix_hint_mode`）：
    - `off`：不带后缀，原样重生
    - `mechanism`：总是带按原因映射的后缀
@@ -34,7 +35,9 @@ from app.state import CreativeSessionState, TaskStatus
 logger = logging.getLogger(__name__)
 
 # 按失败原因映射的修正指令（英文，直接拼在 prompt_en 后面）
-_HINT_BLUR = ", slow steady camera movement, static subject, medium close-up, even bright lighting, sharp focus, high detail"
+# ⚠️ 曾经有一条 `_HINT_BLUR`（slow steady camera / sharp focus）。2026-09-18 删除：
+#    `blur` 已退出 `passed`，它不再是任何一次失败的成因，留着只会把「空帧」
+#    失败镜（flat ⊂ blur，见 _pick_hint）引到文不对题的画质指令上。
 _HINT_BLACK = ", well-lit scene, bright daylight, even exposure, no dark or black frames"
 _HINT_DURATION = ", steady continuous motion, no abrupt cuts"
 _HINT_ASPECT = ", keep the original aspect ratio and framing"
@@ -44,9 +47,17 @@ HINT_GENERIC = ", sharp focus, high detail"
 
 
 def _pick_hint(shot: dict, entry: dict) -> str:
-    """按该镜的 QC 结论选修正后缀；无明确成因时返回空串（原样重生）。"""
-    blur = float(entry.get("blur_frame_ratio") or 0.0)
-    black = float(entry.get("black_frame_ratio") or 0.0)
+    """按该镜的 QC 结论选修正后缀；无明确成因时返回空串（原样重生）。
+
+    **成因一律读结构化的 `failed_reasons`**（`tools/qc.py` 给出），不猜中文文案。
+
+    ⚠️ 别拿 `blur_frame_ratio` 当成因（2026-09-18 修）：`blur` 已退出 `passed`
+    （它测的是画面高频细节量，低细节 ≠ 糊）。它一旦还能决定后缀，「空帧」失败镜
+    就**必然**被贴上文不对题的画质指令 —— 因为空帧阈值（方差 < 1.0）严格包含在
+    低细节阈值（方差 < 50.0）里，凡是空帧必然 `blur > 0.5`。
+    给一个纯色/空帧缺陷加「slow steady camera / sharp focus」既改不到病灶，
+    又会污染 `fix_history.used_hint` 那场「后缀有没有用」的在线 A/B（归错因）。
+    """
     err = str(entry.get("error") or "")
 
     # 画幅 / 时长这类结构性偏差优先（它们不是画质问题，加画质词没用）
@@ -54,10 +65,19 @@ def _pick_hint(shot: dict, entry: dict) -> str:
         return _HINT_ASPECT
     if "时长" in err:
         return _HINT_DURATION
-    if black > 0.5:
+
+    reasons = entry.get("failed_reasons")
+    if isinstance(reasons, (list, tuple)) and reasons:
+        if "black_frames" in reasons:
+            return _HINT_BLACK
+        # truncated（解码提前中断 = 文件不完整/下载残片）与 flat_frames（空帧）：
+        # 病灶不在提示词，加画质词只会把本来正常的运镜/构图改坏 → 原样重生。
+        return ""
+
+    # 兼容旧形状报告（无 `failed_reasons`：历史数据 / 第三方 stub）：只按黑帧比例回推。
+    # 不再用 blur 回推 —— 旧报告里「blur 单独成因」的那批正是被判为误报的那批。
+    if float(entry.get("black_frame_ratio") or 0.0) > 0.5:
         return _HINT_BLACK
-    if blur > 0.5:
-        return _HINT_BLUR
     # 产物缺失 / 文件不存在 / 探测异常：不知道成因，原样重生
     return ""
 

@@ -133,13 +133,23 @@ def _state(sid="e2e-fix", max_rounds=3):
 
 
 def _qc_fails_only(monkeypatch, failing_names: set[str]):
-    """让 QC 只对文件名命中 failing_names 的镜判失败（其余通过）。"""
+    """让 QC 只对文件名命中 failing_names 的镜判失败（其余通过）。
+
+    ⚠️ 失败的镜必须带**真实的确定性成因**（`failed_reasons`）：2026-09-18 起
+    `blur_frame_ratio` 既不参与 `passed`、也不再映射修正后缀，拿它当「标准失败形状」
+    会让「后缀有没有被拼进提交提示词」这条断言落空（那正是本文件要钉的链路）。
+    这里用黑帧 —— 唯一会映射出画质后缀的成因。
+    """
     from app.nodes import qc as qc_mod
 
     def analyze(path):
         bad = any(path.endswith(n) for n in failing_names)
-        return {"total_frames": 5, "black_frame_ratio": 0.0,
-                "blur_frame_ratio": 1.0 if bad else 0.0, "passed": not bad}
+        if not bad:
+            return {"total_frames": 5, "black_frame_ratio": 0.0, "blur_frame_ratio": 0.0,
+                    "flat_frame_ratio": 0.0, "passed": True, "failed_reasons": []}
+        return {"total_frames": 5, "black_frame_ratio": 0.9, "blur_frame_ratio": 1.0,
+                "flat_frame_ratio": 0.0, "passed": False,
+                "failed_reasons": ["black_frames"]}
 
     monkeypatch.setattr(qc_mod, "analyze_video_frames", analyze)
 
@@ -214,10 +224,10 @@ async def test_hint_does_not_leak_into_segments_json(monkeypatch, patched):
 
     sb = res["storyboard"]
     # 传给 Java 的 storyboard 里 prompt_en 必须干净
-    assert all("slow steady camera" not in str(s.get("prompt_en") or "") for s in sb)
     assert all("well-lit" not in str(s.get("prompt_en") or "") for s in sb)
+    assert all("no dark or black frames" not in str(s.get("prompt_en") or "") for s in sb)
     # 而实际提交给 agnes 的提示词应当带上了后缀（证明后缀确实生效过）
-    assert any("slow steady camera" in p for p in gw.submitted_prompts), (
+    assert any("well-lit" in p for p in gw.submitted_prompts), (
         "fix_hint 没有被拼进提交的提示词")
 
 
