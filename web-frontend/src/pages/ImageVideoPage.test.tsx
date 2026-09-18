@@ -1195,4 +1195,53 @@ describe('产物拿不到时的兜底（不留无声破图）', () => {
     // 没坏的那张不能被一起替换掉（否则「挑一张设为首帧」就无从挑起）
     expect(screen.getByAltText('候选 1')).toBeInTheDocument();
   });
+
+  it('★ 锚定图拿不到 → 文案指向「重新生成/重选锚定图」，不照抄产物那套', async () => {
+    // 锚定图失败 ≠ 产物过期：它的下一步是重新生成/重选锚定图。
+    // 照抄「产物可能已被清理」会把用户指去重新生成整镜（指错组件比没文案更糟）。
+    // 面板的行只来自 anchorCharRefs state（URL ?anchorRefs 只喂匹配上下文，且要等
+    // currentProjectId 就绪），所以这里走面板自带的手动添加。
+    renderPage('/canvas');
+    fireEvent.click((await screen.findAllByRole('button', { name: /锚定图/ }))[0]);
+
+    // 面板里角色/场景两块用同一套 placeholder，取第一块（角色锚定图）
+    const urlInput = screen.getAllByPlaceholderText('图片 URL')[0];
+    fireEvent.change(screen.getAllByPlaceholderText('名称')[0], { target: { value: '陈浔' } });
+    fireEvent.change(urlInput, { target: { value: 'https://cdn.example.com/dead-anchor.png' } });
+    // 添加按钮只有图标没有文案，取输入框所在行里的那个按钮
+    fireEvent.click(urlInput.closest('div')!.querySelector('button')!);
+
+    fireEvent.error(await screen.findByAltText('陈浔'));
+    const failed = await screen.findByText('图失效');
+    const title = failed.getAttribute('title') || '';
+    expect(title).toMatch(/链接可能已失效/);
+    expect(title).toMatch(/重新生成|重选/);
+    expect(title).not.toMatch(/产物可能已被清理/);
+  });
+
+  it('★ 元素绑定面板里参考图拿不到 → 说清「绑定不受影响」，不误导重生成整镜', async () => {
+    const anchors = {
+      characters: { 陈浔: { url: 'https://cdn.example.com/dead-anchor.png', desc: '少年陈浔' } },
+      scenes: {},
+    };
+    renderPage(`/canvas?anchorRefs=${encodeURIComponent(JSON.stringify(anchors))}`);
+    fireEvent.click(await screen.findByRole('button', { name: /元素绑定/ }));
+
+    fireEvent.error(await screen.findByAltText('陈浔'));
+    const failed = await screen.findByText('图失效');
+    expect(failed.getAttribute('title')).toMatch(/重新生成该锚定图/);
+  });
+
+  it('★ 历史作品缩略图拿不到 → 指向「回画廊重新生成 / 换一件」', async () => {
+    vi.mocked(listTasks).mockResolvedValue(
+      historyList([
+        { id: 9, prompt: '陈浔站在茅屋前', urls: ['https://cdn.example.com/dead2.png'] },
+      ]),
+    );
+    renderPage('/canvas');
+
+    fireEvent.error(await screen.findByAltText('陈浔站在茅屋前'));
+    const failed = await screen.findByText('图失效');
+    expect(failed.getAttribute('title')).toMatch(/回画廊重新生成|换一件/);
+  });
 });
