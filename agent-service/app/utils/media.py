@@ -171,16 +171,63 @@ async def concat_videos(inputs: list[Path], output: Path) -> bool:
     return await _concat_videos_plain(inputs, output)
 
 
+async def probe_streams(path: Path | str) -> tuple[float, bool, float]:
+    """一次 `ffmpeg -i` 拿到 (时长/秒, 是否有音轨, fps)。探测不到给安全默认值。
+
+    拼接前这三样都要：**时长**算 xfade 的 offset；**音轨**决定要不要接音频链；
+    **fps** 用来统一各路 timebase —— `xfade` 对 timebase 是硬要求，实测
+    24fps 的真实段 + 30fps 的幻灯片段会直接
+    `First input link main timebase (1/12288) do not match ... (1/15360)` 报 -22，
+    整条拼接失败降级成硬切（连过渡都没了）。
+    用一次探测取代「时长一次 + 音轨一次」，避免每段起两个进程。
+    """
+    res = await run_command([ffmpeg_exe(), "-i", str(path)], timeout=30)
+    if res.timed_out:
+        return (-1.0, False, 0.0)
+    err = res.stderr or ""
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", err)
+    secs = (int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))) if m else -1.0
+    fps_m = re.search(r"(\d+(?:\.\d+)?)\s*fps", err)
+    return (secs, "Audio:" in err, float(fps_m.group(1)) if fps_m else 0.0)
+
+
+async def probe_has_audio(path: Path | str) -> bool:
+    """探测视频是否带音轨（用 ffmpeg -i 的 stderr，同 probe_dimensions 的路子）。
+
+    为什么需要：`acrossfade` 要求**每一路都有音频流**，只要有一段没有（例如
+    「图片幻灯片」段是 ffmpeg 从静图生成的、本来就没有音轨），整条音频链会失败，
+    连带把视频过渡也拖垮。所以先逐段探、给缺的垫静音。
+    """
+    res = await run_command([ffmpeg_exe(), "-i", str(path)], timeout=30)
+    if res.timed_out:
+        return False
+    return "Audio:" in (res.stderr or "")
+
+
 async def _concat_with_xfade(inputs: list[Path], output: Path) -> bool:
-    """ffmpeg filter_complex xfade 交叉淡化。过渡 0.5 秒。"""
-    # 探测每段时长
-    durations = []
-    for p in inputs:
-        d = await probe_duration(p)
+    """ffmpeg filter_complex xfade 交叉淡化。过渡 0.5 秒。
+
+    ⚠️ 两条硬要求（都是 2026-09-18 实测撞出来的，改这块前先看）：
+
+    1. **音频必须一起接**。此前 `filter_complex` 只建了视频链、`-map` 只给 `[vout]`，
+       于是**多段成片整条没有声音** —— 而平台给的段是带 aac 音轨的，纯属本地拼接丢的。
+       实测：抽样 14/14 段都有音轨，成片 9/10 没有；唯一带音轨的那条是**单段**
+       （走 `shutil.copyfile`，没经过这条路径）。时长也对得上：24.4s = 6×4.5 − 5×0.5。
+       音频用 `acrossfade`，与视频 `xfade` 一一对应（同样 0.5s、同样次数）。
+    2. **每路必须先统一 fps 与 timebase**。xfade 要求两个输入 timebase 完全一致，
+       24fps 真实段配 30fps 幻灯片段会报 `timebase (1/12288) do not match (1/15360)`
+       并整条失败（→ 降级硬切，过渡没了）。所以先 `fps=<首路>` + `settb=AVTB`。
+    """
+    # 探测每段时长 / 音轨 / fps
+    infos = [await probe_streams(p) for p in inputs]
+    durations = [i[0] for i in infos]
+    for p, d in zip(inputs, durations):
         if d <= 0:
             logger.warning("无法探测 %s 时长，降级 concat", p.name)
             return False
-        durations.append(d)
+    has_audio = [i[1] for i in infos]
+    # 以第一路 fps 为基准（全真实段时行为不变；混了幻灯片段才起作用）
+    fps = infos[0][2] or 24.0
 
     TRANSITION = XFADE_TRANSITION_S
     n = len(inputs)
@@ -188,16 +235,21 @@ async def _concat_with_xfade(inputs: list[Path], output: Path) -> bool:
     for p in inputs:
         inputs_args.extend(["-i", str(p)])
 
-    # 构建 filter_complex：xfade 链式串联
-    # [0:v][1:v]xfade=transition=fade:duration=0.5:offset=D0-0.5[v01];
-    # [v01][2:v]xfade=transition=fade:duration=0.5:offset=D0+D1-0.5*2[v012]; ...
+    # 构建 filter_complex：先逐路归一化（强制 CFR + 统一 timebase），再 xfade 链式串联
+    # [vi0][vi1]xfade=transition=fade:duration=0.5:offset=D0-0.5[v01];
+    # [v01][vi2]xfade=...:offset=D0+D1-0.5*2[vout]
+    #
+    # ⚠️ 归一化**只能用 `fps=`，不要加 `setpts=PTS-STARTPTS`**：实测 setpts 会把链路
+    # 的帧率元数据清成 1/0，xfade 立刻报
+    # `The inputs needs to be a constant frame rate; current rate of 1/0 is invalid`
+    # （对照组：只 `fps=24`、只 `null`、输入前 `-r 24` 三种都正常）。
+    # `fps=` 一个滤镜就同时满足「CFR」和「timebase 一致」两条，settb/setpts 都是多余且有害。
     filter_parts: list[str] = []
+    for i in range(n):
+        filter_parts.append(f"[{i}:v]fps={fps}[vi{i}]")
     for i in range(n - 1):
-        if i == 0:
-            src_left = "[0:v]"
-        else:
-            src_left = f"[v0{i}]"
-        src_right = f"[{i+1}:v]"
+        src_left = "[vi0]" if i == 0 else f"[v0{i}]"
+        src_right = f"[vi{i+1}]"
         if i == n - 2:
             out_label = "[vout]"
         else:
@@ -212,6 +264,36 @@ async def _concat_with_xfade(inputs: list[Path], output: Path) -> bool:
             f"{src_left}{src_right}xfade=transition=fade:duration={TRANSITION}:offset={offset:.3f}{out_label}"
         )
 
+    # 音频链：逐段统一采样率/声道后 acrossfade。
+    # 没音轨的段垫一段等长静音（接在真实输入之后，索引 = len(inputs)+k），
+    # 否则 acrossfade 会因为缺流而整体失败 —— 那样就又回到「没声音」。
+    with_audio = any(has_audio)
+    if with_audio:
+        silent_added = 0
+        audio_labels: list[str] = []
+        for i, has in enumerate(has_audio):
+            if not has:
+                idx = n + silent_added
+                inputs_args.extend([
+                    "-f", "lavfi", "-t", f"{durations[i]:.3f}",
+                    "-i", "anullsrc=r=44100:cl=stereo",
+                ])
+                silent_added += 1
+                src = f"[{idx}:a]"
+            else:
+                src = f"[{i}:a]"
+            filter_parts.append(
+                f"{src}aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[ai{i}]"
+            )
+            audio_labels.append(f"[ai{i}]")
+        for i in range(n - 1):
+            src_left = audio_labels[0] if i == 0 else f"[a{i}]"
+            out_label = "[aout]" if i == n - 2 else f"[a{i+1}]"
+            filter_parts.append(
+                f"{src_left}{audio_labels[i+1]}"
+                f"acrossfade=d={TRANSITION}:c1=tri:c2=tri{out_label}"
+            )
+
     filter_complex = ";".join(filter_parts)
     cmd = [
         ffmpeg_exe(), "-y",
@@ -220,9 +302,10 @@ async def _concat_with_xfade(inputs: list[Path], output: Path) -> bool:
         "-map", "[vout]",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
         "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        str(output),
     ]
+    if with_audio:
+        cmd += ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k", "-ar", "44100"]
+    cmd += ["-movflags", "+faststart", str(output)]
     logger.info("xfade cmd: %s", " ".join(cmd[:5]) + " ... filter_complex=" + filter_complex[:200])
     res = await run_command(cmd, timeout=1200)
     if res.timed_out:
@@ -231,7 +314,13 @@ async def _concat_with_xfade(inputs: list[Path], output: Path) -> bool:
     if res.returncode != 0:
         logger.warning("xfade 失败 rc=%s stderr=%s", res.returncode, res.stderr[-300:])
         return False
-    return output.exists() and output.stat().st_size > 0
+    if output.exists() and output.stat().st_size > 0:
+        if with_audio and not await probe_has_audio(output):
+            # 拼接"成功"但没有音轨 = 又回到那个 bug，必须当失败（让上层降级/告警）
+            logger.error("xfade 产物没有音轨（输入有音轨），判定失败")
+            return False
+        return True
+    return False
 
 
 async def _concat_videos_plain(inputs: list[Path], output: Path) -> bool:
