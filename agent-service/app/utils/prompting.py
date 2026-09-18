@@ -12,6 +12,8 @@ agnes 官方推荐的提示词结构（见 agnes-video-2.5 文档 Prompting Reco
 """
 from __future__ import annotations
 
+import re
+
 # 景别 → 英文（对齐 agnes 文档 shot size 表述）
 SHOT_SIZE_EN: dict[str, str] = {
     "远景": "wide shot",
@@ -57,6 +59,50 @@ IMAGE_SIZE_TIERS: tuple[str, ...] = ("1K", "2K", "3K", "4K")
 # ⚠️ 这里原本还有 "960P"（早期文档写过），现已从白名单移除：留着它等于把 960P **透传**
 #    给上游换一个 400，而本文件的原则是「未知值回落默认，别让一个档位参数打挂整次生成」。
 VIDEO_SIZE_TIERS: tuple[str, ...] = ("720P", "2K")
+
+
+# 「一人一牛跪坐门外」这类**主体短语**：出现在**场景原文**里，而场景只该描述环境。
+# 识别形状 = 数量词 + 主体量词/人，或泛称主体词。
+# ⚠️ 泛称词刻意**不含「村民」**：「村民宴会场地」是地点名，误删会丢掉场景本身。
+# ⚠️ composer.py 里另有一个 `_SUBJECT_COUNT_RE`（管 **[镜头] 段** 的「双人并排」这类构图措辞）
+#    —— 职责不同，不要合并。
+SCENE_SUBJECT_RE = re.compile(
+    r"[一二两三四五六七八九十百千数几半][个位名头只匹条人]|人群|众人|人们|满村"
+    r"|少年|少女|孩童|孩子|老者|老人|男子|女子"
+)
+
+
+def strip_subject_clauses(text: str, names: tuple[str, ...] | list[str] = ()) -> str:
+    """从**场景描述**里剥掉主体子句，只留环境（2026-09-19）。
+
+    ★ 为什么要这个函数（实测，非推测）：场景锚图是按场景描述生成的，而描述里常写着
+      「**一人一牛**跪坐门外」这种主体短语 —— 于是**锚图里把人和牛一起画了进去**。
+      那张锚图之后会被当**参考图**喂给每一镜的首帧出图，模型就把锚图里的主体**再画一遍**：
+      实测废墟镜「带锚定图 人多 4/5 vs 不带 0/10」，而同场景的废墟锚图里正好有人和牛
+      （对照：山洞锚图是空景 → 那一镜从不丢主体、也不多画）。
+      提示词里已有「空场景无角色」的抽象约束，但**模型听具体的描述、不听抽象约束** ——
+      所以必须把描述里的主体子句拿掉。这就是同一套正则从"合成层"挪到"锚图生成层"的原因。
+
+    只剥主体，环境子句一个不动；`names` 给角色名（剥掉点名角色的子句）。
+    兜底：剥完太短（<6 字）就**原文返回** —— 宁可留着冗余，也不能交出一个空描述。
+    """
+    src = (text or "").strip()
+    if not src:
+        return text
+    kept: list[str] = []
+    for clause in re.split(r"[，、；]", src):
+        clause = clause.strip()
+        if not clause:
+            continue
+        if SCENE_SUBJECT_RE.search(clause):
+            continue
+        if any(n and n in clause for n in names):
+            continue
+        kept.append(clause)
+    if not kept:
+        return src
+    out = "，".join(kept)
+    return out if len(out) >= 6 else src
 
 
 def normalize_image_ratio(value: object, default: str = "16:9") -> str:

@@ -15,6 +15,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.errors import AppError
+from app.utils.prompting import strip_subject_clauses
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,12 @@ _CHARACTER_PROMPT_TEMPLATE = (
 
 _SCENE_PROMPT_TEMPLATE = (
     "电影级场景摄影，{style} 视觉风格，{scene_desc}。"
-    "空场景无角色，广角构图，自然光线，气氛感强。"
+    # ★ 2026-09-19：原来只有「空场景无角色」，但**抽象约束挡不住具体描述** ——
+    #   实测废墟锚图仍然画了「一人一牛」（因为场景描述原文里就写着这句）。
+    #   真正的修法是把描述里的主体子句剥掉（见 `strip_subject_clauses`），
+    #   这里的措辞再加强一层，作为第二道防线。
+    "空场景无角色：画面中不得出现任何人、动物、牲畜、人影或身体局部，只有地点与环境本身。"
+    "广角构图，自然光线，气氛感强。"
     "主体清晰居中；16:9 画幅；4K 超高清；"
     "无字幕无水印；无文字乱码；周围留出安全边距。"
 )
@@ -69,11 +75,24 @@ async def _generate_one_character(name: str, desc: str, style: str) -> tuple[str
         return None
 
 
-async def _generate_one_scene(desc: str, style: str) -> tuple[str, str] | None:
-    """生成一张场景锚定图。返回 (scene_desc, url) 或 None。"""
+async def _generate_one_scene(desc: str, style: str,
+                              names: tuple[str, ...] = ()) -> tuple[str, str] | None:
+    """生成一张场景锚定图。返回 (scene_desc, url) 或 None。
+
+    ★ 2026-09-19：喂给模型的描述要**剥掉主体子句**（`strip_subject_clauses`）——
+      场景描述里常写着「一人一牛跪坐门外」，模型就照画，锚图于是带着人和牛；
+      这张锚图之后当参考图喂给每镜首帧，模型又把主体**再画一遍**
+      （实测：废墟镜带锚 人多 4/5 vs 不带 0/10，而山洞锚图是空景 → 该镜从不多画）。
+
+    ⚠️ 返回的 key 必须是**原描述**（不是剥过的）：面板与画布用原描述做 key
+      （前端 `json.data.scenes[description]` 就是拿原描述取的），改了 key 就取不到图。
+    """
     from app.gateway.agnes import gateway
 
-    prompt = _SCENE_PROMPT_TEMPLATE.format(style=style, scene_desc=desc)
+    clean = strip_subject_clauses(desc, names)
+    if clean != desc:
+        logger.info("场景锚定图描述已剥主体子句: %s → %s", desc[:40], clean[:40])
+    prompt = _SCENE_PROMPT_TEMPLATE.format(style=style, scene_desc=clean)
     try:
         urls = await gateway.generate_image(prompt)
         return (desc, urls[0]) if urls else None
@@ -96,7 +115,9 @@ async def generate_anchors(req: NovelAnchorsRequest) -> NovelAnchorsResponse:
     for name, desc in character_items:
         tasks.append(asyncio.create_task(_generate_one_character(name, desc, req.style)))
     for desc in scene_items:
-        tasks.append(asyncio.create_task(_generate_one_scene(desc, req.style)))
+        # 角色名传进去：场景描述里点名角色的子句也一并剥掉
+        tasks.append(asyncio.create_task(
+            _generate_one_scene(desc, req.style, tuple(req.characters.keys()))))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
