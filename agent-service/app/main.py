@@ -43,6 +43,7 @@ from app.scheduler import scheduler
 from app.agent.chat_api import router as agent_chat_router
 from app.controller.novel_api import router as novel_api_router
 from app.controller.novel_anchors_api import router as novel_anchors_router
+from app.controller.novel_recompose_api import router as novel_recompose_router
 from app.controller.qc_api import router as qc_api_router
 from app.controller.image_edit_api import router as image_edit_router
 from app.controller.internal_api import router as internal_router
@@ -64,6 +65,9 @@ app.include_router(novel_api_router)
 
 # 小说角色/场景锚定图路由：POST /v1/novel/anchors
 app.include_router(novel_anchors_router)
+
+# 存量画布提示词重算：POST /v1/novel/recompose-prompts（纯函数，规则单一出处）
+app.include_router(novel_recompose_router)
 
 # 首帧质检路由：POST /v1/qc/images（面部特写判定，前端按需调用，不落库）
 app.include_router(qc_api_router)
