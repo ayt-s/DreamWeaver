@@ -33,13 +33,13 @@ beforeAll(() => {
   }
 });
 
-function renderPage() {
+function renderPage(route = '/canvas') {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[route]}>
         <ImageVideoPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -596,5 +596,92 @@ describe('候选图质检打标（P0-1）', () => {
     // 画布照常工作：候选切换器还在
     await waitFor(() => expect(screen.getByText(/候选 3 张/)).toBeInTheDocument());
     expect(screen.queryByText('面部特写')).toBeNull();
+  });
+});
+
+describe('场景锚未匹配的处理（未命中不再「全给」）', () => {
+  beforeEach(() => {
+    vi.mocked(listTasks).mockReset();
+    vi.mocked(createVideoTask).mockReset();
+    vi.mocked(getTask).mockReset();
+  });
+
+  it('★ 场景文字对不上 → 该段不带场景参考图，且「生成成片」旁写明（不静默）', async () => {
+    // 场景锚的 key 是**描述原文**；段提示词写的是山洞 → 对不上，过去会走「全给」把山坡塞进来
+    const anchors = {
+      characters: { 陈浔: { url: 'https://cdn.example.com/chen.png', desc: '少年陈浔' } },
+      scenes: {
+        '小山村山坡，清晨，阳光斜照，绿意盎然，微风拂过万木倾伏': {
+          url: 'https://cdn.example.com/scene.png',
+        },
+      },
+    };
+    vi.mocked(listTasks).mockResolvedValue(
+      historyList([
+        { id: 5, prompt: '陈浔走进破旧山洞', urls: ['https://cdn.example.com/frame.png'] },
+      ]),
+    );
+    vi.mocked(createVideoTask).mockResolvedValue({ id: 1 } as never);
+
+    renderPage(`/canvas?anchorRefs=${encodeURIComponent(JSON.stringify(anchors))}`);
+
+    // 从面板加一张有公网图的节点 → 它就是一个分镜
+    fireEvent.click(await screen.findByAltText('陈浔走进破旧山洞'));
+    const descOf = () => {
+      const all = screen.getAllByPlaceholderText(/本段描述/) as HTMLTextAreaElement[];
+      return all[all.length - 1];
+    };
+    fireEvent.change(descOf(), {
+      target: { value: '[角色锚] 陈浔；[场景] 山洞内部，黄昏，篝火微燃；[镜头] 中景' },
+    });
+
+    // 静默不生效是最坏的状态：必须在提交按钮旁说出来
+    const hint = await screen.findByText(/未匹配到场景锚/);
+    expect(hint.textContent).toContain('1 段');
+
+    fireEvent.click(screen.getByRole('button', { name: '生成成片' }));
+    await waitFor(() => expect(vi.mocked(createVideoTask)).toHaveBeenCalled());
+
+    const req = vi.mocked(createVideoTask).mock.calls[0][0] as { segments?: string };
+    const segs = JSON.parse(String(req.segments)) as Array<{ reference_images: string[] }>;
+    expect(segs).toHaveLength(1);
+    const refs = segs[0].reference_images;
+    // 角色锚命中 → 照带；场景锚对不上 → 不带（而不是把山坡那张塞进来）
+    expect(refs).toContain('https://cdn.example.com/chen.png');
+    expect(refs).not.toContain('https://cdn.example.com/scene.png');
+    expect(refs).toContain('https://cdn.example.com/frame.png');
+  });
+
+  it('场景锚命中时：照带该张，且不显示「未匹配」提示', async () => {
+    const anchors = {
+      characters: {},
+      scenes: {
+        '山洞内部，黄昏，篝火微燃，岩壁粗糙斑驳': { url: 'https://cdn.example.com/scene2.png' },
+      },
+    };
+    vi.mocked(listTasks).mockResolvedValue(
+      historyList([
+        { id: 6, prompt: '陈浔走进破旧山洞', urls: ['https://cdn.example.com/frame2.png'] },
+      ]),
+    );
+    vi.mocked(createVideoTask).mockResolvedValue({ id: 2 } as never);
+
+    renderPage(`/canvas?anchorRefs=${encodeURIComponent(JSON.stringify(anchors))}`);
+    fireEvent.click(await screen.findByAltText('陈浔走进破旧山洞'));
+    const descOf = () => {
+      const all = screen.getAllByPlaceholderText(/本段描述/) as HTMLTextAreaElement[];
+      return all[all.length - 1];
+    };
+    fireEvent.change(descOf(), {
+      target: { value: '[场景] 山洞内部，黄昏，篝火微燃，岩壁粗糙斑驳；[镜头] 中景' },
+    });
+
+    expect(screen.queryByText(/未匹配到场景锚/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '生成成片' }));
+    await waitFor(() => expect(vi.mocked(createVideoTask)).toHaveBeenCalled());
+    const req = vi.mocked(createVideoTask).mock.calls[0][0] as { segments?: string };
+    const segs = JSON.parse(String(req.segments)) as Array<{ reference_images: string[] }>;
+    expect(segs[0].reference_images).toContain('https://cdn.example.com/scene2.png');
   });
 });

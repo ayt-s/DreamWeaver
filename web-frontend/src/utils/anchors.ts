@@ -195,33 +195,63 @@ export function anchorNamesInPrompt(prompt: string, refs: Record<string, unknown
 }
 
 /**
+ * 未命中时的兜底策略。
+ * - `'all'`（默认，老行为）：整类全给。改动前就是全给，保持向后兼容；
+ * - `'none'`：不给。**宁缺勿错** —— 给的是「别的场景」，会把画面往错场景拉，
+ *   比不给更糟（真实数据见 `pickUrlsByPrompt` 的注释）。
+ */
+export type AnchorFallback = 'all' | 'none';
+
+/**
  * 从「名字 → url」映射里挑出这段提示词提到的项（P0-3 的每段筛选）。
  *
  * 与 `anchorsForPrompt` 是**同一套匹配口径**的两个入口：那边面向 `{url, desc}` 的新结构，
  * 这边面向画布当前还在用的「名字 → url」老结构（接线完成前两者并存，口径必须一致）。
- * 一个都没匹配到 → `matched=false`，由调用方决定兜底（当前是「全给」，与改动前一致）。
+ *
+ * ## 兜底策略为什么按类分开（2026-09-18 实测）
+ *
+ * 19 个分镜（3 个有锚定图的画布项目）里：**角色侧命中 19/19，场景侧只命中 11/19**。
+ * 未命中的那 8 段如果走「全给」，等于给这个镜头塞 2~3 张**别的场景**的锚定图
+ * （agnes 对每张参考图都加权）→ 背景被往错场景拉；项目 39 更极端：6 段全未命中
+ * （锚定图与分镜是不同批次生成的，措辞漂移大，最高分句覆盖率仅 0.29）。
+ * 所以**场景侧用 `'none'`、角色侧保持 `'all'`**：人脸一致性是硬需求、漏角色比多画更难发现，
+ * 而角色名在提示词里几乎必然出现（实测 100% 命中），保留全给只是保险。
  */
 export function pickUrlsByPrompt(
   prompt: string,
   urls: Record<string, string>,
+  opts: { fallback?: AnchorFallback } = {},
 ): { picked: Record<string, string>; matched: boolean } {
   const hits = anchorNamesInPrompt(prompt, urls);
-  if (hits.length === 0) return { picked: urls, matched: false };
+  if (hits.length === 0) {
+    return { picked: opts.fallback === 'none' ? {} : urls, matched: false };
+  }
   const picked: Record<string, string> = {};
   for (const name of hits) if (urls[name]) picked[name] = urls[name];
   return { picked, matched: true };
 }
 
-/** 每段实际要带上的锚定图（命中不了就**全给**，保持与改动前一致＝不劣化）。 */
+/** 每段实际要带上的锚定图。
+ *
+ * `opts` 让调用方按类决定未命中时的兜底（默认 `'all'`，与改动前一致）：
+ * 生产里角色传 `'all'`、场景传 `'none'`（理由见 `pickUrlsByPrompt`）。
+ */
 export function anchorsForPrompt(
   prompt: string,
   charRefs: AnchorMap,
   sceneRefs: AnchorMap,
+  opts: { charFallback?: AnchorFallback; sceneFallback?: AnchorFallback } = {},
 ): { chars: AnchorMap; scenes: AnchorMap; matched: boolean } {
   const charHits = anchorNamesInPrompt(prompt, charRefs);
   const sceneHits = anchorNamesInPrompt(prompt, sceneRefs);
   const matched = charHits.length + sceneHits.length > 0;
-  if (!matched) return { chars: charRefs, scenes: sceneRefs, matched: false };
+  if (!matched) {
+    return {
+      chars: opts.charFallback === 'none' ? {} : charRefs,
+      scenes: opts.sceneFallback === 'none' ? {} : sceneRefs,
+      matched: false,
+    };
+  }
   return {
     chars: pick(charRefs, charHits),
     scenes: pick(sceneRefs, sceneHits),

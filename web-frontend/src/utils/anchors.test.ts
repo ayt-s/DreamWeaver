@@ -378,3 +378,39 @@ describe('augmentPromptWithAnchors 造型锁定（改动三，与 agent 侧对�
     expect(out).toContain('常穿粗布短衫'); // 造型来自完整描述，仍被强调
   });
 });
+
+describe('未命中兜底策略（fallback）', () => {
+  const chars = { 陈浔: URL_A };
+  const scenes = { 破旧山洞: URL_B };
+
+  it('默认 all：整类全给（老行为，向后兼容）', () => {
+    expect(pickUrlsByPrompt('一只猫在窗台打盹', scenes)).toEqual({ picked: scenes, matched: false });
+  });
+
+  it('★ fallback=none：不给（场景侧的生产用法 —— 给错场景比不给更糟）', () => {
+    expect(pickUrlsByPrompt('一只猫在窗台打盹', scenes, { fallback: 'none' })).toEqual({
+      picked: {},
+      matched: false,
+    });
+  });
+
+  it('命中时 fallback 不起作用（照给命中的那些）', () => {
+    expect(pickUrlsByPrompt('陈浔走进破旧山洞', scenes, { fallback: 'none' })).toEqual({
+      picked: scenes,
+      matched: true,
+    });
+  });
+
+  it('anchorsForPrompt 支持按类给策略（生产：角色 all / 场景 none）', () => {
+    const r = anchorsForPrompt(
+      '一只猫在窗台打盹',
+      { 陈浔: { url: URL_A } },
+      { 破旧山洞: { url: URL_B } },
+      { charFallback: 'all', sceneFallback: 'none' },
+    );
+    expect(r.matched).toBe(false);
+    expect(Object.keys(r.chars)).toEqual(['陈浔']);
+    expect(Object.keys(r.scenes)).toEqual([]);
+    expect(chars['陈浔']).toBe(URL_A); // 防止变量未使用告警
+  });
+});

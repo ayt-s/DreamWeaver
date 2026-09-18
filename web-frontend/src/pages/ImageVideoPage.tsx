@@ -1368,6 +1368,23 @@ export default function CanvasPage() {
   }, [chain, nodes, edges]);
 
   /**
+   * 未匹配到场景锚定图的段数（仅在「确实配了场景锚」时才有意义）。
+   *
+   * 场景侧未命中时该段**不带任何场景参考图**（提交处 `fallback: 'none'`）——
+   * 但「静默地没生效」恰是本项目最忌讳的状态（用户会以为锚定图在起作用），
+   * 所以要在「生成成片」旁边把这几个段数说出来。
+   */
+  const scenesUnmatchedCount = useMemo(() => {
+    if (Object.keys(effectiveSceneUrls).length === 0) return 0;
+    return plan.segments.filter((s) => {
+      const { picked } = pickUrlsByPrompt(s.prompt ?? '', effectiveSceneUrls, {
+        fallback: 'none',
+      });
+      return Object.keys(picked).length === 0;
+    }).length;
+  }, [plan.segments, effectiveSceneUrls]);
+
+  /**
    * 新节点落点：优先「当前视口中心」。画布平移远了以后固定坐标会把新节点丢到视口外，
    * 用户看到的只是「点了没反应」；拿不到实例或尺寸时返回 null，调用方维持原有固定坐标。
    * 与已有节点重叠则逐个向下错开，避免连点几次叠成一摞只看得见一个。
@@ -1522,10 +1539,15 @@ export default function CanvasPage() {
           // ★ 每段只带**这一段真正用到**的锚定图（P0-3）：agnes 对每张参考图都加权，
           // 把无关角色/场景塞进去会被"拉"进画面；而且 5 张名额会被无关项占满，
           // 真正该出场的角色反被静默挤掉。匹配口径与首帧描述注入完全一致
-          // （见 utils/anchors.ts，同一条规则）。一个都没匹配到 → 退回全给，
-          // 与改动前行为一致（不劣化）。
+          // （见 utils/anchors.ts，同一条规则）。角色侧未命中仍退回全给（保险），
+          // 场景侧未命中则不给（见下方 fallback: 'none' 的说明）。
           const { picked: chars } = pickUrlsByPrompt(seg.prompt ?? '', charRefsMap);
-          const { picked: scenes } = pickUrlsByPrompt(seg.prompt ?? '', sceneRefsMap);
+          // ★ 场景侧未命中时**不给**（而不是全给）：实测 19 段里 8 段（42%）未命中，
+          //   「全给」等于给这些镜头塞 2~3 张**别的场景**的锚定图（agnes 对每张参考图都加权）
+          //   → 背景被往错场景拉；宁可只靠文字描述（下方有「N 段未匹配到场景锚」提示可见）。
+          const { picked: scenes } = pickUrlsByPrompt(seg.prompt ?? '', sceneRefsMap, {
+            fallback: 'none',
+          });
           const extraRefs: string[] = [];
           for (const url of Object.values(chars)) extraRefs.push(url);
           for (const url of Object.values(scenes)) extraRefs.push(url);
@@ -2589,6 +2611,16 @@ export default function CanvasPage() {
                 </>
               )}
               <div className="h-8 w-px bg-slate-700" />
+              {/* 场景锚未匹配要说出来：这几段不会带场景参考图（以前是「全给」→ 塞进别的场景） */}
+              {scenesUnmatchedCount > 0 && (
+                <span
+                  className={`max-w-[190px] text-[10px] leading-tight ${theme.hint}`}
+                  title="这些分镜的 [场景] 描述与任何场景锚定图的描述都对不上（措辞漂移），所以不会带场景参考图 —— 背景只能靠文字描述。想用上锚定图：把该段的 [场景] 文字改成与锚定图描述一致，或在锚定图面板重新生成这张。"
+                >
+                  <span className="text-amber-500">{scenesUnmatchedCount} 段</span>
+                  未匹配到场景锚 · 不带场景参考图
+                </span>
+              )}
               <button
                 onClick={() => {
                   const bad = plan.segments
