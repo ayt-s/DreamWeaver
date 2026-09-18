@@ -27,6 +27,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -204,6 +205,60 @@ async def probe_has_audio(path: Path | str) -> bool:
     return "Audio:" in (res.stderr or "")
 
 
+# ---- 音量归一化参数（2026-09-18 实测驱动）------------------------------------
+# 实测前提：10 个真实段的整合响度 I 中位数 -28.3 LUFS、范围 -42.6 ~ -14.7，
+# 即**段间差 27.9 LU**、整体还偏轻 12 LU。而段间差 >3 LU 就能明显听出忽大忽小，
+# 所以「音轨接回来了」不等于「听着正常」——必须逐段把响度拉齐。
+#
+# 用**静态增益**（`volume=dB`）而不是逐段 `loudnorm`：段只有 4.5s 左右，
+# 而 loudnorm 的 gating 窗口就是 3s，动态模式在这么短的片段上容易抽气/过冲；
+# 静态增益是确定性的，也便于验证（按段时间切片重量，段间差应落到 1~2 LU）。
+#
+# 增益同时受**真实峰值上限**约束（`min(响度目标差, 峰值余量)`），否则把 -38 LUFS
+# 的段落拉到 -16 LUFS（+22 dB）会把削波风险一起放大。
+AUDIO_TARGET_LUFS = -16.0        # 网络交付常用目标
+AUDIO_TP_CEILING_DBTP = -1.5     # 真实峰值上限（留 1.5 dB 余量）
+AUDIO_GAIN_LIMIT_DB = 24.0       # 单段增益上限，避免把噪声地板抬成主角
+AUDIO_SILENCE_LUFS = -70.0       # 低于此视为「有音轨但实质静音」，不做增益
+
+
+async def probe_loudness(path: Path | str) -> tuple[float, float] | None:
+    """探测整合响度与真实峰值 → (I/LUFS, TP/dBTP)；探测失败返回 None。
+
+    用 `loudnorm=print_format=json`（它会把测量结果以 JSON 打到 stderr，
+    需完整解码一遍，故每段多一次解码开销；换来的是确定性增益，值得）。
+    """
+    res = await run_command([
+        ffmpeg_exe(), "-hide_banner", "-i", str(path),
+        "-af", "loudnorm=print_format=json", "-f", "null", "-",
+    ], timeout=300)
+    if res.timed_out:
+        return None
+    m = re.search(r"\{[^{}]*input_i[^{}]*\}", res.stderr or "", re.S)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+        i = float(data["input_i"])
+        tp = float(data["input_tp"])
+    except (ValueError, KeyError, TypeError):
+        return None
+    if i < -99:  # loudnorm 对纯静音会给 -inf
+        return None
+    return (i, tp)
+
+
+def _loudness_gain_db(loudness: tuple[float, float] | None) -> float:
+    """按测量值算静态增益（dB）：响度拉到目标，同时不越过真实峰值上限。"""
+    if loudness is None:
+        return 0.0
+    i, tp = loudness
+    if i <= AUDIO_SILENCE_LUFS:
+        return 0.0
+    gain = min(AUDIO_TARGET_LUFS - i, AUDIO_TP_CEILING_DBTP - tp)
+    return max(-AUDIO_GAIN_LIMIT_DB, min(AUDIO_GAIN_LIMIT_DB, gain))
+
+
 async def _concat_with_xfade(inputs: list[Path], output: Path) -> bool:
     """ffmpeg filter_complex xfade 交叉淡化。过渡 0.5 秒。
 
@@ -264,13 +319,14 @@ async def _concat_with_xfade(inputs: list[Path], output: Path) -> bool:
             f"{src_left}{src_right}xfade=transition=fade:duration={TRANSITION}:offset={offset:.3f}{out_label}"
         )
 
-    # 音频链：逐段统一采样率/声道后 acrossfade。
+    # 音频链：逐段「量响度 → 静态增益」拉到同一目标，再 acrossfade。
     # 没音轨的段垫一段等长静音（接在真实输入之后，索引 = len(inputs)+k），
     # 否则 acrossfade 会因为缺流而整体失败 —— 那样就又回到「没声音」。
     with_audio = any(has_audio)
     if with_audio:
         silent_added = 0
         audio_labels: list[str] = []
+        gains: list[float] = []
         for i, has in enumerate(has_audio):
             if not has:
                 idx = n + silent_added
@@ -280,12 +336,22 @@ async def _concat_with_xfade(inputs: list[Path], output: Path) -> bool:
                 ])
                 silent_added += 1
                 src = f"[{idx}:a]"
+                gain = 0.0
             else:
                 src = f"[{i}:a]"
+                # 逐段量响度 → 静态增益（参数与理由见 AUDIO_TARGET_LUFS 处）
+                gain = _loudness_gain_db(await probe_loudness(inputs[i]))
+            gains.append(gain)
+            # 增益小于 0.1 dB 就不加滤镜（省得噪声一样的 filter 串）
+            pre = f"volume={gain:.2f}dB," if abs(gain) >= 0.1 else ""
             filter_parts.append(
-                f"{src}aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[ai{i}]"
+                f"{src}{pre}aresample=44100,"
+                f"aformat=sample_fmts=fltp:channel_layouts=stereo[ai{i}]"
             )
             audio_labels.append(f"[ai{i}]")
+        if any(abs(g) >= 0.1 for g in gains):
+            logger.info("拼接前逐段音量归一化（目标 %.1f LUFS）：%s dB",
+                        AUDIO_TARGET_LUFS, [round(g, 1) for g in gains])
         for i in range(n - 1):
             src_left = audio_labels[0] if i == 0 else f"[a{i}]"
             out_label = "[aout]" if i == n - 2 else f"[a{i+1}]"

@@ -38,8 +38,12 @@ class _FakeFFmpeg:
         return CommandResult(returncode=0, stdout="", stderr=stderr)
 
 
-def _patch(monkeypatch, infos, output_has_audio=True):
-    """infos: 每个输入一段 [(秒, 是否有音轨, fps), ...]（按调用顺序消费）。"""
+def _patch(monkeypatch, infos, output_has_audio=True, loudness=None):
+    """infos: 每个输入一段 [(秒, 是否有音轨, fps), ...]（按调用顺序消费）。
+
+    loudness: 每个**带音轨**的输入一段 (I/LUFS, TP/dBTP) 或 None（探测失败），
+              按调用顺序消费；不给则一律返回 None（= 不做增益，与旧行为一致）。
+    """
     ff = _FakeFFmpeg(output_has_audio)
     monkeypatch.setattr(media, "run_command", ff)
     monkeypatch.setattr(media, "ffmpeg_exe", lambda: "ffmpeg")
@@ -51,8 +55,14 @@ def _patch(monkeypatch, infos, output_has_audio=True):
     async def fake_has_audio(_p):
         return output_has_audio
 
+    lseq = list(loudness or [])
+
+    async def fake_loudness(_p):
+        return lseq.pop(0) if lseq else None
+
     monkeypatch.setattr(media, "probe_streams", fake_probe)
     monkeypatch.setattr(media, "probe_has_audio", fake_has_audio)
+    monkeypatch.setattr(media, "probe_loudness", fake_loudness)
     return ff
 
 
@@ -155,7 +165,7 @@ async def test_setpts_is_never_used_before_xfade(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_audio_less_output_is_treated_as_failure(monkeypatch, tmp_path):
     """拼接"成功"但产物没音轨（输入有）→ 必须判失败，让上层降级/告警而不是悄悄交付。"""
-    _patch(monkeypatch, [(4.5, True, 24.0)] * 3, output_has_audio=False)
+    ff = _patch(monkeypatch, [(4.5, True, 24.0)] * 3, output_has_audio=False)
     ok = await media._concat_with_xfade(
         [tmp_path / f"s{i}.mp4" for i in range(3)], tmp_path / "final.mp4"
     )
@@ -165,8 +175,90 @@ async def test_audio_less_output_is_treated_as_failure(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_unprobeable_segment_degrades_to_plain_concat(monkeypatch, tmp_path):
     """探测不到时长 → 返回 False（交给 concat 硬切兜底），不能抛异常。"""
-    _patch(monkeypatch, [(-1.0, True, 24.0), (4.5, True, 24.0)])
+    ff = _patch(monkeypatch, [(-1.0, True, 24.0), (4.5, True, 24.0)])
     ok = await media._concat_with_xfade(
         [tmp_path / "a.mp4", tmp_path / "b.mp4"], tmp_path / "final.mp4"
     )
     assert ok is False
+
+
+# ---- 音量归一化（2026-09-18）-------------------------------------------------
+# 实测前提：10 个真实段的整合响度 I 中位数 -28.3 LUFS、范围 -42.6 ~ -14.7，
+# 即段间差 27.9 LU（>3 LU 就能明显听出忽大忽小）。所以逐段给静态增益。
+
+
+@pytest.mark.asyncio
+async def test_each_segment_is_gained_toward_target_lufs(monkeypatch, tmp_path):
+    """三段实测值 → 各自增益把响度拉到 -16 LUFS（受峰值上限约束）。"""
+    ff = _patch(monkeypatch, [(4.5, True, 24.0)] * 3,
+           loudness=[(-42.6, -27.2), (-28.3, -18.0), (-16.0, -3.0)])
+    ok = await media._concat_with_xfade(
+        [tmp_path / f"s{i}.mp4" for i in range(3)], tmp_path / "final.mp4"
+    )
+
+    assert ok is True
+    f = _filters(_xfade_cmd(ff))
+    # 第 1 段：响度差 +26.6，但峰值只允许 +25.7 → 取小值再被 24dB 上限截断
+    assert "volume=24.00dB" in f
+    # 第 2 段：min(-16-(-28.3)=12.3, -1.5-(-18.0)=16.5) → 12.3
+    assert "volume=12.30dB" in f
+    # 第 3 段：已在目标（-16）→ 不加增益滤镜
+    assert f.count("volume=") == 2
+
+
+@pytest.mark.asyncio
+async def test_peak_ceiling_limits_gain(monkeypatch, tmp_path):
+    """响度需要 +22.7dB，但真实峰值只剩 0.5dB 余量 → 只能给 0.5dB（不许削波）。"""
+    ff = _patch(monkeypatch, [(4.5, True, 24.0), (4.5, True, 24.0)],
+           loudness=[(-38.7, -2.0), (-16.0, -3.0)])
+    await media._concat_with_xfade(
+        [tmp_path / "a.mp4", tmp_path / "b.mp4"], tmp_path / "final.mp4"
+    )
+    f = _filters(_xfade_cmd(ff))
+    assert "volume=0.50dB" in f
+    assert "volume=22.70dB" not in f, "越过峰值上限会把削波风险一起放大"
+
+
+@pytest.mark.asyncio
+async def test_gain_is_clamped(monkeypatch, tmp_path):
+    """极轻的段（-60 LUFS）不许拉满 44dB，按 AUDIO_GAIN_LIMIT_DB 截断。"""
+    ff = _patch(monkeypatch, [(4.5, True, 24.0), (4.5, True, 24.0)],
+           loudness=[(-60.0, -50.0), (-16.0, -3.0)])
+    await media._concat_with_xfade(
+        [tmp_path / "a.mp4", tmp_path / "b.mp4"], tmp_path / "final.mp4"
+    )
+    f = _filters(_xfade_cmd(ff))
+    assert f"volume={media.AUDIO_GAIN_LIMIT_DB:.2f}dB" in f
+
+
+@pytest.mark.asyncio
+async def test_near_silent_track_gets_no_gain(monkeypatch, tmp_path):
+    """有音轨但实质静音（-80 LUFS）→ 不增益，否则把噪声地板抬成主角。"""
+    ff = _patch(monkeypatch, [(4.5, True, 24.0), (4.5, True, 24.0)],
+           loudness=[(-80.0, -70.0), (-16.0, -3.0)])
+    await media._concat_with_xfade(
+        [tmp_path / "a.mp4", tmp_path / "b.mp4"], tmp_path / "final.mp4"
+    )
+    assert "volume=" not in _filters(_xfade_cmd(ff))
+
+
+@pytest.mark.asyncio
+async def test_loudness_probe_failure_is_non_fatal(monkeypatch, tmp_path):
+    """响度探测失败 → 不加增益、但拼接照常成功（不能因为量不出来就不拼）。"""
+    ff = _patch(monkeypatch, [(4.5, True, 24.0), (4.5, True, 24.0)], loudness=[None, None])
+    ok = await media._concat_with_xfade(
+        [tmp_path / "a.mp4", tmp_path / "b.mp4"], tmp_path / "final.mp4"
+    )
+    assert ok is True
+    assert "volume=" not in _filters(_xfade_cmd(ff))
+
+
+@pytest.mark.asyncio
+async def test_silence_padded_segment_gets_no_gain(monkeypatch, tmp_path):
+    """垫静音的那段不该被增益（它是 anullsrc，增益只在真实音轨上做）。"""
+    ff = _patch(monkeypatch, [(4.5, True, 24.0), (4.5, False, 30.0)], loudness=[(-28.0, -18.0)])
+    await media._concat_with_xfade(
+        [tmp_path / "a.mp4", tmp_path / "b.mp4"], tmp_path / "final.mp4"
+    )
+    f = _filters(_xfade_cmd(ff))
+    assert f.count("volume=") == 1, "只有带音轨的那段有增益"
