@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTaskEvents } from '../hooks/useTaskEvents';
 import { getTask } from '../api/tasks';
@@ -57,6 +57,12 @@ export default function TrajectoryPanel() {
   const { events, connected } = useTaskEvents(sseSessionId);
 
   const videoUrls = parseResultUrls(task?.resultJson);
+  /**
+   * 坏视频兜底：产物链接被清理时，<video> 只会停在黑框上，什么都不说。
+   * 这里换成一句可操作的提示（可重新生成该任务），不写「网络异常」——
+   * 真因多半是 agnes 产物链接不再可用（官方对保留期零承诺）。
+   */
+  const [brokenVideos, setBrokenVideos] = useState<Record<string, boolean>>({});
   const recordedIds = useRef(new Set<number>());
 
   // 任务完成时记录到历史（每个 id 只记一次，避免轮询重复）
@@ -216,11 +222,22 @@ export default function TrajectoryPanel() {
                   transition={{ delay: i * 0.1 }}
                   className="overflow-hidden rounded-xl border border-slate-200 bg-black"
                 >
-                  <video
-                    src={url}
-                    controls
-                    className="w-full"
-                  />
+                  {brokenVideos[url] ? (
+                    <div className="flex aspect-video w-full flex-col items-center justify-center gap-1 px-3 text-center">
+                      <AlertCircle className="h-5 w-5 text-amber-400" />
+                      <p className="text-sm font-medium text-slate-200">视频加载失败</p>
+                      <p className="text-[11px] leading-tight text-slate-400">
+                        产物可能已被清理，可在画廊里重新生成该任务
+                      </p>
+                    </div>
+                  ) : (
+                    <video
+                      src={url}
+                      controls
+                      className="w-full"
+                      onError={() => setBrokenVideos((m) => ({ ...m, [url]: true }))}
+                    />
+                  )}
                 </motion.div>
               ))}
             </div>

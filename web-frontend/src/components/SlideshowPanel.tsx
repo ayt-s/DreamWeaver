@@ -26,6 +26,12 @@ export default function SlideshowPanel({ task, onClose, onChanged }: SlideshowPa
   const [title, setTitle] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
+  /**
+   * 破图兜底：图列表里的缩略图加载失败时，原先是把 img 隐掉（留一个空灰框），
+   * 用户看不出「这张图已经拿不到了」。这里改成明确的「图失效」占位 + 可操作提示。
+   */
+  const [brokenThumbs, setBrokenThumbs] = useState<Record<string, boolean>>({});
+  const brokenCount = Object.keys(brokenThumbs).length;
 
   const toggle = (url: string) => {
     setSelected((prev) => {
@@ -143,6 +149,12 @@ export default function SlideshowPanel({ task, onClose, onChanged }: SlideshowPa
           <p className="mb-2 text-[10px] font-medium text-slate-500">
             勾选要进入成片的图片（至少 2 张，可调整顺序）
           </p>
+          {brokenCount > 0 && (
+            /* 说清「是什么 + 下一步」：这些图拿不到了，缺画面要回到画廊重新生成，而不是在这里硬合成 */
+            <p className="mb-2 rounded-lg bg-amber-50 px-2 py-1.5 text-[10px] leading-tight text-amber-700">
+              有 {brokenCount} 张图加载失败（产物可能已被清理），别勾选它们；要用这些画面请先回画廊重新生成该任务。
+            </p>
+          )}
           <div className="space-y-2">
             {allImages.map((url, i) => {
               const selIdx = Array.from(selected).indexOf(url);
@@ -163,14 +175,22 @@ export default function SlideshowPanel({ task, onClose, onChanged }: SlideshowPa
                     className="h-4 w-4 shrink-0 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                   />
                   <div className="h-10 w-16 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-slate-100">
-                    <img
-                      src={cachedImageUrl(url)}
-                      alt={`图片 ${i + 1}`}
-                      className="h-full w-full object-cover"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = 'none';
-                      }}
-                    />
+                    {brokenThumbs[url] ? (
+                      <div
+                        title="产物可能已被清理；要用这张图请先回画廊重新生成该任务"
+                        className="flex h-full w-full flex-col items-center justify-center gap-0.5 text-center"
+                      >
+                        <AlertCircle className="h-3 w-3 text-amber-500" />
+                        <span className="text-[9px] font-medium text-amber-700">图失效</span>
+                      </div>
+                    ) : (
+                      <img
+                        src={cachedImageUrl(url)}
+                        alt={`图片 ${i + 1}`}
+                        className="h-full w-full object-cover"
+                        onError={() => setBrokenThumbs((m) => ({ ...m, [url]: true }))}
+                      />
+                    )}
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-semibold text-slate-700">

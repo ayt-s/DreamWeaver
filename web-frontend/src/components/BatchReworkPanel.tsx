@@ -51,6 +51,15 @@ export default function BatchReworkPanel({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
+  /**
+   * 破图兜底：段缩略图加载失败时原先是把 img 隐掉（留空灰框），用户看不出「这张参考图拿不到了」。
+   * 改成明确「图失效」占位 + 指回本面板的下一步（勾选该段重生）。key = 任务ID#段号。
+   */
+  const [brokenThumbs, setBrokenThumbs] = useState<Set<string>>(new Set());
+  const markThumbBroken = (key: string) =>
+    setBrokenThumbs((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+  const brokenThumbsForTask = (id: number) =>
+    Array.from(brokenThumbs).filter((k) => k.startsWith(`${id}-`)).length;
   const [result, setResult] = useState<{
     total: number;
     success: number;
@@ -241,6 +250,13 @@ export default function BatchReworkPanel({
                     </p>
                   )}
 
+                  {/* 48×32 的缩略图放不下整句话，所以在列表上方补一句：是什么 + 按哪个按钮能救 */}
+                  {brokenThumbsForTask(id) > 0 && (
+                    <p className="mb-1.5 rounded-lg bg-amber-50 px-2 py-1 text-[10px] leading-tight text-amber-700">
+                      有 {brokenThumbsForTask(id)} 段的参考图加载失败（产物可能已被清理）；勾选这些段重生即可重新出图。
+                    </p>
+                  )}
+
                   {/* 段列表 */}
                   <div className="space-y-1.5">
                     {segs.map((seg) => {
@@ -265,16 +281,21 @@ export default function BatchReworkPanel({
                               className="h-4 w-4 shrink-0 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
                             />
                             <div className="h-8 w-12 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-slate-100">
-                              {seg.thumbnail ? (
+                              {brokenThumbs.has(expKey) ? (
+                                <div
+                                  title="产物可能已被清理；勾选该段重生即可重新出图"
+                                  className="flex h-full w-full flex-col items-center justify-center text-center"
+                                >
+                                  <span className="text-[9px] font-medium text-amber-700">
+                                    图失效
+                                  </span>
+                                </div>
+                              ) : seg.thumbnail ? (
                                 <img
                                   src={cachedImageUrl(seg.thumbnail)}
                                   alt={`#${id} 第 ${idx + 1} 段`}
                                   className="h-full w-full object-cover"
-                                  onError={(e) => {
-                                    (
-                                      e.target as HTMLImageElement
-                                    ).style.display = 'none';
-                                  }}
+                                  onError={() => markThumbBroken(expKey)}
                                 />
                               ) : (
                                 <div className="flex h-full items-center justify-center text-[9px] text-slate-400">

@@ -33,6 +33,12 @@ export default function SegmentManager({ taskId, onClose, onChanged, segments: s
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
+  /**
+   * 破图兜底：段缩略图加载失败时原先是把 img 隐掉（留空灰框），
+   * 用户看不出「这张参考图已经拿不到了」。改成明确「图失效」占位 + 指回本面板的下一步（勾选该段重生）。
+   */
+  const [brokenThumbs, setBrokenThumbs] = useState<Record<number, boolean>>({});
+  const brokenCount = Object.keys(brokenThumbs).length;
 
   const toggleSelect = (idx: number) => {
     setSelected((prev) => {
@@ -144,6 +150,12 @@ export default function SegmentManager({ taskId, onClose, onChanged, segments: s
               该任务没有段配置（非画布模式任务），无法按段重生
             </p>
           )}
+          {brokenCount > 0 && (
+            /* 缩略图很小放不下整句话，所以在列表上方补一句：是什么 + 按哪个按钮能救 */
+            <p className="mb-2 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[10px] leading-tight text-amber-700">
+              有 {brokenCount} 段的参考图加载失败（产物可能已被清理）；勾选这些段重生即可重新出图。
+            </p>
+          )}
           <div className="space-y-2.5">
             {segments?.map((seg) => {
               const idx = seg.index ?? 0;
@@ -165,14 +177,20 @@ export default function SegmentManager({ taskId, onClose, onChanged, segments: s
                     />
                     {/* 缩略图：段首张参考图 */}
                     <div className="h-10 w-16 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-slate-100">
-                      {seg.thumbnail ? (
+                      {brokenThumbs[idx] ? (
+                        <div
+                          title="产物可能已被清理；勾选该段重生即可重新出图"
+                          className="flex h-full w-full flex-col items-center justify-center gap-0.5 text-center"
+                        >
+                          <AlertCircle className="h-3 w-3 text-amber-500" />
+                          <span className="text-[9px] font-medium text-amber-700">图失效</span>
+                        </div>
+                      ) : seg.thumbnail ? (
                         <img
                           src={cachedImageUrl(seg.thumbnail)}
                           alt={`第 ${idx + 1} 段`}
                           className="h-full w-full object-cover"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = 'none';
-                          }}
+                          onError={() => setBrokenThumbs((m) => ({ ...m, [idx]: true }))}
                         />
                       ) : (
                         <div className="flex h-full items-center justify-center text-[10px] text-slate-400">

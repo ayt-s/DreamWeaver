@@ -120,6 +120,19 @@ export default function TaskCard({ task, subscribe = false }: TaskCardProps) {
   const [segmentPanelOpen, setSegmentPanelOpen] = useState(false);
   const [slideshowOpen, setSlideshowOpen] = useState(false);
   const [paramEditOpen, setParamEditOpen] = useState(false);
+  /**
+   * 破图/坏视频兜底。
+   *
+   * agnes 对产物 URL 的保留**没有任何官方承诺**（2026-09-18 调研：实测 175/175 全活、
+   * URL 无签名无过期参数，官方文档零承诺）。所以这里不假设链接永不过期：
+   * 真被清理时，用户看到的应该是一句**指向真正下一跳**的提示（重新生成 / 按段重生），
+   * 而不是一个无声的破图，也不是一句「网络异常」（本项目教训：指错组件的文案比没有文案更糟）。
+   *
+   * key 用「用途 + URL」前缀，避免同一 URL 在不同位置共用失败状态。
+   */
+  const [brokenMedia, setBrokenMedia] = useState<Record<string, boolean>>({});
+  const markBroken = (key: string) =>
+    setBrokenMedia((m) => (m[key] ? m : { ...m, [key]: true }));
 
   /** 卡片标题：优先展示创作需求原文，缺失时才用「任务 #id」兜底 */
   const displayTitle = task.prompt?.trim() ? task.prompt.trim() : `任务 #${task.id}`;
@@ -318,15 +331,24 @@ export default function TaskCard({ task, subscribe = false }: TaskCardProps) {
                 key={`${task.id}-img-${i}-${url}`}
                 className="group relative overflow-hidden rounded-xl border border-slate-200 bg-slate-100"
               >
-                <img
-                  src={cachedImageUrl(url)}
-                  alt={`任务 ${task.id} 图片 ${i + 1}`}
-                  loading="lazy"
-                  className="aspect-video w-full object-cover transition-transform group-hover:scale-105"
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).style.display = 'none';
-                  }}
-                />
+                {brokenMedia[`img:${url}`] ? (
+                  /* 破图不留空白：说清是什么、以及下一步该按哪个按钮 */
+                  <div className="flex aspect-video w-full flex-col items-center justify-center gap-1 px-2 text-center">
+                    <AlertTriangle className="h-4 w-4 text-amber-500" />
+                    <p className="text-[11px] font-medium text-slate-600">图片加载失败</p>
+                    <p className="text-[10px] leading-tight text-slate-500">
+                      产物可能已被清理，可点下方「重新生成」重新出图
+                    </p>
+                  </div>
+                ) : (
+                  <img
+                    src={cachedImageUrl(url)}
+                    alt={`任务 ${task.id} 图片 ${i + 1}`}
+                    loading="lazy"
+                    className="aspect-video w-full object-cover transition-transform group-hover:scale-105"
+                    onError={() => markBroken(`img:${url}`)}
+                  />
+                )}
               </div>
             ))}
           </div>
@@ -406,7 +428,23 @@ export default function TaskCard({ task, subscribe = false }: TaskCardProps) {
                         key={`${task.id}-${i}-${url}`}
                         className="overflow-hidden rounded-xl border border-slate-200 bg-black"
                       >
-                        <video src={url} controls preload="metadata" className="aspect-video w-full" />
+                        {brokenMedia[`seg:${url}`] ? (
+                          <div className="flex aspect-video w-full flex-col items-center justify-center gap-1 bg-slate-900 px-3 text-center">
+                            <AlertTriangle className="h-4 w-4 text-amber-400" />
+                            <p className="text-[11px] font-medium text-slate-200">视频加载失败</p>
+                            <p className="text-[10px] leading-tight text-slate-400">
+                              产物可能已被清理，可点「按段重生」重新生成这一段
+                            </p>
+                          </div>
+                        ) : (
+                          <video
+                            src={url}
+                            controls
+                            preload="metadata"
+                            className="aspect-video w-full"
+                            onError={() => markBroken(`seg:${url}`)}
+                          />
+                        )}
                       </div>
                     ))}
                   </div>
@@ -417,7 +455,25 @@ export default function TaskCard({ task, subscribe = false }: TaskCardProps) {
             return (
               <div className="space-y-3">
                 <div className="overflow-hidden rounded-xl border border-violet-300 bg-black">
-                  <video src={finalUrl} controls preload="metadata" className="aspect-video w-full" />
+                  {brokenMedia[`final:${finalUrl}`] ? (
+                    <div className="flex aspect-video w-full flex-col items-center justify-center gap-1 bg-slate-900 px-3 text-center">
+                      <AlertTriangle className="h-5 w-5 text-amber-400" />
+                      <p className="text-sm font-medium text-slate-200">成片加载失败</p>
+                      {/* 成片是 agent 本地 ffmpeg 产物（/v1/files/**），不是 agnes 链接 ——
+                          别照抄「产物已过期」，那会把用户指去重新生成（真该点的是「重新拼接」） */}
+                      <p className="text-[11px] leading-tight text-slate-400">
+                        成片是本地拼接产物，可点下方「重新拼接」用现有分段重跑一次
+                      </p>
+                    </div>
+                  ) : (
+                    <video
+                      src={finalUrl}
+                      controls
+                      preload="metadata"
+                      className="aspect-video w-full"
+                      onError={() => markBroken(`final:${finalUrl}`)}
+                    />
+                  )}
                 </div>
                 <div className="flex items-center justify-between">
                   <p className="text-[11px] text-slate-400">
@@ -469,13 +525,25 @@ export default function TaskCard({ task, subscribe = false }: TaskCardProps) {
                       key={`${task.id}-seg-${i}-${url}`}
                       className="w-28 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-black"
                     >
-                      <video
-                        src={url}
-                        preload="metadata"
-                        muted
-                        className="aspect-video w-full"
-                        onClick={(e) => (e.currentTarget as HTMLVideoElement).play()}
-                      />
+                      {brokenMedia[`seg:${url}`] ? (
+                        /* 这一排只是「分段预览」，产物没了要说清该按哪个按钮，别留黑框 */
+                        <div
+                          title="产物可能已被清理；可点上方「按段重生」重新生成这一段"
+                          className="flex aspect-video w-full flex-col items-center justify-center gap-0.5 bg-slate-900 px-1 text-center"
+                        >
+                          <AlertTriangle className="h-3 w-3 text-amber-400" />
+                          <span className="text-[9px] font-medium text-slate-300">加载失败</span>
+                        </div>
+                      ) : (
+                        <video
+                          src={url}
+                          preload="metadata"
+                          muted
+                          className="aspect-video w-full"
+                          onClick={(e) => (e.currentTarget as HTMLVideoElement).play()}
+                          onError={() => markBroken(`seg:${url}`)}
+                        />
+                      )}
                       <div className="bg-slate-900 px-1.5 py-0.5 text-center text-[9px] text-slate-300">
                         第 {i + 1} 段
                       </div>
