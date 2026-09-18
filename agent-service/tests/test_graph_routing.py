@@ -8,7 +8,7 @@
 """
 import pytest
 
-from app.graph import _asset_route, _entry_route, _image_route, _video_route
+from app.graph import _asset_route, _entry_route, _image_route, _qc_route, _video_route
 from app.graph import compiled_graph
 
 
@@ -24,13 +24,34 @@ def test_video_route_always_goes_to_asset_fetch():
     assert _video_route({}) == "fetch"
 
 
-def test_asset_route_canvas_to_synthesizer():
-    assert _asset_route({"segments": [{"prompt": "a"}]}) == "synthesize"
-
-
-def test_asset_route_standard_to_qc():
+def test_asset_route_always_goes_to_qc():
+    """★ 2026-09-18 起**两种模式都过 QC** —— 画布模式此前直连 synthesizer，
+    用户主用的「小说→画布→成片」链路从来没有被体检过。"""
+    assert _asset_route({"segments": [{"prompt": "a"}]}) == "qc"
     assert _asset_route({}) == "qc"
     assert _asset_route({"segments": []}) == "qc"
+
+
+def test_qc_route_canvas_reports_only(monkeypatch):
+    """画布模式：无论 QC 通过与否都去 synthesizer，**不自动重生**（只报告）。"""
+    assert _qc_route({"segments": [{"p": 1}], "qc_report": {"passed": False}}) == "to_synthesizer"
+    assert _qc_route({"segments": [{"p": 1}], "qc_report": {"passed": True}}) == "to_synthesizer"
+
+
+def test_qc_route_standard_is_report_only_by_default(monkeypatch):
+    """标准模式默认也只报告：质检阈值未标定，不能拿它驱动花钱的重生。"""
+    from app.config import settings
+    monkeypatch.setattr(settings, "qc_autofix", False)
+    assert _qc_route({"qc_report": {"passed": False}}) == "report_only"
+    assert _qc_route({"qc_report": {"passed": True}}) == "report_only"
+
+
+def test_qc_route_standard_autofix_when_explicitly_enabled(monkeypatch):
+    """显式打开 AGENT_QC_AUTOFIX 才走自愈循环（通过→终态 / 失败→修复）。"""
+    from app.config import settings
+    monkeypatch.setattr(settings, "qc_autofix", True)
+    assert _qc_route({"qc_report": {"passed": True}}) == "qc_passed"
+    assert _qc_route({"qc_report": {"passed": False}}) == "qc_failed"
 
 
 def test_entry_and_image_routes_unchanged():
@@ -53,8 +74,9 @@ def test_asset_fetch_node_exists():
 def test_asset_fetch_wired_between_video_and_downstream():
     edges = _edges()
     assert ("video_generator", "asset_fetch") in edges
-    assert ("asset_fetch", "qc_checker") in edges, "标准模式：asset_fetch → QC"
-    assert ("asset_fetch", "synthesizer") in edges, "画布模式：asset_fetch → synthesizer"
+    assert ("asset_fetch", "qc_checker") in edges, "两种模式都要过 QC"
+    # 画布模式的拼接由 QC 之后的条件边接上（不再是 asset_fetch 直连）
+    assert ("qc_checker", "synthesizer") in edges, "画布模式：QC → synthesizer（只报告）"
 
 
 def test_old_direct_edges_are_gone():

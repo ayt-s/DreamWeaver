@@ -115,6 +115,10 @@ def patched(monkeypatch):
 
     # 定死后缀策略，让断言确定
     monkeypatch.setattr(fl.settings, "fix_hint_mode", "mechanism", raising=False)
+    # ★ 自愈循环现在是**显式开关**（`AGENT_QC_AUTOFIX` 默认关：质检阈值未标定，
+    #   实测误报率远高于项目自定的 20% 门槛，默认不允许自动重生花钱）。
+    #   本文件的用例正是在测那条循环，所以这里显式打开。
+    monkeypatch.setattr(fl.settings, "qc_autofix", True, raising=False)
     return gw
 
 

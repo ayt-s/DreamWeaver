@@ -120,6 +120,17 @@ class Settings:
     log_dir: str = _env("AGENT_LOG_DIR", "").strip() or "data/logs"
     log_level: str = _env("AGENT_LOG_LEVEL", "INFO").strip().upper() or "INFO"
 
+    # === QC 自动重生开关（2026-09-18 新增）===
+    # QC 判失败时是否允许 fix_looping 自动重生失败镜（**默认关**）。
+    # 为什么默认关：质检阈值未按真实产物标定。按**唯一文件**重算后仍有 6/44 段
+    # 被判「模糊」，而我逐帧看过那 6 段 —— 多数是误报（夜间浅景深、柔光人脸特写、
+    # 暗场特效都是天然低 Laplacian 方差的内容，人眼看着没问题）。
+    # 项目自己定的门槛是「误报率 >20% 就先修阈值、不要进入自愈」，而实测误报率远高于它。
+    # 关掉时 QC 仍然跑、结论仍进 error_message 与轨迹面板，只是**不花钱重生**。
+    # 阈值标定完成后再打开（改这里或设 AGENT_QC_AUTOFIX=1）。
+    qc_autofix: bool = _env("AGENT_QC_AUTOFIX", "0").strip().lower() not in (
+        "0", "false", "no", "off")
+
     # === 成片自动拼接（标准模式）===
     # 标准模式（一句话生成）此前产出 N 个分段就结束，用户得在画廊手点「拼接成片」
     # （实测任务 38/39 至今没有成片）。开启后 notify_final 会用本地 ffmpeg 自动拼好，

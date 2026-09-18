@@ -115,11 +115,31 @@ def _entry_route(state: CreativeSessionState) -> str:
 
 
 def _qc_route(state: CreativeSessionState) -> str:
-    """根据 QC 报告决定路由。"""
+    """QC 之后往哪走。
+
+    **画布模式（segments 非空）→ synthesizer，只报告不重生。**
+    此前画布模式根本不进 QC（`asset_fetch → synthesizer → END`），主用链路零体检；
+    但也不能直接接自愈：质检阈值未按真实产物标定 —— 按唯一文件重算后仍有
+    6/44 段被判「模糊」，而逐帧看过确认**多数是误报**（夜间浅景深、柔光人脸特写、
+    暗场特效都是天然低 Laplacian 方差的内容）。项目自己定的门槛是「误报率 >20%
+    就先修阈值、不要进入自愈」，所以这里只把结论报给用户。
+
+    **标准模式**：`AGENT_QC_AUTOFIX=0`（默认）时同样只报告 —— 同一个理由，
+    自动重生是真金白银，不能建立在未标定的信号上。显式打开才走自愈循环。
+    """
+    if state.get("segments"):
+        return "to_synthesizer"
+    if not _qc_autofix_enabled():
+        return "report_only"
     qc_report = state.get("qc_report", {})
-    if qc_report.get("passed", False):
-        return "qc_passed"
-    return "qc_failed"
+    return "qc_passed" if qc_report.get("passed", False) else "qc_failed"
+
+
+def _qc_autofix_enabled() -> bool:
+    """QC 未通过时是否允许自动重生（默认**关**，见 _qc_route 的说明）。"""
+    from app.config import settings
+
+    return bool(settings.qc_autofix)
 
 
 def _image_route(state: CreativeSessionState) -> str:
@@ -142,9 +162,13 @@ def _video_route(state: CreativeSessionState) -> str:
 
 
 def _asset_route(state: CreativeSessionState) -> str:
-    """asset_fetch 之后的分流：画布模式（segments）→ synthesizer 拼接；否则进 QC。"""
-    if state.get("segments"):
-        return "synthesize"
+    """asset_fetch 之后**一律**进 QC。
+
+    ⚠️ 画布模式此前直连 synthesizer（`{"synthesize": "synthesizer", "qc": "qc_checker"}`），
+    于是用户主用的「小说→画布→成片」链路**从来没有被体检过** —— qc_checker /
+    fix_looping 只挂在标准模式那条边上。现在两种模式都过 QC，
+    画布模式走「只报告」分支（见 `_qc_route`），拼接仍由 synthesizer 负责。
+    """
     return "qc"
 
 
@@ -234,7 +258,8 @@ graph.add_conditional_edges(
 graph.add_edge("canvas_storyboarder", "video_generator")
 
 # video_generator 之后一律先进 asset_fetch（产物落地本地），
-# 再由 _asset_route 分流：画布模式 → synthesizer 拼接；标准模式 → QC
+# 然后**一律进 QC**（画布模式也要体检；此前它直连 synthesizer，主链路零质检）。
+# 两种模式的分流改到 QC 之后（见 _qc_route）。
 graph.add_conditional_edges(
     "video_generator",
     _video_route,
@@ -243,16 +268,24 @@ graph.add_conditional_edges(
 graph.add_conditional_edges(
     "asset_fetch",
     _asset_route,
-    {"synthesize": "synthesizer", "qc": "qc_checker"},
+    {"qc": "qc_checker"},
 )
 graph.add_edge("synthesizer", END)
 graph.add_edge("image_slideshow", END)
 
-# QC 结果分支：通过 → 终态通知；失败 → fix_looping（B 批次改为真循环）
+# QC 结果分支：
+#   画布模式 → synthesizer（只报告，拼接后由它发唯一一次回调）
+#   标准模式 → 依 AGENT_QC_AUTOFIX：关（默认）只报告去 notify_final；
+#              开 才走 通过→notify_final / 失败→fix_looping 的自愈循环
 graph.add_conditional_edges(
     "qc_checker",
     _qc_route,
-    {"qc_passed": "notify_final", "qc_failed": "fix_looping"},
+    {
+        "qc_passed": "notify_final",
+        "qc_failed": "fix_looping",
+        "report_only": "notify_final",
+        "to_synthesizer": "synthesizer",
+    },
 )
 
 # fix_looping → 条件边：失败镜可修复则回到 video_generator 继续修（B1/B2 的真循环），

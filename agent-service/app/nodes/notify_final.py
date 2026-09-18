@@ -36,8 +36,12 @@ from app.state import CreativeSessionState, TaskStatus
 logger = logging.getLogger(__name__)
 
 
-def _summarize(qc_report: dict | None) -> str:
-    """把 qc_report 汇总成一句可读的失败说明。"""
+def summarize_qc_report(qc_report: dict | None) -> str:
+    """把 qc_report 汇总成一句可读的失败说明。
+
+    公开（非下划线）是因为 `synthesizer` 也要用：画布模式的回调由它发出，
+    质检结论必须随那条回调一起回 Java —— 两处各写一份必然漂移。
+    """
     if not isinstance(qc_report, dict):
         return ""
     failed = qc_report.get("failed_shots") or []
@@ -71,8 +75,8 @@ async def notify_final_node(state: CreativeSessionState) -> dict:
         error_message = video_error or "所有镜次视频生成失败"
     else:
         status = TaskStatus.COMPLETED
-        # 先取 QC 结论；QC 没跑（画布模式等）时退回生成阶段的错误
-        error_message = _summarize(qc_report) or video_error
+        # 先取 QC 结论；QC 没跑时退回生成阶段的错误
+        error_message = summarize_qc_report(qc_report) or video_error
 
     # 自动修复失败时补上「修过几轮」——用户需要知道系统自己试过、不是没管
     if state.get("fix_give_up"):

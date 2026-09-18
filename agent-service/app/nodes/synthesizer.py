@@ -104,7 +104,13 @@ async def synthesizer_node(state: CreativeSessionState) -> dict:
                           {"node_id": "synthesizer", "summary": f"拼接 {len(video_urls)} 段为长视频"})
 
         # 最终回调：长视频在前，分段在后（Java 任务 result_json 全量落库）
-        await _notify_final(session_id, "completed", [final_url] + video_urls)
+        # 质检结论随这条回调带回 —— 画布模式也过 QC 了（只报告不重生），
+        # 不带上等于跑了一趟白跑：用户看不到「哪一段没通过、为什么」。
+        from app.nodes.notify_final import summarize_qc_report
+
+        qc_note = summarize_qc_report(state.get("qc_report"))
+        await _notify_final(session_id, "completed", [final_url] + video_urls,
+                            error_message=qc_note or None)
         await events.emit(session_id, "completed", {})
         return {
             "final_video_url": final_url,

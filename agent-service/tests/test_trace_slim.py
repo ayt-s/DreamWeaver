@@ -265,6 +265,10 @@ def patched(monkeypatch):
                 "blur_frame_ratio": 1.0, "passed": False}
 
     monkeypatch.setattr(qc_mod, "analyze_video_frames", _analyze)
+    # ★ 自愈循环现在是显式开关（AGENT_QC_AUTOFIX 默认关：质检阈值未标定，
+    #   默认不允许拿未标定的信号驱动花钱重生）。本文件要覆盖自愈分支的埋点，故打开。
+    from app.config import settings as _settings
+    monkeypatch.setattr(_settings, "qc_autofix", True, raising=False)
     return gw
 
 
