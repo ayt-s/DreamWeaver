@@ -22,6 +22,7 @@
 
 修法：用独立的帧计数器判定采样点，采样计数只在采样时自增。
 """
+import cv2
 import numpy as np
 import pytest
 
@@ -29,18 +30,26 @@ from app.tools import qc
 
 
 class _FakeCapture:
-    """假 VideoCapture：逐帧返回预设图像，模拟任意 fps / 帧数。"""
+    """假 VideoCapture：逐帧返回预设图像，模拟任意 fps / 帧数。
 
-    def __init__(self, frames: list[np.ndarray], fps: float = 30.0):
+    `declared` 让「容器声明的总帧数」与「实际能解出的帧数」可以不一致 ——
+    这是模拟**下载残片**的唯一办法（真实残片就是声明 107 帧、只能解出 11 帧）。
+    """
+
+    def __init__(self, frames: list[np.ndarray], fps: float = 30.0,
+                 declared: int | None = None):
         self._frames = frames
         self._i = 0
         self._fps = fps
+        self._declared = len(frames) if declared is None else declared
         self.released = False
 
     def isOpened(self) -> bool:
         return True
 
     def get(self, prop):
+        if prop == qc.cv2.CAP_PROP_FRAME_COUNT:
+            return float(self._declared)
         return self._fps
 
     def read(self):
@@ -61,14 +70,44 @@ def _sharp(h=64, w=64) -> np.ndarray:
 
 
 def _flat(h=64, w=64) -> np.ndarray:
-    """低 Laplacian 方差：纯色（无高频细节）→ 会被判为「模糊」。"""
+    """**空帧**：纯色 → Laplacian 方差 0，画面里没有任何内容。
+
+    ⚠️ 与「低细节」是两件事（2026-09-18 拆开）：纯色/全黑帧现在走独立的
+    `flat_frame_ratio`（零容忍），而「低细节但正常」的内容见 `_low_detail()`。
+    """
     return np.full((h, w, 3), 128, dtype=np.uint8)
+
+
+def _low_detail(h=64, w=64) -> np.ndarray:
+    """**低细节但不空**：低频正弦条纹 → 方差落在「空帧」与「清晰」之间。
+
+    这是真实内容里最常见的争议形态（实测：柔光人脸特写方差 3~4、夜间浅景深 11~20）——
+    它会被记进 blur 桶，但**不该**被当成空帧。
+    """
+    xx, _ = np.meshgrid(np.arange(w), np.arange(h))
+    img = (128 + 60 * np.sin(xx / 6.0))[..., None].repeat(3, axis=2).astype(np.uint8)
+    var = float(cv2.Laplacian(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var())
+    assert qc.FLAT_VARIANCE_THRESHOLD < var < qc.BLUR_VARIANCE_THRESHOLD, (
+        f"夹具失效：低细节样本的方差 {var} 不在（{qc.FLAT_VARIANCE_THRESHOLD}, "
+        f"{qc.BLUR_VARIANCE_THRESHOLD}）区间内 —— 夹具会失去区分力")
+    return img
+
+
+def _dark(h=64, w=64) -> np.ndarray:
+    """**黑帧但不空**：全像素 < 10（构成黑帧）而带噪声（方差 > 模糊阈值）。
+
+    用来单独验证「黑帧」这条规则 —— 纯黑的帧会同时命中空帧规则，分不出是哪条在起作用。
+    """
+    img = np.random.default_rng(7).integers(0, 10, size=(h, w, 3), dtype=np.uint8)
+    var = float(cv2.Laplacian(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var())
+    assert var > qc.BLUR_VARIANCE_THRESHOLD, f"夹具失效：暗噪声方差 {var} 太低会同时算模糊"
+    return img
 
 
 @pytest.fixture
 def patch_capture(monkeypatch):
-    def _install(frames, fps=30.0):
-        cap = _FakeCapture(frames, fps)
+    def _install(frames, fps=30.0, declared=None):
+        cap = _FakeCapture(frames, fps, declared=declared)
         monkeypatch.setattr(qc.cv2, "VideoCapture", lambda _p: cap)
         return cap
     return _install
@@ -90,11 +129,13 @@ def test_samples_every_frame_when_interval_is_one(patch_capture):
 
 
 def test_blur_ratio_uses_all_sample_points_not_first(patch_capture):
-    """首帧清晰、第 30 帧平坦 → 结论必须反映「有模糊帧」，不能只看首帧就放行。
+    """首帧清晰、第 30 帧低细节 → 结论必须反映「有模糊帧」，不能只看首帧就放行。
 
     修复前 `total_frames` 恒为 1，这个视频会得到 blur=0.0、passed=True（漏检）。
+    ⚠️ 这里用 `_low_detail()`（低频内容，方差 ~8）而不是纯色帧 —— 纯色是「空帧」，
+    走的是另一条零容忍规则（见 test_empty_frame_... 系列）。
     """
-    frames = [_sharp() for _ in range(30)] + [_flat() for _ in range(30)]
+    frames = [_sharp() for _ in range(30)] + [_low_detail() for _ in range(30)]
     patch_capture(frames, fps=30.0)
 
     r = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
@@ -104,15 +145,16 @@ def test_blur_ratio_uses_all_sample_points_not_first(patch_capture):
     # 边界语义：BLUR_RATIO_LIMIT 是 <=，恰好过半（0.5）仍算通过
     assert r["blur_frame_ratio"] == pytest.approx(qc.BLUR_RATIO_LIMIT)
     assert r["passed"] is True
+    assert r["flat_frame_ratio"] == 0.0, "低细节内容不该被当成空帧"
 
 
 def test_majority_blurry_fails(patch_capture):
-    """过半采样帧模糊 → 判不通过（越过边界的另一侧）。
+    """过半采样帧低细节 → 判不通过（越过边界的另一侧）。
 
     90 帧、fps=30 → frame_interval=30 → 采样第 0/30/60 帧（第 90 帧不存在）。
-    第 0 帧清晰、第 30/60 帧平坦 → blur = 2/3 > BLUR_RATIO_LIMIT。
+    第 0 帧清晰、第 30/60 帧低细节 → blur = 2/3 > BLUR_RATIO_LIMIT。
     """
-    frames = [_sharp()] * 30 + [_flat()] * 60
+    frames = [_sharp()] * 30 + [_low_detail()] * 60
     patch_capture(frames, fps=30.0)
 
     r = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
@@ -123,8 +165,8 @@ def test_majority_blurry_fails(patch_capture):
 
 
 def test_blur_ratio_is_fraction_of_sampled_frames(patch_capture):
-    """采样点一半清晰一半平坦 → blur_frame_ratio == 0.5（真实比例，不是 0/1 二值）。"""
-    frames = [_sharp() for _ in range(30)] + [_flat() for _ in range(30)]
+    """采样点一半清晰一半低细节 → blur_frame_ratio == 0.5（真实比例，不是 0/1 二值）。"""
+    frames = [_sharp() for _ in range(30)] + [_low_detail() for _ in range(30)]
     patch_capture(frames, fps=30.0)
 
     r = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
@@ -136,14 +178,115 @@ def test_blur_ratio_is_fraction_of_sampled_frames(patch_capture):
     )
 
 
+# ------------------------------------------------- 空帧（2026-09-18 新增规则）
+
+def test_empty_frame_is_detected_and_fails_zero_tolerance(patch_capture):
+    """★ 单帧纯色/全黑（无内容）必须被单独识别为**空帧**并判不通过。
+
+    改动前的漏检形态（实测真实产物踩到过两段）：一块纯色画面里像素并不「黑」
+    （不是「95% 像素 < 10」），于是 `black_frame_ratio` 报 0.00；
+    而它方差 ≈ 0 只会被记进 blur 桶、还可能因为「不过半」而**整体判通过**。
+    这条用例锁住「空帧零容忍」。
+    """
+    frames = [_sharp() for _ in range(30)] + [_flat() for _ in range(30)]
+    patch_capture(frames, fps=30.0)
+
+    r = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
+
+    assert r["total_frames"] == 2
+    assert r["flat_frame_ratio"] == pytest.approx(0.5), "空帧必须被单独报出来"
+    assert r["black_frame_ratio"] == 0.0, "纯色 128 不是黑帧（像素没低于 10）——正是漏检根源"
+    # 关键：blur 恰好过半（0.5 <= LIMIT）本该放行，仅有空帧规则能拦住它
+    assert r["blur_frame_ratio"] == pytest.approx(qc.BLUR_RATIO_LIMIT)
+    assert r["passed"] is False, "有空帧就必须判不通过（零容忍）"
+
+
+def test_report_shape_includes_flat_ratio(patch_capture):
+    patch_capture([_sharp() for _ in range(30)], fps=30.0)
+    r = qc.analyze_video_frames("dummy.mp4")
+    assert set(r) >= {"total_frames", "declared_frames", "truncated",
+                      "black_frame_ratio", "blur_frame_ratio",
+                      "flat_frame_ratio", "passed"}
+    assert r["flat_frame_ratio"] == 0.0
+    assert r["truncated"] is False
+
+
+# ------------------------------------------------- 残片（2026-09-18 新增判据）
+
+def test_truncated_file_is_flagged_and_fails(patch_capture):
+    """★ 解码提前中断 = 文件不完整，必须单独报出来并判不通过。
+
+    实测成因（真实产物）：下载残片只有 129~190KB（正常 3~8MB），
+    容器声明 107 帧、只能解出 11~12 帧 —— 此时黑帧/模糊比例是拿十几个采样点
+    （甚至 1 个）算出来的，结论不可信。不报的话，它会被当成「画面全黑」，
+    把用户引向「模型生成坏了」而不是「下载坏了」。
+    """
+    # 声明 200 帧、只给 30 帧 → decoded_ratio = 0.15
+    patch_capture([_sharp() for _ in range(30)], fps=30.0, declared=200)
+
+    r = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
+
+    assert r["declared_frames"] == 200
+    assert r["truncated"] is True
+    assert r["passed"] is False, "残片不能因为「画面清晰」就判通过"
+    # 反面对照：同一批帧只要声明帧数一致，就不该被判残片
+    patch_capture([_sharp() for _ in range(30)], fps=30.0, declared=30)
+    r2 = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
+    assert r2["truncated"] is False
+    assert r2["passed"] is True
+
+
+def test_declared_frame_count_unknown_does_not_flag_truncation(patch_capture):
+    """探测不到声明帧数（部分容器/流）时不能误判成残片 —— 探测失败不否决。"""
+    patch_capture([_sharp() for _ in range(30)], fps=30.0, declared=0)
+    r = qc.analyze_video_frames("dummy.mp4")
+    assert r["truncated"] is False
+    assert r["passed"] is True
+
+
+# ------------------------------------------------- 黑帧：帧级上限（量纲修正）
+
+def test_black_frame_limit_is_frame_level_not_pixel_ratio(patch_capture):
+    """★ 黑帧的**帧级**上限必须独立于「像素比例阈值」。
+
+    改动前 `passed` 写成 `black_ratio <= black_ratio_threshold`（0.95），
+    拿帧比例去比像素比例阈值 —— 于是「一半采样帧全黑」也算通过。
+    这里 10 个采样点里 5 个黑帧 = 0.5，按新规则（上限 0.2）必须不通过。
+    """
+    # 271 帧、fps=30 → 采样点 0/30/.../270 共 10 个
+    frames = [_dark()] * 30 * 5 + [_sharp()] * 30 * 4 + [_sharp()]
+    patch_capture(frames, fps=30.0)
+
+    r = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
+
+    assert r["total_frames"] == 10
+    assert r["black_frame_ratio"] == pytest.approx(0.5)
+    assert r["passed"] is False, "帧级黑帧上限被忽略时这里会误判为通过"
+
+
+def test_single_black_frame_does_not_condemn_the_whole_shot(patch_capture):
+    """反过来：偶尔一帧黑（如淡入）不该否决整段 —— 上限留了余量。"""
+    frames = [_sharp()] * 30 + [_dark()] + [_sharp()] * 30 * 8
+    patch_capture(frames, fps=30.0)
+
+    r = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
+
+    assert r["total_frames"] == 10
+    assert r["black_frame_ratio"] == pytest.approx(0.1)
+    assert r["black_frame_ratio"] <= qc.BLACK_FRAME_RATIO_LIMIT
+    assert r["passed"] is True
+
+
 def test_all_flat_video_is_fully_blurry(patch_capture):
-    """全程平坦 → blur_frame_ratio == 1.0（这是真实结论，不是采样 bug）。"""
+    """全程纯色 → blur 与黑帧都…注意：纯色 128 不算黑帧，但空帧比例 1.0。"""
     patch_capture([_flat() for _ in range(60)], fps=30.0)
 
     r = qc.analyze_video_frames("dummy.mp4", fps_sample_interval=1)
 
     assert r["total_frames"] == 2
     assert r["blur_frame_ratio"] == pytest.approx(1.0)
+    assert r["flat_frame_ratio"] == pytest.approx(1.0)
+    assert r["passed"] is False
 
 
 def test_all_sharp_video_passes(patch_capture):

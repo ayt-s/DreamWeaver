@@ -86,6 +86,8 @@ async def _check_one(idx: int, path: str, shot: dict) -> dict:
         "total_frames": 0,
         "black_frame_ratio": 0.0,
         "blur_frame_ratio": 0.0,
+        # 空帧（纯色/全黑、无内容）：与「低细节」严格区分，零容忍
+        "flat_frame_ratio": 0.0,
         "duration": -1.0,
         "duration_expected": expected_seconds,
         "aspect_ratio": expected_aspect,
@@ -104,20 +106,41 @@ async def _check_one(idx: int, path: str, shot: dict) -> dict:
 
     errors: list[str] = []
 
-    # 1) cv2 规则：黑帧 / 模糊（同步阻塞调用放线程里，避免堵事件循环）
+    # 1) cv2 规则：黑帧 / 模糊 / 空帧（同步阻塞调用放线程里，避免堵事件循环）
     try:
         report = await asyncio.to_thread(analyze_video_frames, path)
         if isinstance(report, dict):
             entry["total_frames"] = report.get("total_frames", 0)
             entry["black_frame_ratio"] = report.get("black_frame_ratio", 0.0)
             entry["blur_frame_ratio"] = report.get("blur_frame_ratio", 0.0)
+            entry["flat_frame_ratio"] = report.get("flat_frame_ratio", 0.0)
             if not report.get("passed", False):
-                errors.append(
-                    "画面质检未通过（黑帧比例 {:.0%}，模糊帧比例 {:.0%}）".format(
-                        float(entry["black_frame_ratio"] or 0.0),
-                        float(entry["blur_frame_ratio"] or 0.0),
+                if report.get("truncated"):
+                    # 最确定的缺陷：文件不完整（下载残片）。此时上面的比例都是拿
+                    # 十几个采样点（甚至 1 个）算出来的，不该再往下报「模糊」。
+                    errors.append(
+                        "产物不完整（只能解码 {} 帧 / 共 {} 帧，疑似下载残片）".format(
+                            report.get("total_frames", 0),
+                            report.get("declared_frames", 0),
+                        )
                     )
-                )
+                # 空帧优先报：它是最确定的缺陷（纯色/全黑画面没有任何内容），
+                # 而「模糊」受未标定阈值影响、可能只是低细节内容。
+                elif float(entry["flat_frame_ratio"] or 0.0) > 0:
+                    errors.append(
+                        "画面质检未通过（空帧 {:d} 个：纯色/全黑的无内容帧，占总采样 {:.0%}）"
+                        .format(
+                            round(float(entry["flat_frame_ratio"]) * float(entry["total_frames"] or 0)),
+                            float(entry["flat_frame_ratio"]),
+                        )
+                    )
+                else:
+                    errors.append(
+                        "画面质检未通过（黑帧比例 {:.0%}，模糊帧比例 {:.0%}）".format(
+                            float(entry["black_frame_ratio"] or 0.0),
+                            float(entry["blur_frame_ratio"] or 0.0),
+                        )
+                    )
         else:
             errors.append("画面质检返回非法结果")
     except Exception as exc:

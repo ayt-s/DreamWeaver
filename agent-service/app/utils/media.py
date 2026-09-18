@@ -81,18 +81,47 @@ def ffmpeg_exe() -> str:
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
+class IncompleteDownloadError(OSError):
+    """下载的字节数少于服务端声明的 Content-Length（断流残片）。
+
+    继承 `OSError` 是**有意**的：`utils/retry.py` 的重试白名单里有 OSError，
+    所以残片会自动走退避重试（多数情况下是网络抖动，重下就好）；
+    重试耗尽仍失败则向上抛，让调用方记「产物缺失」而不是留一个坏文件。
+    """
+
+
 @with_retry("下载产物", preset="download")
 async def download(url: str, dest: Path | str, timeout: float = 300.0) -> None:
     """下载远程文件到本地（agnes 返回的公网 URL）。
 
     带重试：wifi 抖动时按 5/15/45/90s 退避（preset="download"）。
+
+    ⚠️ **完整性校验**（2026-09-18 新增，实测踩到）：此前只把流写完就算成功，
+    而 CDN 中途断流会留下**残片**且不报错。实测 `data/outputs` 里有两段
+    129~190KB 的残片（正常产物 3~8MB）：容器声明 107 帧、只能解出 11~12 帧，
+    下游 QC 便拿这十几帧下结论（甚至只剩 1 个采样点）。
+    现在按 Content-Length 核对实际写入字节数，不匹配即抛（并触发上面的重试）。
     """
     async with httpx.AsyncClient(timeout=timeout) as client:
         async with client.stream("GET", url) as resp:
             resp.raise_for_status()
+            # Content-Length 描述的是**传输字节**：有 content-encoding 时解压后的长度
+            # 与之不同，那种情况不校验（否则会把正常响应误判成残片）。
+            expected = 0
+            if not resp.headers.get("content-encoding"):
+                try:
+                    expected = int(resp.headers.get("content-length") or 0)
+                except ValueError:
+                    expected = 0
+            written = 0
             with open(dest, "wb") as f:
                 async for chunk in resp.aiter_bytes():
                     f.write(chunk)
+                    written += len(chunk)
+    if expected > 0 and written != expected:
+        raise IncompleteDownloadError(
+            f"下载不完整：{written}/{expected} 字节（残片已写入 {dest}）"
+        )
 
 
 async def probe_duration(path: Path | str) -> float:
