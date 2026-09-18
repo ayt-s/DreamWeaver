@@ -52,8 +52,11 @@ IMAGE_RATIOS: tuple[str, ...] = ("1:1", "3:4", "4:3", "16:9", "9:16", "2:3", "3:
 # 输出尺寸档（1K/2K/3K/4K）；官方也接受 1024x768 这类精确值，但会被「就近归一化」，
 # 所以只认档位，避免出现「以为给了 1920x1080，实际拿到 1312x736」的误解。
 IMAGE_SIZE_TIERS: tuple[str, ...] = ("1K", "2K", "3K", "4K")
-# 视频分辨率档（720P/960P/2K；Flash 硬限 720P）
-VIDEO_SIZE_TIERS: tuple[str, ...] = ("720P", "960P", "2K")
+# 视频分辨率档（官方 2026-09-18 文档：agnes-video-2.5 的 size 只支持 "720P" / "2K"；
+# Flash 固定 "720P"，传别的档 400 `size must be 720P`）。
+# ⚠️ 这里原本还有 "960P"（早期文档写过），现已从白名单移除：留着它等于把 960P **透传**
+#    给上游换一个 400，而本文件的原则是「未知值回落默认，别让一个档位参数打挂整次生成」。
+VIDEO_SIZE_TIERS: tuple[str, ...] = ("720P", "2K")
 
 
 def normalize_image_ratio(value: object, default: str = "16:9") -> str:
@@ -98,7 +101,7 @@ def normalize_image_seed(value: object, default: int = -1) -> int:
 
 
 def normalize_video_size(value: object, default: str = "720P") -> str:
-    """清洗视频分辨率档（720P/960P/2K）；未知值回落默认。"""
+    """清洗视频分辨率档（720P/2K）；未知值回落默认。"""
     s = str(value or "").strip().upper()
     return s if s in VIDEO_SIZE_TIERS else default
 

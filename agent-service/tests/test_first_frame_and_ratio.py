@@ -50,6 +50,9 @@ def test_size_tier_whitelist():
     assert normalize_image_size("1280x720") == "2K"      # 精确像素值不被透传
     assert normalize_video_size("2k") == "2K"
     assert normalize_video_size("1080P") == "720P"       # 不支持的档回落
+    # 960P 是早期文档里 HD 的档位，官方 2026-09-18 文档已只列 720P / 2K
+    # → 必须回落默认（否则把脏档透传给上游换一个 400）
+    assert normalize_video_size("960P") == "720P"
 
 
 def test_image_seed_is_clamped_into_upstream_range():

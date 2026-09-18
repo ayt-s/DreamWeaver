@@ -390,7 +390,8 @@ class AgnesGateway:
 
         ⚠️ Flash（`agnes-video-2.5-flash`）**硬限 720P**，传别的档直接 400
         `size must be 720P` —— 所以无论调用方给什么，Flash 一律按 720P 发。
-        非 Flash（`agnes-video-2.5`）才吃 960P / 2K，此时用请求值 / 配置值。
+        非 Flash（`agnes-video-2.5`）按官方文档（2026-09-18）只吃 720P / 2K，
+        此时用请求值 / 配置值（档位白名单见 `normalize_video_size`）。
         """
         if "flash" in (model or "").lower():
             return "720P"
