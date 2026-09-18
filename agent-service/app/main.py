@@ -44,6 +44,7 @@ from app.agent.chat_api import router as agent_chat_router
 from app.controller.novel_api import router as novel_api_router
 from app.controller.novel_anchors_api import router as novel_anchors_router
 from app.controller.qc_api import router as qc_api_router
+from app.controller.image_edit_api import router as image_edit_router
 from app.controller.internal_api import router as internal_router
 
 app = FastAPI(title="DreamWeaver Agent Service", version="0.2.0")
@@ -66,6 +67,9 @@ app.include_router(novel_anchors_router)
 
 # 首帧质检路由：POST /v1/qc/images（面部特写判定，前端按需调用，不落库）
 app.include_router(qc_api_router)
+
+# 图像定点修正路由：POST /v1/images/edit（图生图改一处，前端按需调用，不落库）
+app.include_router(image_edit_router)
 
 # 内部同步端点（Java 侧启动时拉取本地 fallback 记录，防回调失败丢数据）
 app.include_router(internal_router)

@@ -3,7 +3,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import ImageVideoPage from './ImageVideoPage';
-import { createVideoTask, getTask, listTasks } from '../api/tasks';
+import { createVideoTask, getTask, listTasks, uploadImage } from '../api/tasks';
+import { editImage } from '../api/imageEdit';
 import type { TaskListResponse, TaskResponse } from '../types/task';
 
 // 只替换「提交任务」这一个函数：断言单节点「文生图」确实走了直出短路。
@@ -17,8 +18,13 @@ vi.mock('../api/tasks', async (importOriginal) => {
     // 「从历史作品选取」的取数：默认返回空（用例里按需 mockResolvedValue/mockRejectedValue）
     listTasks: vi.fn(),
     getTask: vi.fn(),
+    // 本地上传素材：默认给一张固定 URL（用例里可覆盖）
+    uploadImage: vi.fn().mockResolvedValue({ url: 'https://cdn.local/uploaded.png', name: 'x' }),
   };
 });
+
+// 定点修正：整模块替换（页面只用 editImage；用例逐条设置返回值）
+vi.mock('../api/imageEdit', () => ({ editImage: vi.fn() }));
 
 // React Flow 在 jsdom 下需要 ResizeObserver（白屏回归防护：保证页面无运行时错误挂载）
 beforeAll(() => {
@@ -153,6 +159,58 @@ describe('ImageVideoPage 无限画布页', () => {
     // → 一次白出 3~5 张不同画面的图，而这里只用得上第 1 张。
     // 这条就是 2026-09-17 修的那个额度浪费 bug 的回归护栏（TaskServiceImpl.java:380-383）。
     expect(arg.directImage).toBe(true);
+  });
+
+  it('★ 定点修正：「修一下」把改后新图并入候选并设为该镜首帧', async () => {
+    vi.mocked(uploadImage).mockResolvedValue({ url: 'https://cdn.local/uploaded.png', name: 'x' });
+    vi.mocked(editImage).mockResolvedValue(['https://cdn.fixed/one.png']);
+
+    renderPage();
+
+    // 先在图片节点上挂一张素材（隐藏 file input → onUploadFile → patch imageUrl）。
+    // 没有图时按钮不出现，所以这一步也是「无图不显示修正入口」的隐式断言。
+    expect(screen.queryByPlaceholderText(/改一处/)).toBeNull();
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, {
+      target: { files: [new File(['x'], 'src.png', { type: 'image/png' })] },
+    });
+    const box = await waitFor(() => screen.getAllByPlaceholderText(/改一处/)[0]);
+
+    fireEvent.change(box, { target: { value: '去掉多出来的那头牛' } });
+    const btn = screen.getAllByText('修一下')[0].closest('button') as HTMLButtonElement;
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+
+    await waitFor(() => expect(vi.mocked(editImage)).toHaveBeenCalled());
+    const [src, instruction, opts] = vi.mocked(editImage).mock.calls[0];
+    // 传的是**当前节点的那张图**，不是提示词：修正必须基于已有画面
+    expect(src).toBe('https://cdn.local/uploaded.png');
+    expect(instruction).toBe('去掉多出来的那头牛');
+    expect(opts?.ratio).toBe('16:9');
+
+    // 成功文案 + 候选块出现（原图 + 改后 共 2 张，能对比能回退）
+    await waitFor(() => expect(screen.getAllByText(/改好 1 张/).length).toBeGreaterThan(0));
+    expect(screen.getAllByText(/候选 2 张/).length).toBeGreaterThan(0);
+    expect(document.querySelectorAll('img[alt^="候选"]').length).toBe(2);
+  });
+
+  it('★ 定点修正失败要如实显示后端文案（不像质检那样静默降级）', async () => {
+    vi.mocked(uploadImage).mockResolvedValue({ url: 'https://cdn.local/uploaded.png', name: 'x' });
+    vi.mocked(editImage).mockRejectedValue(new Error('修正失败：上游 429'));
+
+    renderPage();
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, {
+      target: { files: [new File(['x'], 'src.png', { type: 'image/png' })] },
+    });
+    const box = await waitFor(() => screen.getAllByPlaceholderText(/改一处/)[0]);
+    fireEvent.change(box, { target: { value: '改一处' } });
+    fireEvent.click(screen.getAllByText('修一下')[0].closest('button') as HTMLButtonElement);
+
+    // 用户主动发起的操作：失败必须可见，否则就是「点了没反应」
+    await waitFor(() =>
+      expect(screen.getAllByText(/修正失败：上游 429/).length).toBeGreaterThan(0),
+    );
   });
 });
 

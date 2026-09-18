@@ -60,6 +60,7 @@ import {
 } from '../api/canvas';
 import { generateText } from '../api/agent';
 import { qcImages } from '../api/imageQc';
+import { editImage } from '../api/imageEdit';
 import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
 import { createContext, useContext } from 'react';
 import { reorderShotX, sortShots } from '../utils/shotOrder';
@@ -328,6 +329,11 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [generating, setGenerating] = useState(false);
   const [status, setStatus] = useState('');
+  // 图像定点修正（图生图）：对着当前这张图做定向修改，不重新生成。
+  // 实测定位：删/换局部可靠；改景别会连带重画人物外观；对「锁脸」无优势。
+  const [fixText, setFixText] = useState('');
+  const [fixBusy, setFixBusy] = useState(false);
+  const [fixStatus, setFixStatus] = useState('');
   // 候选图质检（P0-1）：命中「严禁面部特写」红线的候选打标提示。
   // ⚠️ 只打标不自动淘汰 —— 标定样本还不够（正样本 6 张），见 image_qc.py 的说明。
   const candidateKey = ((data.candidates as string[] | undefined) ?? []).join('|');
@@ -377,11 +383,50 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
   };
 
   // 文生图：以本节点 prompt 为提示词生成图片，完成后自动填参考图
+  /** 定点修正：对着当前这张图做定向修改（图生图），不重新生成一张。
+   *
+   * 实测定位（2026-09-18，见 api/imageEdit.ts）：**删/换局部可靠** —— 底图「两头黑牛」
+   * + 指令「只保留一头，其余不变」→ 结果只剩一头，且人物/服装/姿势/场景/光线/构图全部保持；
+   * 而「拉远为中远景」这类全局改动会**连带重画人物外观**；i2i 对「锁脸」也没有优势
+   * （两轮实测）。所以按钮 title 里写明用途，免得用户拿它去治「大脸」换来一张换了人的图。
+   */
+  const onFixImage = async () => {
+    const instruction = fixText.trim();
+    const src = (data.imageUrl || '').trim();
+    if (!src) {
+      setFixStatus('先在左边出图（或选一张候选）再修');
+      return;
+    }
+    if (!instruction) {
+      setFixStatus('写清要改什么，如「去掉多出来的那头牛」');
+      return;
+    }
+    setFixBusy(true);
+    setFixStatus('修正中…');
+    try {
+      const urls = await editImage(src, instruction, { ratio: data.ratio });
+      if (urls.length === 0) throw new Error('模型没有返回图片');
+      // ⚠️ 要把**原图**也放进候选，不能只放新图：候选块是 `length > 1` 才渲染的
+      // （见下方「候选 N 张」那段），只放一张会让原图直接从界面上消失 ——
+      // 用户既没法左右对比、也没法退回改坏的版本。放进去正好凑成「原图 + 改后」。
+      const prev = (data.candidates as string[] | undefined) ?? [];
+      const merged = [...prev, src, ...urls].filter((u, i, a) => a.indexOf(u) === i);
+      patch({ candidates: merged, imageUrl: urls[0] });
+      setFixStatus(`改好 ${urls.length} 张，已设为首帧（候选里可对比）`);
+      setFixText('');
+    } catch (err) {
+      setFixStatus(err instanceof Error ? err.message : '修正失败');
+    } finally {
+      setFixBusy(false);
+    }
+  };
+
   const startTextToImage = async () => {
     // ★ P0-1：把本节点提示词里提到的角色/场景**描述**拼进去。
     // 首帧才是画面的真正基底（锚定图此前只在视频阶段当参考图），而 agnes 图片接口
-    // **不接受图片输入**（只认 model + prompt，未知字段 400）—— 想让首帧的角色对得上，
-    // 只能靠文字。描述来自生成锚定图时那段设定（见 utils/anchors.ts）。
+    // 只能靠**文字**描述角色 —— 图生图（extra_body.image）实测只能做「局部修正」，
+    // 对角色一致性/锁脸没有优势（2026-09-18 两轮实测），所以首帧的角色还是要靠文字。
+    // 描述来自生成锚定图时那段设定（见 utils/anchors.ts）。
     const prompt = augmentPromptWithAnchors(
       (data.prompt || '').trim(),
       anchors.chars,
@@ -548,6 +593,43 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
               );
             })}
           </div>
+        </div>
+      )}
+      {/* 定点修正（图生图）：对着当前这张图改一处，不重新生成。
+          实测定位 —— 删/换局部可靠（「只保留一头牛」会照做且其余保持），
+          改景别会连带重画人物外观，对「锁脸」也没优势；所以文案只承诺「改一处」。
+          本地/内网图也支持（agent 侧会抓回来转 base64，agnes 拉不到 localhost）。 */}
+      {data.imageUrl && (
+        <div className="mb-2">
+          <div className="flex gap-1">
+            <input
+              className="nodrag min-w-0 flex-1 rounded border border-slate-200 px-1.5 py-1 text-[10px] text-slate-700 outline-none focus:border-amber-400"
+              placeholder="改一处：如「去掉多出来的那头牛」"
+              value={fixText}
+              onChange={(e) => setFixText(e.target.value)}
+              onKeyDown={(e) => {
+                // 别让画布吃掉按键（Delete 会删节点、空格会平移）
+                e.stopPropagation();
+                if (e.key === 'Enter') void onFixImage();
+              }}
+            />
+            <button
+              type="button"
+              className="nodrag shrink-0 rounded bg-amber-500 px-1.5 py-1 text-[10px] font-medium text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={fixBusy || !fixText.trim()}
+              onClick={() => void onFixImage()}
+              title={
+                '对着当前这张图做定点修正（图生图），整张重画请用「文生图」。\n' +
+                '适合：删/换多出来的主体或道具。\n' +
+                '不适合：改景别（拉远会连带改变人物外观）、想让角色长得更像锚定图。'
+              }
+            >
+              {fixBusy ? '修正中…' : '修一下'}
+            </button>
+          </div>
+          {fixStatus && (
+            <div className="mt-1 text-[10px] leading-3 text-slate-500">{fixStatus}</div>
+          )}
         </div>
       )}
       {data.imageUrl && !isPublicImageUrl(data.imageUrl) && (

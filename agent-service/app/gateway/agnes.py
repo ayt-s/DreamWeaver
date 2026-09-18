@@ -309,7 +309,8 @@ class AgnesGateway:
                              session_id: str | None = None,
                              size: str | None = None,
                              ratio: str | None = None,
-                             seed: int | None = None) -> list[str]:
+                             seed: int | None = None,
+                             reference_images: list[str] | None = None) -> list[str]:
         """同步调用图像 API，返回图片 URL 列表。多 provider 按 session 粘性路由。
 
         ⚠️ `size` / `ratio` **必须显式传**（2026-09-18 实测修正）：
@@ -317,16 +318,25 @@ class AgnesGateway:
         而视频链路是 16:9；首帧是画面的真正基底，正方形基底会被视频模型先重构图一次。
         传 `size="2K", ratio="16:9"` 实测得到 2624x1472（比例 1.783）。
         图片当前所有档位免费（官方 pricing），所以升档没有成本代价。
+
+        `reference_images` 非空时走**图生图**（官方支持，实测返回 `/images/i2i/` 路径）：
+        用来做「定点修正」——对已有图做定向修改（删掉多出来的主体等），
+        这是文生图做不到的能力。⚠️ 取值范围是 `extra_body.image`，
+        **不能放顶层 `image`**（实测顶层会 400，还抛上游 LLM Provider 错）。
         """
         client = await self.pick_client(session_id=session_id)
+        refs = [str(u).strip() for u in (reference_images or []) if str(u).strip()]
+        extra_body: dict[str, Any] = {"response_format": "url"}
+        if refs:
+            extra_body["image"] = refs
         payload: dict[str, Any] = {
             "model": model or settings.image_model,
             "prompt": prompt,
             "size": normalize_image_size(size or settings.image_size),
             "ratio": normalize_image_ratio(ratio, settings.default_aspect_ratio),
             # 官方要求 URL 输出走 extra_body（顶层 response_format 会 400）；
-            # 不写时靠服务端默认，写死更可预期
-            "extra_body": {"response_format": "url"},
+            # 不传时靠服务端默认，写死更可预期
+            "extra_body": extra_body,
         }
         if seed is not None:
             payload["seed"] = int(seed)
