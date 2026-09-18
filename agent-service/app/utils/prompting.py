@@ -74,6 +74,29 @@ def normalize_image_size(value: object, default: str = "2K") -> str:
     return s if s in IMAGE_SIZE_TIERS else default
 
 
+# agnes 图像接口的 seed 取值范围（**上游实测**）：2026-09-18 传 1000/1001 一律
+# 400 {"message": "seed 必须在 -1 到 999 之间"}；-1 = 随机。
+# ⚠️ 视频接口的 seed 范围**没有实测过**，别照抄这个区间去夹视频的 seed。
+IMAGE_SEED_MIN, IMAGE_SEED_MAX = -1, 999
+
+
+def normalize_image_seed(value: object, default: int = -1) -> int:
+    """把出图 seed 收敛到 agnes 认的范围（辅助参数不该把整次出图打挂）。
+
+    - `None` / 空串 / 非数字 → `default`（-1 = 上游随机）
+    - 越界 → **夹到边界**（而不是回落随机：夹过去至少仍是「一个确定的种子」，
+      调用方的可复现意图不会被静默改成另一种语义）
+
+    为什么要这个函数：网关原来直接 `int(seed)` 透传，越界会被上游 400 ——
+    一次 400 = 一张图白等一轮重试（与 ratio / size 当初踩的是同一个坑）。
+    """
+    try:
+        n = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return max(IMAGE_SEED_MIN, min(IMAGE_SEED_MAX, n))
+
+
 def normalize_video_size(value: object, default: str = "720P") -> str:
     """清洗视频分辨率档（720P/960P/2K）；未知值回落默认。"""
     s = str(value or "").strip().upper()

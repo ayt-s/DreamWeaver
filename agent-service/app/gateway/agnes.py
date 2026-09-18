@@ -19,6 +19,7 @@ from app.config import settings
 from app.utils.observability import traced
 from app.utils.prompting import (
     normalize_image_ratio,
+    normalize_image_seed,
     normalize_image_size,
     normalize_video_size,
 )
@@ -371,7 +372,9 @@ class AgnesGateway:
             "extra_body": extra_body,
         }
         if seed is not None:
-            payload["seed"] = int(seed)
+            # ⚠️ 别直接 int() 透传：seed 超出 [-1, 999] 会被上游 400 打挂整次出图
+            #    （2026-09-18 实测），所以先归一到白名单区间。
+            payload["seed"] = normalize_image_seed(seed)
         resp = await _with_retry(
             lambda: client._client.post("/images/generations", json=payload),
             f"图像({client.name})",

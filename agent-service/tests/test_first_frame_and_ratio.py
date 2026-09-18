@@ -25,6 +25,7 @@ from app.gateway import agnes
 from app.gateway.agnes import AgnesGateway
 from app.utils.prompting import (
     normalize_image_ratio,
+    normalize_image_seed,
     normalize_image_size,
     normalize_video_size,
 )
@@ -49,6 +50,22 @@ def test_size_tier_whitelist():
     assert normalize_image_size("1280x720") == "2K"      # 精确像素值不被透传
     assert normalize_video_size("2k") == "2K"
     assert normalize_video_size("1080P") == "720P"       # 不支持的档回落
+
+
+def test_image_seed_is_clamped_into_upstream_range():
+    """★ 上游实测：seed 超出 [-1, 999] 直接 400 → 必须收敛。
+
+    2026-09-18 实测：传 1000/1001 一律 400 {"message": "seed 必须在 -1 到 999 之间"}，
+    而网关原来是 `int(seed)` 直接透传 —— 一个辅助参数就能把整次出图打挂。
+    """
+    assert normalize_image_seed(100) == 100
+    assert normalize_image_seed(0) == 0
+    assert normalize_image_seed("999") == 999
+    assert normalize_image_seed(-1) == -1                 # 上游约定的「随机」
+    assert normalize_image_seed(1000) == 999              # 越界上界 → 夹住（不是回落随机）
+    assert normalize_image_seed(-5) == -1                 # 越界下界 → 夹住
+    assert normalize_image_seed(None) == -1               # 不给 = 随机
+    assert normalize_image_seed("abc") == -1              # 垃圾值不抛异常
 
 
 # ---------------------------------------------------------------- 网关替身
