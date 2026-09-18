@@ -198,6 +198,33 @@ describe('ImageVideoPage 无限画布页', () => {
     expect(document.querySelectorAll('img[alt^="候选"]').length).toBe(2);
   });
 
+  it('★ 补画幅：「补成 16:9」用 padToRatio 走 agent 的扩画幅通路', async () => {
+    // ⚠️ 必须清：前面「修一下」的用例也调用过 editImage，mock.calls 会累积，
+    // 不清的话 calls[0] 是上一个用例的调用（全量跑失败、单跑通过的那种坑）
+    vi.mocked(editImage).mockClear();
+    vi.mocked(uploadImage).mockResolvedValue({ url: 'https://cdn.local/square.png', name: 'x' });
+    vi.mocked(editImage).mockResolvedValue(['https://cdn.fixed/wide.png']);
+
+    renderPage();
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, {
+      target: { files: [new File(['x'], 'src.png', { type: 'image/png' })] },
+    });
+    const padBtn = await waitFor(() => screen.getAllByText(/^补成 /)[0]);
+
+    fireEvent.click(padBtn);
+
+    await waitFor(() => expect(vi.mocked(editImage)).toHaveBeenCalled());
+    const [src, instruction, opts] = vi.mocked(editImage).mock.calls[0];
+    expect(src).toBe('https://cdn.local/square.png');
+    // 补画幅由 agent 侧内置提示词负责，前端不传指令
+    expect(instruction).toBe('');
+    expect(opts?.padToRatio).toBe('16:9');
+    // 结果同样并入候选并设为首帧（原图一起进候选，能对比/回退）
+    await waitFor(() => expect(screen.getAllByText(/补成 16:9 1 张/).length).toBeGreaterThan(0));
+    expect(screen.getAllByText(/候选 2 张/).length).toBeGreaterThan(0);
+  });
+
   it('★ 定点修正失败要如实显示后端文案（不像质检那样静默降级）', async () => {
     vi.mocked(uploadImage).mockResolvedValue({ url: 'https://cdn.local/uploaded.png', name: 'x' });
     vi.mocked(editImage).mockRejectedValue(new Error('修正失败：上游 429'));

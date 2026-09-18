@@ -420,17 +420,52 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
       // 默认追加「保真」尾句（去掉用户可能多打的句末标点，避免出现「。。」）
       const guarded = `${instruction.replace(/[。.；;，,\s]+$/, '')}${FIX_PRESERVE_CLAUSE}`;
       const urls = await editImage(src, guarded, { ratio: data.ratio });
-      if (urls.length === 0) throw new Error('模型没有返回图片');
-      // ⚠️ 要把**原图**也放进候选，不能只放新图：候选块是 `length > 1` 才渲染的
-      // （见下方「候选 N 张」那段），只放一张会让原图直接从界面上消失 ——
-      // 用户既没法左右对比、也没法退回改坏的版本。放进去正好凑成「原图 + 改后」。
-      const prev = (data.candidates as string[] | undefined) ?? [];
-      const merged = [...prev, src, ...urls].filter((u, i, a) => a.indexOf(u) === i);
-      patch({ candidates: merged, imageUrl: urls[0] });
-      setFixStatus(`改好 ${urls.length} 张，已设为首帧（基于当前选中那张图；候选里可对比/回退）`);
+      applyEditResult(src, urls, '改好');
       setFixText('');
     } catch (err) {
       setFixStatus(err instanceof Error ? err.message : '修正失败');
+    } finally {
+      setFixBusy(false);
+    }
+  };
+
+  /** 把修正/补画幅的结果并入候选并设为本镜首帧（原图留着，可比对可回退）。
+   *
+   * ⚠️ 原图**必须**一起放进候选：候选块是 `length > 1` 才渲染的（见下方「候选 N 张」），
+   * 只放新图会让原图直接从界面上消失 —— 既没法左右对比，也没法退回改坏的版本。
+   */
+  const applyEditResult = (src: string, urls: string[], label: string) => {
+    if (urls.length === 0) throw new Error('模型没有返回图片');
+    const prev = (data.candidates as string[] | undefined) ?? [];
+    const merged = [...prev, src, ...urls].filter((u, i, a) => a.indexOf(u) === i);
+    patch({ candidates: merged, imageUrl: urls[0] });
+    setFixStatus(`${label} ${urls.length} 张，已设为首帧（基于当前选中那张图；候选里可对比/回退）`);
+  };
+
+  /** 补画幅（扩画幅）：把当前图的比例补齐到本节点 ratio。
+   *
+   * 为什么需要（2026-09-18 实测）：keyframe 视频的几何**跟随首帧比例**，而老项目
+   * （39/40）的图是 1:1（出图比例修复之前生成的）→ 那些段的视频是 704x704 方的。
+   * 补画幅 = 本地补边 + i2i 让模型把两侧画成场景延续（实测两侧自然、无拼接痕迹），
+   * 之后拿它当首帧就能出宽屏视频，**不必重出图**（重出图会刷掉用户已认可的图）。
+   *
+   * ⚠️ 代价（实测，按钮文案里也写）：模型会顺带把中间**重新构图为更宽的景别**
+   * —— 人物/场景/动作都在，但脸会变小。所以不是无副作用的比例转换。
+   */
+  const onPadImage = async () => {
+    const src = (data.imageUrl || '').trim();
+    if (!src) {
+      setFixStatus('先在左边出图（或选一张候选）再补画幅');
+      return;
+    }
+    const target = data.ratio || '16:9';
+    setFixBusy(true);
+    setFixStatus('补画幅中…');
+    try {
+      const urls = await editImage(src, '', { ratio: target, padToRatio: target });
+      applyEditResult(src, urls, `补成 ${target}`);
+    } catch (err) {
+      setFixStatus(err instanceof Error ? err.message : '补画幅失败');
     } finally {
       setFixBusy(false);
     }
@@ -636,6 +671,22 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
               title="改一处（适合删/换多出来的主体）；拉远镜头或整张重画请用「文生图」"
             >
               {fixBusy ? '修正中…' : '修一下'}
+            </button>
+            {/* 补画幅：给「图是方的、视频也跟着方」这类几何问题兜底。
+                实测：i2i 能把补出来的两侧画成场景延续（无拼接痕迹），
+                但会顺带把中间重新构图为更宽的景别 —— title 里写明代价。 */}
+            <button
+              type="button"
+              className="nodrag shrink-0 rounded border border-slate-200 px-1.5 py-1 text-[10px] font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+              disabled={fixBusy}
+              onClick={() => void onPadImage()}
+              title={
+                `把这张图补齐成 ${data.ratio || '16:9'} 画幅（本地补边 + 让模型把两侧画成场景延续）。` +
+                '用于修「图是 1:1 → keyframe 视频也是方的」。\n' +
+                '⚠️ 会顺带把中间重新构图为更宽的景别（人物/场景在，但脸会变小）。'
+              }
+            >
+              补成 {data.ratio || '16:9'}
             </button>
           </div>
           {/* 一行提示兼状态位：没有状态时说明默认行为（用户实测反馈「别处也变了」之后加的），

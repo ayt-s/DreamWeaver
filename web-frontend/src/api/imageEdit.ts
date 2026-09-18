@@ -21,6 +21,12 @@ export type ImageEditOptions = {
   ratio?: string;
   /** 出几张修正结果（1~2） */
   count?: number;
+  /**
+   * 补画幅（扩画幅）：把这个画幅补齐 —— agent 侧本地补边 + i2i 让模型把两侧画成
+   * 场景延续。用于修「图是 1:1、keyframe 视频跟着出方形」这类几何问题。
+   * ⚠️ 代价：模型会顺带把中间重新构图为更宽的景别（人物/场景都在，但脸变小）。
+   */
+  padToRatio?: string;
 };
 
 export type ImageEditResult = { urls: string[] };
@@ -39,6 +45,8 @@ export async function editImage(
       instruction,
       ratio: options.ratio,
       count: options.count ?? 1,
+      // 补画幅时不传指令也合法（agent 侧用内置的扩画幅提示词）
+      ...(options.padToRatio ? { pad_to_ratio: options.padToRatio } : {}),
     }),
   });
 
