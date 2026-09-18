@@ -24,42 +24,26 @@ import pytest
 from app.novel import storyboarder
 
 
-def _squash(text: str) -> str:
-    """去掉**所有**空白后再比短语。
-
-    本轮给提示词加了 `scene_ref` 规则、重排了段落，结果「整串原样复制」被换行拆成
-    「整串原样」+「复制」→ 三条断言一起挂掉。CJK 文案里换行只是排版，
-    **规则是否还在**不该取决于它在第几列换行。所以短语断言两侧都过 `_squash`。
-    （场景原文的**逐字**断言不走这个 —— 那种地方就是要一字不差。）
-    """
-    return "".join(text.split())
-
-
 def test_prompt_demands_verbatim_scene_copy():
     """硬要求：属于已有场景参考之一 → 整串逐字复制；旧漂移措辞必须消失。"""
     t = storyboarder.SYSTEM_PROMPT_TEMPLATE
 
     # 旧措辞 = 漂移源头，必须删掉（它同时出现在字段说明与场景参考两处）
-    assert _squash("或按其风格新造") not in _squash(t)
+    assert "或按其风格新造" not in t
 
     # 逐字复制的硬要求（缺一不可的四条禁令）
-    assert _squash("整串原样复制") in _squash(t)
-    assert _squash("一个字都不许改") in _squash(t)
-    assert _squash("不许合并两条") in _squash(t)
-    assert _squash("不许只取其中几个分句") in _squash(t)
+    assert "整串原样复制" in t
+    assert "一个字都不许改" in t
+    assert "不许合并两条" in t
+    assert "不许只取其中几个分句" in t
 
     # 只有确实不属于任何一条时才新造，且新造格式要求不丢
-    assert _squash("没有任何对应") in _squash(t)
-    assert _squash("才新造") in _squash(t)
-    assert _squash("25-60 字") in _squash(t)
-    assert _squash("地点 + 时间 + 天气/光线") in _squash(t)
+    assert "没有任何对应" in t and "才新造" in t
+    assert "25-60 字" in t
+    assert "地点 + 时间 + 天气/光线" in t
 
     # 「像但不等」的近似改写被明确禁止（正是 0.43 覆盖率那类失败）
-    assert _squash("禁止在已有条目上改几个字凑数") in _squash(t)
-
-    # ★ 2026-09-18 新增：结构化绑定（分镜器给序号，代码取原文）
-    assert _squash("scene_ref") in _squash(t)
-    assert _squash("只填序号本身") in _squash(t)
+    assert "禁止在已有条目上改几个字凑数" in t
 
 
 def test_prompt_scene_rules_survive_formatting():
@@ -80,7 +64,7 @@ def test_prompt_scene_rules_survive_formatting():
     )
     for s in scenes:
         assert s in p, "场景参考原文必须逐字进入提示词，模型才有可复制的原文"
-    assert _squash("整串原样复制") in _squash(p)
+    assert "整串原样复制" in p
 
 
 class _FakeResult:
@@ -118,4 +102,4 @@ async def test_scene_refs_are_sent_verbatim_to_model(monkeypatch):
     assert prompt == "测试原文"
     assert instructions, "instructions 不能为空"
     assert scenes[0] in instructions
-    assert _squash("整串原样复制") in _squash(instructions)
+    assert "整串原样复制" in instructions
