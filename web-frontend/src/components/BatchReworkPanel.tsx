@@ -16,6 +16,7 @@ import {
   type BatchReworkItemReq,
 } from '../api/tasks';
 import { cachedImageUrl } from '../types/task';
+import { segmentPromptText } from '../utils/segmentText';
 
 interface BatchReworkPanelProps {
   /** 已选任务 ID 列表 */
@@ -316,9 +317,9 @@ export default function BatchReworkPanel({
                               </div>
                               <p
                                 className="mt-0.5 truncate text-[10px] text-slate-500"
-                                title={seg.prompt}
+                                title={segmentPromptText(seg)}
                               >
-                                {seg.prompt || '（空提示词）'}
+                                {segmentPromptText(seg) || '（空提示词）'}
                               </p>
                             </div>
                           </div>
@@ -328,14 +329,13 @@ export default function BatchReworkPanel({
                               <textarea
                                 value={
                                   editedPrompts[id]?.[String(idx)] ??
-                                  seg.prompt ??
-                                  ''
+                                  segmentPromptText(seg)
                                 }
                                 onChange={(e) =>
                                   onPromptChange(id, idx, e.target.value)
                                 }
                                 rows={2}
-                                placeholder={seg.prompt || '输入新的视频描述…'}
+                                placeholder={segmentPromptText(seg) || '输入新的视频描述…'}
                                 className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs leading-relaxed focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-500/15"
                               />
                             </div>

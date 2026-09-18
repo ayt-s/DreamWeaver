@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { X, Wand2, Loader2, AlertCircle, ListVideo, RefreshCw } from 'lucide-react';
 import { getTaskSegments, reworkTask, type TaskSegment } from '../api/tasks';
+import { segmentPromptText } from '../utils/segmentText';
 import { cachedImageUrl } from '../types/task';
 import type { GenType } from '../types/task';
 
@@ -212,8 +213,8 @@ export default function SegmentManager({ taskId, onClose, onChanged, segments: s
                           </span>
                         )}
                       </div>
-                      <p className="mt-0.5 truncate text-[11px] text-slate-500" title={seg.prompt}>
-                        {seg.prompt || '（空提示词，将用默认运镜）'}
+                      <p className="mt-0.5 truncate text-[11px] text-slate-500" title={segmentPromptText(seg)}>
+                        {segmentPromptText(seg) || '（空提示词，将用默认运镜）'}
                       </p>
                     </div>
                   </div>
@@ -224,10 +225,10 @@ export default function SegmentManager({ taskId, onClose, onChanged, segments: s
                         {isImageTask ? '图片提示词（留空则沿用原提示词）' : '视频提示词（留空则沿用原提示词）'}
                       </label>
                       <textarea
-                        value={editedPrompts[String(idx)] ?? seg.prompt ?? ''}
+                        value={editedPrompts[String(idx)] ?? segmentPromptText(seg)}
                         onChange={(e) => onPromptChange(idx, e.target.value)}
                         rows={2}
-                        placeholder={seg.prompt || (isImageTask ? '输入新的图片描述…' : '输入新的视频描述…')}
+                        placeholder={segmentPromptText(seg) || (isImageTask ? '输入新的图片描述…' : '输入新的视频描述…')}
                         className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs leading-relaxed focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-500/15"
                       />
                       <p className="mt-1 text-[10px] text-slate-400">

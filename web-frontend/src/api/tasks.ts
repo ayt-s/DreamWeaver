@@ -112,7 +112,11 @@ export async function regenerateTask(
 // 查询任务的段配置 + 每段已有视频 URL（供按段重生 UI 展示）
 export interface TaskSegment {
   index: number;
-  prompt: string;
+  /** 画布/图片任务的段描述（用户自己写的）；**标准模式（一句话生成）没有这个字段** */
+  prompt?: string;
+  /** 标准模式的段描述（LLM 分镜产物，`storyboard.py` 写的是这个）
+   *  ⚠️ 展示/编辑取值请统一走 `segmentPromptText()`，别各写各的 `seg.prompt` */
+  cn_description?: string;
   image_url?: string;
   reference_images?: string[];
   seconds?: number;
