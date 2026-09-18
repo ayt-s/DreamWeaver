@@ -34,6 +34,7 @@ import re
 import shutil
 from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 import imageio_ffmpeg
@@ -172,24 +173,41 @@ async def concat_videos(inputs: list[Path], output: Path) -> bool:
     return await _concat_videos_plain(inputs, output)
 
 
-async def probe_streams(path: Path | str) -> tuple[float, bool, float]:
-    """一次 `ffmpeg -i` 拿到 (时长/秒, 是否有音轨, fps)。探测不到给安全默认值。
+class StreamInfo(NamedTuple):
+    """一路视频的探测结果（`probe_streams`）。宽高为 0 表示没探到。"""
 
-    拼接前这三样都要：**时长**算 xfade 的 offset；**音轨**决定要不要接音频链；
-    **fps** 用来统一各路 timebase —— `xfade` 对 timebase 是硬要求，实测
-    24fps 的真实段 + 30fps 的幻灯片段会直接
-    `First input link main timebase (1/12288) do not match ... (1/15360)` 报 -22，
-    整条拼接失败降级成硬切（连过渡都没了）。
-    用一次探测取代「时长一次 + 音轨一次」，避免每段起两个进程。
+    seconds: float
+    has_audio: bool
+    fps: float
+    width: int = 0
+    height: int = 0
+
+
+async def probe_streams(path: Path | str) -> "StreamInfo":
+    """一次 `ffmpeg -i` 拿到 (时长/秒, 是否有音轨, fps, 宽, 高)。
+
+    拼接前这几样都要：**时长**算 xfade 的 offset；**音轨**决定要不要接音频链；
+    **fps 与分辨率**用来逐路归一化 —— `xfade` 对这两样都是硬要求：
+
+    - 帧率/timebase 不一致会报 `do not match ... (1/15360)` 报 -22
+    - **分辨率不一致同样会失败**（实测 1280x720 + 1280x704 → 整条失败降级硬切、过渡丢失）。
+      而 704 正是 keyframe 模式的新常态：agnes 的 16:9 出图是 2624x1472（=1.7826 ≠ 16/9），
+      拿它当首帧，视频就出 1280x704，与旧的 720 段混在一张画布里就会踩到。
+
+    用一次探测取代「时长一次 + 音轨一次 + 尺寸一次」，避免每段起三个进程。
     """
     res = await run_command([ffmpeg_exe(), "-i", str(path)], timeout=30)
     if res.timed_out:
-        return (-1.0, False, 0.0)
+        return StreamInfo(-1.0, False, 0.0, 0, 0)
     err = res.stderr or ""
     m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", err)
     secs = (int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))) if m else -1.0
     fps_m = re.search(r"(\d+(?:\.\d+)?)\s*fps", err)
-    return (secs, "Audio:" in err, float(fps_m.group(1)) if fps_m else 0.0)
+    dim_m = re.search(r"\b(\d{2,5})x(\d{2,5})\b", err)
+    return StreamInfo(
+        secs, "Audio:" in err, float(fps_m.group(1)) if fps_m else 0.0,
+        int(dim_m.group(1)) if dim_m else 0, int(dim_m.group(2)) if dim_m else 0,
+    )
 
 
 async def probe_has_audio(path: Path | str) -> bool:
@@ -269,20 +287,23 @@ async def _concat_with_xfade(inputs: list[Path], output: Path) -> bool:
        实测：抽样 14/14 段都有音轨，成片 9/10 没有；唯一带音轨的那条是**单段**
        （走 `shutil.copyfile`，没经过这条路径）。时长也对得上：24.4s = 6×4.5 − 5×0.5。
        音频用 `acrossfade`，与视频 `xfade` 一一对应（同样 0.5s、同样次数）。
-    2. **每路必须先统一 fps 与 timebase**。xfade 要求两个输入 timebase 完全一致，
-       24fps 真实段配 30fps 幻灯片段会报 `timebase (1/12288) do not match (1/15360)`
-       并整条失败（→ 降级硬切，过渡没了）。所以先 `fps=<首路>` + `settb=AVTB`。
+    2. **每路必须先统一 fps + 分辨率**。xfade 对这两样都是硬要求：
+       24fps 真实段配 30fps 幻灯片段会报 `timebase (1/12288) do not match (1/15360)`；
+       1280x720 段配 1280x704 段同样整条失败（→ 降级硬切，过渡没了）。
+       所以先 `fps=<首路>` + `scale/pad` 归一到首路的分辨率。
     """
-    # 探测每段时长 / 音轨 / fps
+    # 探测每段时长 / 音轨 / fps / 分辨率
     infos = [await probe_streams(p) for p in inputs]
-    durations = [i[0] for i in infos]
+    durations = [i.seconds for i in infos]
     for p, d in zip(inputs, durations):
         if d <= 0:
             logger.warning("无法探测 %s 时长，降级 concat", p.name)
             return False
-    has_audio = [i[1] for i in infos]
-    # 以第一路 fps 为基准（全真实段时行为不变；混了幻灯片段才起作用）
-    fps = infos[0][2] or 24.0
+    has_audio = [i.has_audio for i in infos]
+    # 以第一路 fps / 分辨率为基准（全同规格时行为不变；混了才起作用）
+    fps = infos[0].fps or 24.0
+    tw = infos[0].width or 1280
+    th = infos[0].height or 720
 
     TRANSITION = XFADE_TRANSITION_S
     n = len(inputs)
@@ -290,18 +311,23 @@ async def _concat_with_xfade(inputs: list[Path], output: Path) -> bool:
     for p in inputs:
         inputs_args.extend(["-i", str(p)])
 
-    # 构建 filter_complex：先逐路归一化（强制 CFR + 统一 timebase），再 xfade 链式串联
+    # 构建 filter_complex：先逐路归一化（CFR + 统一 timebase + 统一分辨率），再 xfade 链式串联
     # [vi0][vi1]xfade=transition=fade:duration=0.5:offset=D0-0.5[v01];
     # [v01][vi2]xfade=...:offset=D0+D1-0.5*2[vout]
     #
-    # ⚠️ 归一化**只能用 `fps=`，不要加 `setpts=PTS-STARTPTS`**：实测 setpts 会把链路
-    # 的帧率元数据清成 1/0，xfade 立刻报
+    # ⚠️ 归一化**只能用 `fps=`/`scale=`/`pad=`，不要加 `setpts=PTS-STARTPTS`**：实测 setpts
+    # 会把链路的帧率元数据清成 1/0，xfade 立刻报
     # `The inputs needs to be a constant frame rate; current rate of 1/0 is invalid`
     # （对照组：只 `fps=24`、只 `null`、输入前 `-r 24` 三种都正常）。
-    # `fps=` 一个滤镜就同时满足「CFR」和「timebase 一致」两条，settb/setpts 都是多余且有害。
+    # `scale`+`pad` 用 decrease 而不是直接拉伸：1280x704 → 1280x720 直接 scale 会纵向
+    # 拉伸 2.3%（肉眼能看出形变），decrease+pad 只加 8px 上下黑边，几何正确。
     filter_parts: list[str] = []
     for i in range(n):
-        filter_parts.append(f"[{i}:v]fps={fps}[vi{i}]")
+        filter_parts.append(
+            f"[{i}:v]fps={fps},"
+            f"scale={tw}:{th}:force_original_aspect_ratio=decrease,"
+            f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2,setsar=1[vi{i}]"
+        )
     for i in range(n - 1):
         src_left = "[vi0]" if i == 0 else f"[v0{i}]"
         src_right = f"[vi{i+1}]"

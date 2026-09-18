@@ -47,7 +47,8 @@ def _patch(monkeypatch, infos, output_has_audio=True, loudness=None):
     ff = _FakeFFmpeg(output_has_audio)
     monkeypatch.setattr(media, "run_command", ff)
     monkeypatch.setattr(media, "ffmpeg_exe", lambda: "ffmpeg")
-    seq = list(infos)
+    # 用例里的 infos 写 3 元组即可（宽高取默认 1280x720）；要测分辨率归一化再给 5 元组
+    seq = [media.StreamInfo(*t) for t in infos]
 
     async def fake_probe(_p):
         return seq.pop(0)
@@ -170,6 +171,26 @@ async def test_audio_less_output_is_treated_as_failure(monkeypatch, tmp_path):
         [tmp_path / f"s{i}.mp4" for i in range(3)], tmp_path / "final.mp4"
     )
     assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_resolution_normalized_to_first_input(monkeypatch, tmp_path):
+    """混分辨率（720 段 + 704 段）也要归一到首路 —— 否则 xfade 整条失败、过渡丢失。
+
+    704 是 keyframe 模式的新常态：agnes 的 16:9 出图是 2624x1472（≠16/9），
+    拿它当首帧视频就出 1280x704，跟旧的 720 段混在一张画布里就会踩到。
+    """
+    ff = _patch(monkeypatch, [(4.5, True, 24.0, 1280, 720), (4.5, True, 24.0, 1280, 704)])
+    ok = await media._concat_with_xfade(
+        [tmp_path / "a.mp4", tmp_path / "b.mp4"], tmp_path / "final.mp4"
+    )
+
+    assert ok is True
+    f = _filters(_xfade_cmd(ff))
+    assert f.count("scale=1280:720:force_original_aspect_ratio=decrease") == 2, \
+        "两路都要缩放到首路分辨率（decrease 避免拉伸变形）"
+    assert "pad=1280:720" in f
+    assert "setsar=1" in f, "采样宽高比不统一也会让 xfade 失败"
 
 
 @pytest.mark.asyncio

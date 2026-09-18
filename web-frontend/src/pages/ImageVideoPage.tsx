@@ -2575,7 +2575,10 @@ export default function CanvasPage() {
                           <b>锁定首帧</b>
                           <span className={theme.hint}>
                             {' '}
-                            · 视频从每段首帧图开始（keyframe）；不勾 = 只当参考图，模型可能重新构图
+                            · 视频从每段首帧图开始（keyframe）。
+                            {lockFirstFrame
+                              ? '已开启：锚定图/元素绑定不参与本段视频（官方禁止 keyframe 与参考图混用）'
+                              : '不勾 = 首帧图只当参考图，模型可能重新构图，但锚定图会作为参考参与'}
                           </span>
                         </span>
                       </label>
