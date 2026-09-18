@@ -1,5 +1,6 @@
 package com.dreamweaver.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.dreamweaver.entity.Task;
 import com.dreamweaver.mapper.TaskMapper;
 import jakarta.annotation.PostConstruct;
@@ -11,6 +12,7 @@ import org.redisson.api.map.event.EntryExpiredListener;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -27,7 +29,8 @@ import java.util.concurrent.TimeUnit;
  * 旧版 Redis 同样可用。
  *
  * <p>根因背景：Agent 会话纯内存，Agent 服务重启后旧任务永久收不到回调，
- * Java 行卡 queued 无法自愈。看门狗保证任何未闭环任务 10 分钟内进入终态失败态。
+ * Java 行卡 queued 无法自愈。看门狗保证任何未闭环任务在 TTL 内（图片 10 分钟 / 视频 30 分钟）
+ * 进入非终态 {@code interrupted}，再由 TaskAutoRetryer 接管重跑或用户手动重生。
  */
 @Slf4j
 @Component
@@ -58,6 +61,41 @@ public class StuckTaskWatchdog {
         // 过期事件由 Redisson 客户端侧 eviction 调度器驱动（不依赖服务器 keyspace 通知）
         cache.addListener((EntryExpiredListener<String, String>) event -> onKeyExpired(event.getKey()));
         log.info("StuckTaskWatchdog: RMapCache 过期监听已注册 (ttl={}min, cache={})", STALE_TTL_MINUTES, WATCHDOG_NAME);
+        rearmOpenTasks();
+    }
+
+    /**
+     * 启动时按库里的真实状态**补武装**未闭环任务（2026-09-18 加）。
+     *
+     * <p>★ 为什么必须有：看门狗条目活在 Redis 的 RMapCache 里，**Redis 一重启 TTL 条目全丢**，
+     * 而 arm 只在「任务进排期」那一刻发生 —— 丢了就再没人补，于是重启前创建、还没闭环的任务
+     * 永远等不到过期事件，永久停在 queued/pending。
+     * 实测踩到过这个死锁：任务卡 queued 30+ 分钟，`regenerate` 因 queued 被 400 挡、
+     * Agent cancel 409、自动重试器又只认 failed/expired —— 三个出口全封死。
+     * 启动补一遍，这条闭环才成立（配合 TaskAutoRetryer 认 interrupted）。
+     */
+    private void rearmOpenTasks() {
+        try {
+            List<Task> open = taskMapper.selectList(
+                    new LambdaQueryWrapper<Task>()
+                            .in(Task::getStatus, NON_TERMINAL)
+                            .last("LIMIT 500"));
+            for (Task t : open) {
+                cache.put(String.valueOf(t.getId()), "queued", ttlMinutes(t.getGenType()), TimeUnit.MINUTES);
+            }
+            if (!open.isEmpty()) {
+                log.info("StuckTaskWatchdog: 启动重新武装 {} 个未闭环任务（Redis 重启会丢 TTL 条目，不补就永久无人兜底）",
+                        open.size());
+            }
+        } catch (Exception e) {
+            // 补武装失败不能让应用起不来；新任务的武装不受影响
+            log.warn("StuckTaskWatchdog: 启动重新武装失败（不影响新任务）: {}", e.toString());
+        }
+    }
+
+    /** 按任务类型取 TTL：视频任务更长（含出图 + 逐镜提交节流 + 平台排队 + 拼接）。 */
+    private long ttlMinutes(String genType) {
+        return VIDEO_GEN_TYPES.contains(genType) ? VIDEO_STALE_TTL_MINUTES : STALE_TTL_MINUTES;
     }
 
     /** 任务进入排期：武装看门狗条目，TTL 内未回调则转 failed。
@@ -67,7 +105,7 @@ public class StuckTaskWatchdog {
     }
 
     public void watch(Long taskId, String genType) {
-        long ttl = VIDEO_GEN_TYPES.contains(genType) ? VIDEO_STALE_TTL_MINUTES : STALE_TTL_MINUTES;
+        long ttl = ttlMinutes(genType);
         cache.put(String.valueOf(taskId), "queued", ttl, TimeUnit.MINUTES);
         log.debug("StuckTaskWatchdog: 武装 id={} ttl={}min genType={}", taskId, ttl, genType);
     }

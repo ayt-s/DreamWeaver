@@ -34,7 +34,18 @@ import java.util.regex.Pattern;
 @RequiredArgsConstructor
 public class TaskAutoRetryer {
 
-    private static final Set<String> TARGET_STATUSES = Set.of("failed", "expired");
+    /**
+     * 可自动重试的状态。
+     *
+     * ⚠️ `interrupted` 必须在这里：它是**看门狗兜底出的非终态**（Agent 会话失联/恢复被锁窗口挡掉/
+     * Redis 重启丢了 TTL 条目时短暂出现）。2026-09-18 实测踩到过闭环缺口：
+     * 看门狗把任务标成 interrupted 后，本重试器不认这个状态 → 任务既不会自动重跑，
+     * 用户还得自己点「重新生成」，而 regenerate 在 queued 态又是 400 —— 三个出口全封死，
+     * 任务永久搁浅。加进来后闭环成立：会话失联 → 看门狗标 interrupted → 本器重跑。
+     * 重跑前 `regenerateTask` 会先取消 Agent 侧旧会话（cancelOldAgentSession），不会双跑。
+     * 防无限空转仍由 RETRY_COUNT_KEY 计数（视频 max-video-attempts 默认 1）兜底。
+     */
+    private static final Set<String> TARGET_STATUSES = Set.of("failed", "expired", "interrupted");
     private static final Set<String> VIDEO_GEN_TYPES = Set.of("text_video", "image_video");
     private static final String RETRY_COUNT_KEY = "task:retry:count:";
     private static final String VIDEO_LAST_KEY = "task:retry:video:last";
