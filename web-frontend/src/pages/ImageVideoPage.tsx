@@ -322,6 +322,19 @@ const AnchorsCtx = createContext<{ chars: AnchorMap; scenes: AnchorMap }>({
   scenes: {},
 });
 
+/** 定点修正默认追加的「保真」尾句（2026-09-18，用户实测驱动）。
+ *
+ * 用户实际用这个功能时的反馈：指令只写「去掉右边的黑牛」，结果**除了去掉牛，
+ * 别的地方也变了** —— 真实 [角色锚] 复杂镜头比我做 A/B 用的「两头牛」合成图更容易漂。
+ *
+ * 而我的 A/B 里带上「其余全部保持不变」这句时，实测人物长相、服装、姿势、场景、光线、
+ * 构图、画幅**全部保持**，只改了目标那一处。所以这里默认补上，用户不必懂怎么写指令。
+ *
+ * 想整张重画应该用「文生图」，按钮文案里已写清这一点。
+ */
+const FIX_PRESERVE_CLAUSE =
+  '；除上述改动外，画面其余部分（人物长相、服装、姿势、背景、光线、构图、画幅）全部保持不变，不要重画整张图';
+
 function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
   const { updateNodeData, getNodes, setNodes } = useReactFlow();
   const queryClient = useQueryClient();
@@ -404,7 +417,9 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
     setFixBusy(true);
     setFixStatus('修正中…');
     try {
-      const urls = await editImage(src, instruction, { ratio: data.ratio });
+      // 默认追加「保真」尾句（去掉用户可能多打的句末标点，避免出现「。。」）
+      const guarded = `${instruction.replace(/[。.；;，,\s]+$/, '')}${FIX_PRESERVE_CLAUSE}`;
+      const urls = await editImage(src, guarded, { ratio: data.ratio });
       if (urls.length === 0) throw new Error('模型没有返回图片');
       // ⚠️ 要把**原图**也放进候选，不能只放新图：候选块是 `length > 1` 才渲染的
       // （见下方「候选 N 张」那段），只放一张会让原图直接从界面上消失 ——
@@ -412,7 +427,7 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
       const prev = (data.candidates as string[] | undefined) ?? [];
       const merged = [...prev, src, ...urls].filter((u, i, a) => a.indexOf(u) === i);
       patch({ candidates: merged, imageUrl: urls[0] });
-      setFixStatus(`改好 ${urls.length} 张，已设为首帧（候选里可对比）`);
+      setFixStatus(`改好 ${urls.length} 张，已设为首帧（基于当前选中那张图；候选里可对比/回退）`);
       setFixText('');
     } catch (err) {
       setFixStatus(err instanceof Error ? err.message : '修正失败');
@@ -618,18 +633,16 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
               className="nodrag shrink-0 rounded bg-amber-500 px-1.5 py-1 text-[10px] font-medium text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
               disabled={fixBusy || !fixText.trim()}
               onClick={() => void onFixImage()}
-              title={
-                '对着当前这张图做定点修正（图生图），整张重画请用「文生图」。\n' +
-                '适合：删/换多出来的主体或道具。\n' +
-                '不适合：改景别（拉远会连带改变人物外观）、想让角色长得更像锚定图。'
-              }
+              title="改一处（适合删/换多出来的主体）；拉远镜头或整张重画请用「文生图」"
             >
               {fixBusy ? '修正中…' : '修一下'}
             </button>
           </div>
-          {fixStatus && (
-            <div className="mt-1 text-[10px] leading-3 text-slate-500">{fixStatus}</div>
-          )}
+          {/* 一行提示兼状态位：没有状态时说明默认行为（用户实测反馈「别处也变了」之后加的），
+              有状态时直接显示状态，不额外占一行 */}
+          <div className="mt-1 text-[10px] leading-3 text-slate-500">
+            {fixStatus || '默认只改这处、其余保持不变（整张重画用「文生图」）'}
+          </div>
         </div>
       )}
       {data.imageUrl && !isPublicImageUrl(data.imageUrl) && (

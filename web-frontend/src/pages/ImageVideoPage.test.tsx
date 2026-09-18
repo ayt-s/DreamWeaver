@@ -185,7 +185,11 @@ describe('ImageVideoPage 无限画布页', () => {
     const [src, instruction, opts] = vi.mocked(editImage).mock.calls[0];
     // 传的是**当前节点的那张图**，不是提示词：修正必须基于已有画面
     expect(src).toBe('https://cdn.local/uploaded.png');
-    expect(instruction).toBe('去掉多出来的那头牛');
+    // ⚠️ 这条断言是真需求：用户实测「只说去掉右边的黑牛 → 别处也变了」，
+    // 所以前端默认补上「其余全部保持不变」的保真尾句（A/B 实测带这句时只改目标那一处）
+    expect(instruction).toContain('去掉多出来的那头牛');
+    expect(instruction).toContain('全部保持不变');
+    expect(instruction).not.toMatch(/。+；/);
     expect(opts?.ratio).toBe('16:9');
 
     // 成功文案 + 候选块出现（原图 + 改后 共 2 张，能对比能回退）
