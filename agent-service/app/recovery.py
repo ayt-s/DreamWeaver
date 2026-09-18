@@ -135,9 +135,23 @@ async def _probe_video(video_id: str, model_name: str) -> tuple[dict | None, str
             logger.debug("query_video(%s, provider=%s) 失败: %s", video_id, name, exc)
             continue
         if isinstance(res, dict) and (
-            res.get("status") or res.get("url") or res.get("video_url") or res.get("error")
+            res.get("status") or res.get("url") or res.get("video_url")
         ):
             return res, name
+        # ⚠️ 2026-09-19 修：**绝不能把 `error` 键当探测命中**。
+        #    实测（零成本探针，本文件当日复现）：用错 provider/账号查一个真实存在的 video_id，
+        #    上游返回 {"error":{"code":404,"message":"task not found"}} 且**不抛错** ——
+        #    命中这个分支后 `resolve_submitted` 走「已失败/过期」路径，
+        #    把 submitted 里的 video_id 清掉并**重新生成**：已付费、平台上其实已完成的视频
+        #    就这样被丢弃重做（HD 档 $0.025–0.055/秒是真钱，flash 档虽然免费也白烧额度）。
+        #    正确做法：只有带**真实状态**的响应才算命中；error / 404 一律继续试下一个 provider，
+        #    全都不认就返回 None —— 交给 resolve_submitted 维持「等」的语义，不清产物。
+        if isinstance(res, dict) and res.get("error"):
+            logger.info(
+                "query_video(%s, provider=%s) 返回 error（多为账号/归属不符，非任务失败），继续试下一个",
+                video_id, name,
+            )
+            continue
     return None, fallback
 
 
