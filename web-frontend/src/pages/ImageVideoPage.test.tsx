@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import ImageVideoPage from './ImageVideoPage';
 import { createVideoTask, getTask, listTasks, uploadImage } from '../api/tasks';
 import { editImage } from '../api/imageEdit';
+import { countCandidates } from '../api/candidateQc';
 import type { TaskListResponse, TaskResponse } from '../types/task';
 
 // 只替换「提交任务」这一个函数：断言单节点「文生图」确实走了直出短路。
@@ -25,6 +26,13 @@ vi.mock('../api/tasks', async (importOriginal) => {
 
 // 定点修正：整模块替换（页面只用 editImage；用例逐条设置返回值）
 vi.mock('../api/imageEdit', () => ({ editImage: vi.fn() }));
+
+// 候选主体计数：只替换 countCandidates（**保留真实的 outliersBySubjects** ——
+// 多数派/少数派口径本身是纯逻辑，mock 掉它这条用例就失去意义了）。
+vi.mock('../api/candidateQc', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/candidateQc')>();
+  return { ...actual, countCandidates: vi.fn() };
+});
 
 // React Flow 在 jsdom 下需要 ResizeObserver（白屏回归防护：保证页面无运行时错误挂载）
 beforeAll(() => {
@@ -826,5 +834,43 @@ describe('场景锚未匹配的处理（未命中不再「全给」）', () => {
 
     await waitFor(() => expect(vi.mocked(createVideoTask)).toHaveBeenCalled());
     expect(vi.mocked(createVideoTask).mock.calls[0][0].referenceImages).toBeUndefined();
+  });
+
+  it('★ 候选主体数角标：「跟别张不一样」的那张标出来（治三张一起多出一头牛）', async () => {
+    vi.mocked(editImage).mockClear();
+    vi.mocked(countCandidates).mockClear();
+    // 2 张候选：原图 1人1牛、改后那张 1人2牛 → 后者是少数派，要被标出来
+    vi.mocked(countCandidates).mockResolvedValue({
+      results: [
+        { index: 0, url: 'https://cdn.local/uploaded.png', skipped: false, people: 1,
+          animals: 1, faceCloseup: false, label: '1人1牛' },
+        { index: 1, url: 'https://cdn.fixed/one.png', skipped: false, people: 1,
+          animals: 2, faceCloseup: false, label: '1人2牛' },
+      ],
+      summary: { total: 2, counted: 2 },
+    });
+    vi.mocked(uploadImage).mockResolvedValue({ url: 'https://cdn.local/uploaded.png', name: 'x' });
+    vi.mocked(editImage).mockResolvedValue(['https://cdn.fixed/one.png']);
+
+    renderPage();
+    // 用「修一下」造出两张候选（原图 + 改后），与真实候选块的形态一致
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, {
+      target: { files: [new File(['x'], 'src.png', { type: 'image/png' })] },
+    });
+    const box = await waitFor(() => screen.getAllByPlaceholderText(/改一处/)[0]);
+    fireEvent.change(box, { target: { value: '去掉多出来的那头牛' } });
+    fireEvent.click(screen.getAllByText('修一下')[0].closest('button') as HTMLButtonElement);
+
+    // 角标是**晚到**的（模型串行数图），所以这里 await
+    await waitFor(() => expect(screen.getAllByText('1人1牛').length).toBeGreaterThan(0));
+    expect(screen.getAllByText('1人2牛').length).toBeGreaterThan(0);
+    // 行头也必须说出来 —— 只打角标不说「跟别张不同」，用户未必会去比数字
+    expect(screen.getByText(/1 张主体数与其余不同/)).toBeInTheDocument();
+    // 传给接口的就是这批候选 URL（顺序即 index）
+    expect(vi.mocked(countCandidates).mock.calls[0][0]).toEqual([
+      'https://cdn.local/uploaded.png',
+      'https://cdn.fixed/one.png',
+    ]);
   });
 });

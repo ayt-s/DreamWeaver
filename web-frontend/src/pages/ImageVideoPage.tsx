@@ -60,6 +60,7 @@ import {
 } from '../api/canvas';
 import { generateText } from '../api/agent';
 import { qcImages } from '../api/imageQc';
+import { countCandidates, outliersBySubjects } from '../api/candidateQc';
 import { editImage } from '../api/imageEdit';
 import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
 import { createContext, useContext } from 'react';
@@ -371,6 +372,18 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
     queryFn: () => qcImages(data.candidates as string[]),
   });
   const qcByUrl = new Map((qc?.results ?? []).map((r) => [r.url, r]));
+  // 候选主体计数（多模态，2026-09-18 标定 13/13）：治「三张候选一起多出一头牛」。
+  // 串行调用，角标会比缩略图晚 15~25s 到 —— 晚到没关系，失败就什么都不显示。
+  const { data: subjects } = useQuery({
+    queryKey: ['candidate-subjects', candidateKey],
+    enabled: candidateKey.length > 0,
+    // temperature=0 + 同一批 URL → 判定稳定，缓存到会话结束
+    staleTime: Infinity,
+    queryFn: () => countCandidates(data.candidates as string[]),
+  });
+  const subjectsByUrl = new Map((subjects?.results ?? []).map((r) => [r.url, r]));
+  // 「与其余候选不同」的那些（相对多数口径，只提示不淘汰）
+  const subjectOutliers = outliersBySubjects(subjects ?? null);
   const patch = (p: Partial<ImageNodeData>) => updateNodeData(id, p);
 
   // === 分镜顺序（上移 / 下移）===
@@ -623,11 +636,20 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
                 · {qc.summary.closeupCount} 张疑似面部特写
               </span>
             )}
+            {/* 主体计数是模型算的（慢一步到）：只提示「这张跟别张数出来不一样」 */}
+            {subjectOutliers.size > 0 && (
+              <span className="ml-1 text-amber-600">
+                · {subjectOutliers.size} 张主体数与其余不同
+              </span>
+            )}
           </div>
           <div className="flex gap-1 overflow-x-auto pb-0.5">
             {(data.candidates as string[]).map((u: string, i: number) => {
               const verdict = qcByUrl.get(u);
               const bad = verdict?.closeup === true;
+              const subject = subjectsByUrl.get(u);
+              const subjectLabel = subject && !subject.skipped ? subject.label : '';
+              const subjectOdd = subjectOutliers.has(u);
               return (
                 <button
                   key={`${id}-cand-${i}`}
@@ -635,6 +657,8 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
                   onClick={() => patch({ imageUrl: u })}
                   title={
                     `候选 ${i + 1}（点击作为该镜首帧）` +
+                    (subjectLabel ? ` · 画面里 ${subjectLabel}` : '') +
+                    (subjectOdd ? ' · 与其余候选数出的主体数不同' : '') +
                     (bad
                       ? ` · 疑似面部特写：人脸占画面 ${Math.round((verdict?.faceSpan ?? 0) * 100)}%，` +
                         `提示词里的「严禁面部特写」红线可能没拦住`
@@ -655,6 +679,17 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
                   {bad && (
                     <span className="absolute inset-x-0 bottom-0 bg-amber-500/90 text-center text-[8px] font-medium leading-3 text-white">
                       面部特写
+                    </span>
+                  )}
+                  {/* 主体数角标（模型数的，慢一步到）：与其余候选不同时用琥珀底 —— 
+                      治「三张候选一起多出一头牛，肉眼挑不出来」。⚠️ 同样只提示不淘汰 */}
+                  {subjectLabel && (
+                    <span
+                      className={`absolute inset-x-0 top-0 text-center text-[8px] font-medium leading-3 text-white ${
+                        subjectOdd ? 'bg-amber-500/90' : 'bg-slate-900/55'
+                      }`}
+                    >
+                      {subjectLabel}
                     </span>
                   )}
                 </button>
