@@ -32,6 +32,10 @@ tmp/
 
 # 生成产物：图片/视频输出目录（运行时产生，不入库）
 agent-service/data/
+# Agent 回调 fallback（`app/fallback.py` 写 <cwd>/data/fallback.jsonl）：后端重启窗口内
+# 回调 502 就会落这里，而启动 bat 拉起服务时的 cwd 是**仓库根目录** → 根目录也会出现一份，
+# 别让它一直挂在 git status 上（原来的规则只忽略了 agent-service/ 下面那份）。
+/data/
 
 # 本地上传图片（运行时产生，不入库）
 web-backend/uploads/
