@@ -27,6 +27,9 @@ _IMAGE_RED_LINES = (
     # ★ 2026-09-17 加：同一张角色卡，前一批出「土黄短打+补丁裤」、后一批出「绿袍束发」——
     #   跨批次造型漂移。红字在末尾、权重最高，是唯一能同时约束所有镜头的落点。
     "同一角色在各镜头中的服装与发型必须完全一致，不得换装；"
+    # ★ 2026-09-18 加：实测同一主体在提示词里被提名两次就画两份（#5 两个人 / #6 两头牛）。
+    #   去重已在文本层做（_strip_subject_clauses / _drop_animal_mentions），这条是末尾兜底。
+    "画面中每个角色只出现一次，严禁复制主体；"
     "4K 超高清；"
     "16:9 画幅；"
     "主体清晰居中；"
@@ -186,6 +189,71 @@ def _animal_brief(names: list[str], analysis: dict | None = None) -> str:
         desc = (card.get(name) or "").split("，")[0].split("。")[0].strip()[:30]
         parts.append(f"{name}（{desc}）" if desc else name)
     return "、".join(parts)
+
+
+# 「一人一牛跪坐门外」这类**主体短语**：出现在**场景锚原文**里（[场景] 段只该描述环境）。
+# 识别形状 = 数量词 + 主体量词/人，或泛称主体词。
+# ⚠️ 泛称词刻意**不含「村民」**：「村民宴会场地」是地点名，误删会丢掉场景本身。
+# ⚠️ 与下面 `_SUBJECT_COUNT_RE`（管的是 **[镜头] 段** 的人数措辞）职责不同、不要合并：
+#    那个只是「双人并排/一人一牛」这类构图措辞，管不到场景原文里的叙述句。
+_SCENE_SUBJECT_RE = re.compile(
+    r"[一二两三四五六七八九十百千数几半][个位名头只匹条人]|人群|众人|人们|满村"
+    r"|少年|少女|孩童|孩子|老者|老人|男子|女子"
+)
+
+
+def _strip_subject_clauses(scene: str, analysis: dict | None = None) -> str:
+    """[场景] 段只留环境：把**提到角色或主体数量**的子句整句去掉（2026-09-18 加）。
+
+    ★ 为什么要动它（画布 40 六张真实首帧亲眼核过，不是推测）：
+      同一主体在提示词里被指定两次，模型就画两份 ——
+      · #5 场景原文写「焦黑的木梁倒在地上，**一人一牛**跪坐门外，神情呆滞绝望」，
+        而 [角色锚] 又列了陈浔 → 画面出现 **2 个人**（站着的陈浔 + 场景里那个「一人」）；
+      · #6 场景段动物简述「大黑牛（通体漆黑的灵兽牛）」+ [镜头]「绕少年与黑牛缓慢旋转」
+        → **2 头牛**。
+      主体信息由 [角色锚] / [主体动作] / 场景末尾的动物简述承担，场景里再说一遍只会被复制。
+
+    兜底：剥完太短（<6 字）就**原文返回** —— 宁可留着冗余，也不能交出一个空场景。
+    """
+    text = (scene or "").strip()
+    if not text:
+        return scene
+    names = [str(k) for k in ((analysis or {}).get("characters") or {}).keys()]
+    kept: list[str] = []
+    for clause in re.split(r"[，、；]", text):
+        clause = clause.strip()
+        if not clause:
+            continue
+        if _SCENE_SUBJECT_RE.search(clause):
+            continue
+        if any(alias and alias in clause for n in names for alias in _char_aliases(n)):
+            continue
+        kept.append(clause)
+    if not kept:
+        return text                      # 整段都在说角色 → 保持原样（不交空场景）
+    out = "，".join(kept)
+    return out if len(out) >= 6 else text
+
+
+def _drop_animal_mentions(camera: str, animals: list[str], scene: str) -> str:
+    """把 [镜头] 段里的动物提名去掉，保证**同一主体只提名一次**。
+
+    ★ 依据：#6 的两头牛来自 [场景] 与 [镜头] 各提名一次；而 #3 的镜头也提过黑牛，
+      形状里只提名一次 → 实测只出一头。所以去掉镜头侧那一次（场景侧的简述是
+      C 组实验验证过的正确形状，保留）。连词一并吃掉：
+      「绕少年与黑牛缓慢旋转」→「绕少年缓慢旋转」。
+    兜底：删完太短就**原文返回**（不许把镜头段删空 —— 镜头信息没了比多画一个主体更糟）。
+    """
+    camera = camera or ""
+    if not any(alias and alias in scene for n in animals for alias in _char_aliases(n)):
+        return camera                    # 场景里没提动物 → 镜头这次是唯一提名，留着
+    out = camera
+    for name in animals:
+        for alias in _char_aliases(name):
+            if alias:
+                out = re.sub(rf"[与和、及]?{re.escape(alias)}", "", out)
+    out = re.sub(r"[，、]{2,}", "，", out).strip("，、与和 ")
+    return out if len(out) >= 4 else camera
 
 
 # 角色卡里「服装 / 发型」的线索词 —— 用来把造型分句抠出来重复一次。
@@ -361,7 +429,9 @@ def compose_image_prompt(seg: dict, style: str, analysis: dict | None = None) ->
     末尾红线：agnès 对末尾约束响应最好，放红线兜底
     """
     subject = _extract_subject(seg)
-    scene = seg.get("scene", "")
+    # ★ 场景段先剥主体子句（2026-09-18）：场景锚原文常自带「一人一牛跪坐门外」这类短语，
+    #   与 [角色锚]/[主体动作] 重复指定同一主体 → 实测画出两份主体。
+    scene = _strip_subject_clauses(seg.get("scene", ""), analysis)
     humans, animals = _split_characters(seg, analysis)
     # 动物/灵兽不进 [角色锚]（一旦进去模型就画两头），改用 [场景] 里一句短的带出
     if animals:
@@ -378,6 +448,9 @@ def compose_image_prompt(seg: dict, style: str, analysis: dict | None = None) ->
         scene = f"{scene}，{props_brief}" if scene else props_brief
     # 有人物的镜头才降「特写」档：纯景物的特写（米袋、斧头）不违反红线
     camera = _ensure_camera_terms(_sanitize_camera(seg.get("camera", ""), bool(humans)))
+    # ★ 去重（2026-09-18）：动物已在 [场景] 简述过 → 把 [镜头] 里那次提名去掉。
+    #   实测 #6 两头牛 = 场景简述 + 镜头提名各一次；#3 只提名一次 → 只出一头。
+    camera = _ensure_camera_terms(_drop_animal_mentions(camera, animals, scene))
     characters = _format_characters(seg, analysis)
     mood = seg.get("mood", "")
 
