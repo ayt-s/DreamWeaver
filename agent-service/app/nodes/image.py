@@ -19,6 +19,12 @@ from app.utils import trace as trace_util
 
 logger = logging.getLogger(__name__)
 
+# 直出图（画布节点「一键文生图」）最多带几张锚定图当参考图。
+#
+# 上限比视频侧的 5 张更保守：图片接口的多图上限没有官方承诺（实测 2 张 OK），
+# 而常见情形只需覆盖「1~2 个角色 + 1 个场景」。前端 `FIRST_FRAME_REF_LIMIT` 同值。
+FIRST_FRAME_REF_LIMIT = 4
+
 
 def _backfill_reused_images(state: CreativeSessionState) -> None:
     """断点恢复：把 state 里已有的 image_urls **按索引**回填成复用字段（原地改写）。
@@ -267,7 +273,15 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
         sid = state["session_id"]
         count = max(1, min(5, int(state.get("image_count") or 1)))
         prompt = str(state.get("raw_prompt") or "").strip()
-        logger.info("直出图模式: 候选 %d 张 | prompt=%.60s", count, prompt)
+        # ★ 锚定图当参考图（2026-09-18 A/B 实测，画布 40 真实提示词 + 真实锚定图）：
+        #   带场景锚图 → 产物把参考图里的村庄/梯田/茅屋环境带出来了（纯文生只有普通山坡）；
+        #   带角色锚图 → 弱收益（服装色系更贴角色卡），**不会锁脸**（i2i 对跨镜脸一致无优势）。
+        #   实测不会复制主体（参考图 1 人 1 牛 → 产物仍 1 人 1 牛），画幅也不受影响。
+        ref_images = [
+            str(u).strip() for u in (state.get("reference_images") or []) if str(u).strip()
+        ][:FIRST_FRAME_REF_LIMIT]
+        logger.info("直出图模式: 候选 %d 张 | 参考图 %d 张 | prompt=%.60s",
+                    count, len(ref_images), prompt)
         direct_urls: list[str] = []
         for k in range(count):
             if abort.is_aborted(sid):
@@ -276,15 +290,25 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
             await events.emit(sid, "tool_called",
                               {"tool_name": "generate_image", "shot_index": k})
             start = time.time()
-            try:
-                got = await gateway.generate_image(
-                    prompt=prompt, model=settings.image_model,
-                    # 画幅来自本节点（data.ratio）——不传服务端给 1:1 正方形
-                    ratio=str(state.get("image_ratio") or ""),
-                )
-            except Exception as exc:  # 单张失败不影响其余候选
-                logger.warning("直出图第 %d 张失败: %s", k + 1, exc)
-                got = []
+            # 带参考图失败时**去掉参考图重试一次**：参考图是增益项，不是必需项 ——
+            # 上游对多图/图生图的限制（或某张 URL 失效）不该把整个出图搞挂。
+            got: list[str] = []
+            attempts = [ref_images, []] if ref_images else [[]]
+            for refs in attempts:
+                try:
+                    got = await gateway.generate_image(
+                        prompt=prompt, model=settings.image_model,
+                        # 画幅来自本节点（data.ratio）——不传服务端给 1:1 正方形
+                        ratio=str(state.get("image_ratio") or ""),
+                        reference_images=refs or None,
+                    )
+                except Exception as exc:  # 单张失败不影响其余候选
+                    logger.warning("直出图第 %d 张%s失败: %s", k + 1,
+                                   f"（带 {len(refs)} 张参考图）" if refs else "", exc)
+                    got = []
+                if got or not refs:
+                    break
+                logger.info("直出图第 %d 张去掉参考图重试一次", k + 1)
             latency_ms = int((time.time() - start) * 1000)
             if got:
                 direct_urls.append(got[0])
