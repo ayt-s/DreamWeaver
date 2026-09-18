@@ -67,6 +67,7 @@ import { editImage } from '../api/imageEdit';
 import { cachedImageUrl, parseImageUrls, type TaskResponse } from '../types/task';
 import { createContext, useContext } from 'react';
 import { reorderShotX, sortShots } from '../utils/shotOrder';
+import { filmSecondsFromChain } from '../utils/canvasPlan';
 import {
   augmentPromptWithAnchors,
   firstFrameRefsFor,
@@ -143,9 +144,6 @@ interface ImageNodeData {
   originTaskId?: number;
   /** 来源任务的原始提示词（只读）；点节点上的「填入提示词」才会写进 prompt 字段 */
   originPrompt?: string;
-}
-interface VideoNodeData {
-  seconds: number;
 }
 
 type GraphNode = Node<any>;
@@ -1620,13 +1618,18 @@ export default function CanvasPage() {
       camera_spec?: CameraSpec;
     }> = [];
     const texts: string[] = [];
-    let videoSeconds = 4;
+    // ★ 2026-09-19 修（#21）：「每段时长」是**全链**设置，必须先扫出来再用。
+    //   原来是边遍历边赋值，而成片节点在 chain 里排在图片节点**之后** ⇒ 每段 push 时
+    //   拿到的仍是初值 4：用户改成 6 秒、顶栏也显示 6 秒，提交的 segments.seconds 却是 4
+    //   （实测复刻：1 图 + 成片 6s → seconds: 4；3 图串联 → [4,4,4]）。
+    const videoSeconds = filmSecondsFromChain(chain, nodes);
     for (const id of chain) {
       const node = byId.get(id);
       if (!node) continue;
       if (node.type === 'videoNode') {
-        videoSeconds = (node.data as VideoNodeData).seconds || 4;
-      } else if (node.type === 'textNode') {
+        continue; // 秒数已由上面的全链预扫描取到，这里不再改（否则只影响它之后的段）
+      }
+      if (node.type === 'textNode') {
         const c = (node.data as TextNodeData).content.trim();
         if (c) texts.push(c);
       } else if (node.type === 'imageNode') {
