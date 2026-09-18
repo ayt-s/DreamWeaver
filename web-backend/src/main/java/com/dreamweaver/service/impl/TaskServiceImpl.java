@@ -521,7 +521,7 @@ public class TaskServiceImpl implements TaskService {
      */
     @Override
     @Transactional
-    public TaskResponse concatTask(Long id) {
+    public TaskResponse concatTask(Long id, boolean force) {
         Task task = taskMapper.selectById(id);
         if (task == null) {
             throw new IllegalArgumentException("任务不存在（id=" + id + "）");
@@ -530,7 +530,9 @@ public class TaskServiceImpl implements TaskService {
             throw new IllegalArgumentException(
                     "仅已终态的任务可拼接成片（当前=" + task.getStatus() + "）");
         }
-        if (taskJsonCodec.hasFinalVideo(task.getResultJson())) {
+        // force=true（「重新拼接」）必须真的重拼：拼接算法会修，而幂等短路会让既有成片
+        // 永远拿不到修复（实测：2026-09-18 修「多段成片整条没声音」时，旧成片全是无声的）
+        if (!force && taskJsonCodec.hasFinalVideo(task.getResultJson())) {
             return toResponse(task);
         }
         List<String> segments = taskJsonCodec.parseResultUrls(task.getResultJson());
@@ -540,7 +542,7 @@ public class TaskServiceImpl implements TaskService {
         if (task.getSessionId() == null || task.getSessionId().isBlank()) {
             throw new IllegalArgumentException("任务未关联 Agent 会话，无法拼接成片");
         }
-        String finalUrl = callAgentConcat(task.getSessionId());
+        String finalUrl = callAgentConcat(task.getSessionId(), force);
         List<String> merged = new java.util.ArrayList<>();
         merged.add(finalUrl);
         merged.addAll(segments);
@@ -553,12 +555,18 @@ public class TaskServiceImpl implements TaskService {
         return toResponse(taskMapper.selectById(id));
     }
 
-    /** 调 Agent 拼接端点，返回本地产物 URL（agent 侧落 final.mp4 到会话目录） */
-    private String callAgentConcat(String sessionId) {
+    /** 调 Agent 拼接端点，返回本地产物 URL（agent 侧落 final.mp4 到会话目录）
+     *
+     *  <p>{@code force=true} 会带上 {@code ?force=true}，让 agent 侧跳过
+     *  「final.mp4 已是最新 → 直接返回」的短路，真的重新编码。
+     */
+    private String callAgentConcat(String sessionId, boolean force) {
         try {
+            String uri = agentServiceProperties.getBaseUrl() + "/v1/tasks/" + sessionId + "/concat"
+                    + (force ? "?force=true" : "");
             CommonResult<?> resp = webClientBuilder.build()
                     .post()
-                    .uri(agentServiceProperties.getBaseUrl() + "/v1/tasks/" + sessionId + "/concat")
+                    .uri(uri)
                     .retrieve()
                     .bodyToMono(CommonResult.class)
                     .block(java.time.Duration.ofMinutes(5));

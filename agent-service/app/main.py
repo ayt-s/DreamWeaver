@@ -526,7 +526,7 @@ async def task_events(session_id: str, request: Request):
 
 
 @app.post("/v1/tasks/{session_id}/concat", response_model=ApiResponse)
-async def concat_task_videos(session_id: str) -> ApiResponse:
+async def concat_task_videos(session_id: str, force: bool = False) -> ApiResponse:
     """把已生成的分段视频拼接成一条成片（标准模式补上人工拼接入口）。
 
     背景：标准模式（无 segments）产出的是 N 个分段 URL，画廊只平铺展示；
@@ -535,7 +535,9 @@ async def concat_task_videos(session_id: str) -> ApiResponse:
 
     复用同一套本地工具：分段已由 asset_fetch 落在 `data/outputs/<sid>/seg_*.mp4`，
     直接 xfade 拼接；本地缺失时按 state.video_urls 下载兜底（老会话/目录被清理）。
-    幂等：final.mp4 已存在且不早于最后一个分段 → 直接返回，不重复编码。
+    幂等：final.mp4 已存在且不早于最后一个分段 → 直接返回，不重复编码；
+    **`?force=true` 则强制重拼** —— 拼接算法本身会修（例如 2026-09-18 修掉
+    「多段成片整条没声音」），幂等短路会让既有成片永远拿不到修复。
     不消耗 agnes 额度（纯本地 ffmpeg）。
 
     实现已抽到 `app.utils.stitch`：标准模式的自动拼接（notify_final）与本端点共用同一条
@@ -547,7 +549,7 @@ async def concat_task_videos(session_id: str) -> ApiResponse:
     if not state:
         state = (await session_store.load_state(session_id)) or {}
 
-    result = await stitch_session(session_id, state.get("video_urls") or [])
+    result = await stitch_session(session_id, state.get("video_urls") or [], force=force)
     if result is None:
         raise AppError("可拼接的分段不足 2 个", status_code=409)
 

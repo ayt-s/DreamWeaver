@@ -21,18 +21,23 @@ logger = logging.getLogger(__name__)
 
 
 async def stitch_session(session_id: str, video_urls: list[str] | None = None,
-                         allow_download: bool = True) -> dict | None:
+                         allow_download: bool = True, force: bool = False) -> dict | None:
     """把会话目录下的分段拼成 `final.mp4`。
 
     分块来源优先级：会话目录里已落地的 `seg_*.mp4`（`asset_fetch` 的产物，画布模式
     已复用同理），本地缺失时按 `video_urls` 顺序补下载（老会话/目录被清理的兜底）。
 
     幂等：`final.mp4` 已存在且不早于最后一个分段 → 直接返回，不重复编码。
+    **但 `force=True` 时必须真的重拼**：拼接逻辑本身会变（实测 2026-09-18 修掉
+    「多段成片整条没声音」时，31 条既有成片全是无声的，而幂等短路让它们
+    **永远拿不到修复** —— 用户点「拼接成片」只会静默拿到旧文件，
+    而重生成分段是要花钱的）。所以给人工入口留一个「重新拼接」。
 
     :param allow_download: 是否允许网络兜底下载。**notify_final 的自动拼接传 False**：
         那条路径在「任务宣告终态」之前执行，而 download 超时上限是 300s/段 —— URL 一旦
         挂住，任务会长时间停在非终态。自动拼接只用本地已有分段，缺了就不拼
         （用户仍可在画廊点「拼接成片」，那个端点保留下载兜底）。
+    :param force: 忽略「已有成片」短路，强制重新编码（覆盖 final.mp4）。
 
     :return: `{final_url, segment_count, duration, cached}`；可拼接分段不足 2 个时返回 None
              （由调用方决定是报错还是跳过）。
@@ -63,7 +68,7 @@ async def stitch_session(session_id: str, video_urls: list[str] | None = None,
     if len(clips) < 2:
         return None
 
-    if (final.exists() and final.stat().st_size > 0
+    if (not force and final.exists() and final.stat().st_size > 0
             and final.stat().st_mtime >= clips[-1].stat().st_mtime):
         return {
             "final_url": local_url(session_id),

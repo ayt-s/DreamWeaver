@@ -93,8 +93,11 @@ export interface RegenerateParams {
 
 // 拼接成片：把该任务的多段视频按顺序拼成一条长视频（标准模式此前没有入口）
 // 纯本地 ffmpeg，不消耗生成额度；后端幂等（已有成片直接返回）
-export async function concatTask(id: number): Promise<TaskResponse> {
-  return unwrap(client.post(`/tasks/${id}/concat`));
+export async function concatTask(id: number, force = false): Promise<TaskResponse> {
+  // force=true（「重新拼接」）忽略后端幂等短路，强制重新编码 ——
+  // 拼接算法本身会修（实测 2026-09-18 修掉「多段成片整条没声音」），
+  // 不 force 的话既有成片永远拿不到修复，而重生成分段要花钱。
+  return unwrap(client.post(`/tasks/${id}/concat${force ? '?force=true' : ''}`));
 }
 
 // 重新生成历史作品（仅终态任务可发起；同一任务原地重跑，不产生新 id）

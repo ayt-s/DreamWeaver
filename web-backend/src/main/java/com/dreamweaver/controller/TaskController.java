@@ -89,10 +89,16 @@ public class TaskController {
      * 拼接成片：把该任务的分段视频按顺序拼成一条长视频。
      * 标准模式（一句话生成）此前只有平铺的分段，没有任何拼接入口；
      * 纯本地 ffmpeg，不消耗生成额度，重复调用幂等。
+     *
+     * <p>{@code force=true}（前端「重新拼接」）忽略幂等，强制重拼 —— 拼接算法本身会修
+     * （实测：2026-09-18 修掉「多段成片整条没声音」），不 force 的话既有成片
+     * **永远拿不到修复**，而重生成分段是要花钱的。
      */
     @PostMapping("/{id}/concat")
-    public CommonResult<TaskResponse> concatTask(@PathVariable Long id) {
-        return CommonResult.ok(taskService.concatTask(id));
+    public CommonResult<TaskResponse> concatTask(
+            @PathVariable Long id,
+            @RequestParam(value = "force", defaultValue = "false") boolean force) {
+        return CommonResult.ok(taskService.concatTask(id, force));
     }
 
     /** 穿帮段重新生成：勾选段重生（可改提示词）+ 其余段复用 + 重新拼接成片 */

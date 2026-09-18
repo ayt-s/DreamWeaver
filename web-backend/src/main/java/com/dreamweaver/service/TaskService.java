@@ -66,6 +66,15 @@ public interface TaskService {
     /**
      * 拼接成片：把该任务已生成的 N 段视频拼成一条长视频（标准模式此前没有用户入口）。
      * 纯本地 ffmpeg，不消耗生成额度；幂等（已有成片直接返回）。
+     *
+     * <p>`force=true` 时忽略「已有成片」短路强制重拼 —— 拼接算法本身会修
+     * （实测 2026-09-18 修掉「多段成片整条没声音」），而幂等短路会让既有成片
+     * **永远拿不到修复**：用户点「拼接成片」只会静默拿到旧文件，重生成段却要花钱。
      */
-    TaskResponse concatTask(Long id);
+    TaskResponse concatTask(Long id, boolean force);
+
+    /** 兼容旧调用：等价于 {@code concatTask(id, false)}。 */
+    default TaskResponse concatTask(Long id) {
+        return concatTask(id, false);
+    }
 }

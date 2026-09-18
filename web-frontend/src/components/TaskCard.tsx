@@ -201,7 +201,7 @@ export default function TaskCard({ task, subscribe = false }: TaskCardProps) {
   // 拼接成片：标准模式（无成片）的分段视频，一键拼成一条长视频
   // 不消耗生成额度（后端跑本地 ffmpeg），成功后列表刷新即变成「成片 + 分段缩略」布局
   const concatMutation = useMutation({
-    mutationFn: () => concatTask(task.id),
+    mutationFn: (force: boolean) => concatTask(task.id, force),
     onSuccess: refreshList,
   });
 
@@ -383,7 +383,7 @@ export default function TaskCard({ task, subscribe = false }: TaskCardProps) {
                       </p>
                       <button
                         type="button"
-                        onClick={() => concatMutation.mutate()}
+                        onClick={() => concatMutation.mutate(false)}
                         disabled={concatMutation.isPending}
                         title="按顺序用交叉淡化过渡拼成一条长视频；纯本地 ffmpeg，不消耗生成额度"
                         className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[11px] font-medium text-violet-600 transition-colors hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 disabled:hover:bg-transparent"
@@ -423,21 +423,46 @@ export default function TaskCard({ task, subscribe = false }: TaskCardProps) {
                   <p className="text-[11px] text-slate-400">
                     已拼接 {segs.length} 段
                   </p>
-                  <button
-                    type="button"
-                    onClick={() => setSegmentPanelOpen(true)}
-                    disabled={!task.segmentsJson}
-                    title={
-                      task.segmentsJson
-                        ? '勾选要重生的段，其余段复用原视频'
-                        : '该任务未保存分镜数据，仅支持全量重生'
-                    }
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[11px] font-medium text-violet-600 transition-colors hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 disabled:hover:bg-transparent"
-                  >
-                    <ListVideo className="h-3.5 w-3.5" />
-                    按段重生
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {/* 重新拼接（force）：成片已存在时后端会幂等短路直接返回，
+                        所以旧成片拿不到「拼接算法修复」。拼接算法本身会修
+                        （实测 2026-09-18 修掉「多段成片整条没声音」），
+                        而重生成分段是要花钱的 —— 这里给一个零成本的刷新入口。 */}
+                    {segs.length >= 2 && (
+                      <button
+                        type="button"
+                        onClick={() => concatMutation.mutate(true)}
+                        disabled={concatMutation.isPending}
+                        title="用现有分段重新跑一次本地拼接并覆盖当前成片（拼接算法修好后，旧成片要重拼才带上修复）。不消耗生成额度"
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 disabled:hover:bg-transparent"
+                      >
+                        <Film className="h-3.5 w-3.5" />
+                        {concatMutation.isPending ? '拼接中…' : '重新拼接'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setSegmentPanelOpen(true)}
+                      disabled={!task.segmentsJson}
+                      title={
+                        task.segmentsJson
+                          ? '勾选要重生的段，其余段复用原视频'
+                          : '该任务未保存分镜数据，仅支持全量重生'
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 px-2.5 py-1.5 text-[11px] font-medium text-violet-600 transition-colors hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 disabled:hover:bg-transparent"
+                    >
+                      <ListVideo className="h-3.5 w-3.5" />
+                      按段重生
+                    </button>
+                  </div>
                 </div>
+                {concatMutation.isError && (
+                  <p className="text-[11px] text-red-600">
+                    {concatMutation.error instanceof Error
+                      ? concatMutation.error.message
+                      : '重新拼接失败，请稍后重试'}
+                  </p>
+                )}
                 <div className="flex gap-2 overflow-x-auto pb-1">
                   {segs.map((url, i) => (
                     <div
