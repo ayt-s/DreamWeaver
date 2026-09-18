@@ -256,7 +256,12 @@ public class TaskServiceImpl implements TaskService {
         //   只能退化成「按 prompt 重新分镜」—— 实测产出与画布内容**完全无关**
         //   （重试那次提交的视频提示词是一句英文，全库没有任何任务含这句话），
         //   既白烧额度又污染画廊。段里的 image_url 是**输入**（首帧），产物在 result_json，所以带过来安全。
-        request.setSegments(original.getSegmentsJson());
+        // ★ 2026-09-19 补：重生派发前**必须剥掉运行期复用键**（`existing_video_url` /
+        //   `existing_image_url`）。它们是「按段重生」为了省额度临时塞进段的：一旦随基线落库，
+        //   下次「全量重生」会被 agent 的复用分支短路（只有上次勾选的段真重跑）。
+        //   已在库里的脏数据（id=54/38/36/29）由此在**派发时**被剥掉；
+        //   而它的基线也会在下一次「按段重生」落库时被洗净（那条路已改为落库前剥）。
+        request.setSegments(reworkPlanner.stripReuseKeys(original.getSegmentsJson()));
         // 还原精细控制参数（风格/负面词/时间轴/元素绑定），否则重生成会丢设定
         taskJsonCodec.applyGenParamsJson(original.getGenParamsJson(), request);
         // 用户在画廊「编辑参数」里改过的值覆盖历史值（非空字段才覆盖）
@@ -664,8 +669,12 @@ public class TaskServiceImpl implements TaskService {
 
 
         // 3. 重置任务为 pending（旧产物存 prev_result_json 供回滚），段配置更新为最新版
+        // ⚠️ 落库的必须是**剥掉运行期复用键**的版本（2026-09-19 修）：带 `existing_video_url`
+        //    的段配置落库后会污染「全量重生」的输入基线 —— 下次全量重生会被 agent 的复用分支
+        //    短路，只有上次勾选的段真的重跑（实测库中 id=54/38/36/29 均已被污染）。
+        //    派发用的 `newSegmentsJson` 仍带复用键（本次不用重生的段就该复用，省额度）。
         taskMapper.update(null, resetTaskForRerun(id, original.getResultJson())
-                .set(Task::getSegmentsJson, newSegmentsJson));
+                .set(Task::getSegmentsJson, reworkPlanner.stripReuseKeys(newSegmentsJson)));
 
         CreateTaskRequest request = new CreateTaskRequest();
         request.setPrompt(original.getPrompt());

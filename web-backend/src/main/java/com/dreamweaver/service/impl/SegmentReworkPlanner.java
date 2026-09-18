@@ -143,6 +143,30 @@ public class SegmentReworkPlanner {
         seg.remove(KEY_EXISTING_IMAGE);
     }
 
+    /**
+     * 把段配置里的**运行期复用键**剥干净（落库基线专用）。
+     *
+     * <p>★ 2026-09-19 修：`doReworkCore` 此前把带复用键的段配置**同时**用于派发与落库，
+     * 于是 `existing_video_url` 永久写进了 `segments_json`；而它是「按段重生」的输入源，
+     * 下一次**全量重生**会把这份基线原样发给 agent，agent 见到该键就
+     * `continue`（`nodes/video.py`「该段已有视频 URL → 直接复用，不提交 agnes」）
+     * ⇒ 用户点「全量重生」只有上次勾选过的段真的重跑，其余段静默复用旧视频。
+     * 复用键**只对「本次段重生」的那一次派发有意义**，绝不能进基线。
+     *
+     * <p>实测污染证据：库中 id=54/38/36/29 的 `segments_json` 均含 `existing_video_url`
+     * （LOCATE 命中 987/1628/837/456）。
+     */
+    public String stripReuseKeys(String segmentsJson) {
+        if (segmentsJson == null || segmentsJson.isBlank()) {
+            return segmentsJson;
+        }
+        List<Map<String, Object>> segs = taskJsonCodec.parseSegments(segmentsJson);
+        for (Map<String, Object> seg : segs) {
+            clearReuseFields(seg);
+        }
+        return taskJsonCodec.toJsonString(segs);
+    }
+
     private static boolean isUsable(String url) {
         return url != null && !url.isBlank();
     }
