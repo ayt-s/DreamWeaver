@@ -549,7 +549,13 @@ async def concat_task_videos(session_id: str, force: bool = False) -> ApiRespons
     if not state:
         state = (await session_store.load_state(session_id)) or {}
 
-    result = await stitch_session(session_id, state.get("video_urls") or [], force=force)
+    try:
+        result = await stitch_session(session_id, state.get("video_urls") or [], force=force)
+    except RuntimeError as exc:
+        # 拼接失败（源分段损坏 / 编码未成功）→ 给**可诊断**的中文错误。
+        # 不接的话会被全局处理器吞成「服务器开小差了，请稍后重试」，用户与日志都看不出原因。
+        # （实测触发场景：data/outputs 下早期 e2e 测试留下的 1KB 占位段）
+        raise AppError(f"拼接失败：{exc}；请检查分段文件是否完整", status_code=502) from exc
     if result is None:
         raise AppError("可拼接的分段不足 2 个", status_code=409)
 
