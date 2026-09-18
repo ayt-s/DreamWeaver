@@ -301,6 +301,38 @@ class AgnesGateway:
         data = resp.json()
         return data["choices"][0]["message"]["content"]
 
+    @traced("agnes.chat_with_images", run_type="llm")
+    async def chat_with_images(self, prompt: str, image_urls: list[str],
+                               model: str | None = None, temperature: float = 0.0,
+                               max_tokens: int = 800,
+                               session_id: str | None = None) -> str:
+        """多模态调用：文字 + 图片一起发给文本模型，返回纯文本。
+
+        实测（2026-09-18）：agnes chat 吃 OpenAI 形态的多模态 content
+        （`[{"type":"text",...},{"type":"image_url","image_url":{"url":...}}]`）——
+        `/models` 里没有单独的视觉模型，`agnes-2.5-flash` 自己就能读图。
+
+        ⚠️ **`max_tokens` 不能给小**：这个模型会先吐 `reasoning_content`，
+        给小了推理就把额度吃光、`content` 变成空串（实测 13 张图里 7 张返回空，
+        同样的图给足 token 重试就正常 —— 别把空答案当成「模型答不出来」）。
+        """
+        client = await self.pick_client(session_id=session_id)
+        content: list[dict] = [{"type": "text", "text": prompt}]
+        for u in image_urls:
+            content.append({"type": "image_url", "image_url": {"url": u}})
+        resp = await _with_retry(
+            lambda: client._client.post("/chat/completions", json={
+                "model": model or settings.text_model,
+                "messages": [{"role": "user", "content": content}],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }),
+            f"多模态({client.name})",
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
+
     # ---------- 图像 ----------
     # run_type=tool：图像/视频提交是「工具调用」而非 LLM 补全，放 tool 视图更贴切
     @traced("agnes.generate_image", run_type="tool")
