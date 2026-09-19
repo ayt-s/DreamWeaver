@@ -1692,7 +1692,11 @@ export default function CanvasPage() {
           textN && textN.type === 'textNode'
             ? (textN.data as TextNodeData).content.trim()
             : '';
-        const prompt = promptFromText || img.prompt.trim();
+        // ⚠️ 优先级以 UI 的占位符原文为准：**「本段描述（留空则用上游文本节点内容）」**
+        //   ⇒ 图节点自己的描述优先，它为空白时才回落到上游文本节点的内容。
+        //   （第一版我写成了 `promptFromText || img.prompt` = 上游优先 —— 那是把原来的错优先级留下来了，
+        //     是 #24 的 UI 实测用渲染出来的 placeholder 当场抓出来的。）
+        const prompt = img.prompt.trim() || promptFromText;
         segments.push({
           image_url: img.imageUrl.trim(),
           prompt,
