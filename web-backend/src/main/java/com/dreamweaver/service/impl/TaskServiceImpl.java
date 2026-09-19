@@ -156,9 +156,13 @@ public class TaskServiceImpl implements TaskService {
                     .uri(agentServiceProperties.getBaseUrl() + "/v1/tasks/" + sessionId + "/cancel")
                     .retrieve()
                     .bodyToMono(String.class)
-                    .block();
+                    // ★ 2026-09-19 修（#16）：**必须有上限**。本方法在 deleteTask(@Transactional) 内被调用，
+                    //   原来是裸 .block()：agent 半死（TCP 可连、不答）时会一直挂在这里 ——
+                    //   事务不提交 ⇒ creative_task 该行被锁 ⇒ Hikari 连接被逐个占满 ⇒ 整个后端不可用。
+                    //   取消是"尽力而为"的旁路动作（失败只记日志、不阻塞本地删除），10 秒足够。
+                    .block(java.time.Duration.ofSeconds(10));
         } catch (Exception e) {
-            // 409 已开始执行 / 404 会话不存在 / 网络异常：都不阻塞本地删除
+            // 409 已开始执行 / 404 会话不存在 / 网络异常 / 超时：都不阻塞本地删除
             log.info("Agent 取消会话 {} 响应: {}", sessionId, e.getMessage());
         }
     }
@@ -459,7 +463,11 @@ public class TaskServiceImpl implements TaskService {
                     .bodyValue(body)
                     .retrieve()
                     .bodyToMono(CommonResult.class)
-                    .block();
+                    // ★ 2026-09-19 修（#16）：提交在 createTask 的 @Transactional 内同步 block(),
+                    //   原来无上限 —— agent 半死时用户请求永挂、事务不提交、行被锁、连接池被占满。
+                    //   提交本身是"排队即返回"的快接口（返回后由 agent 后台执行），60 秒足够；
+                    //   超时会落到下面的 catch：任务如实落 failed，而不是静默卡 pending。
+                    .block(java.time.Duration.ofSeconds(60));
         } catch (Exception e) {
             // FastAPI 不可达：如实落 failed，前端可删除/重新提交；否则任务会静默卡 pending。
             // 原生异常文本只进日志，用户侧统一显示友好文案（全局异常类兜底原则）。
