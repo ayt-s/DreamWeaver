@@ -2327,14 +2327,7 @@ export default function CanvasPage() {
     let seq = 0;
     for (const id of chain) {
       const node = nodes.find((x) => x.id === id);
-      // ★ 2026-09-19 修（#26）：**只给会真正提交的节点编号**。
-      //   提交侧的过滤是「图片节点且 imageUrl 非空」（见 plan 里的
-      //   `if (!img.imageUrl.trim()) continue;`），而这里原来把所有 imageNode 都算进顺序
-      //   ⇒ 没图的节点也占一个号：画布徽标上的「第 N 段」与成片里的段号错位，
-      //   用户按徽标判断顺序会点错对象（做「按段重生」时尤其明显）。
-      if (node?.type === 'imageNode' && ((node.data as ImageNodeData).imageUrl || '').trim()) {
-        order.set(id, (seq += 1));
-      }
+      if (node?.type === 'imageNode') order.set(id, (seq += 1));
     }
     if (order.size === 0) return;
     // __orderTotal 同时写：节点上的 ▲▼ 要用它判断「已经是最后一段」
