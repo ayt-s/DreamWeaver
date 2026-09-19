@@ -583,6 +583,12 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
         // 画幅取本节点的 ratio（不传 = agnes 默认 1:1 正方形）
         imageRatio: data.ratio || '16:9',
         referenceImages: refImagesField(refs),
+        // ★ 2026-09-19 修（#23·#31）：**必须带素材标记**，与批量路径（:210）保持一致。
+        //   漏传时这条任务以 `default` 落库，于是两头都不对：
+        //   ① 左侧「本画布素材」面板里找不到它（面板按 source=canvas_asset 过滤，
+        //      上面那句 invalidateQueries 是空转）；② 画廊「草稿」筛选下多出一条
+        //      与本次创作无关的记录 —— 与代码注释和产品意图正好相反。
+        source: 'canvas_asset',
       });
       const taskId = Number(res.id);
       const t0 = Date.now();
