@@ -512,6 +512,18 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
         "image_count": max(1, min(5, int(req.image_count or 1))),
         # 出图画幅：脏值一律回落默认（agnes 对非法取值直接 400）
         "image_ratio": normalize_image_ratio(req.image_ratio, settings.default_aspect_ratio),
+        # ★ 2026-09-19 修（#22·#32）：**视频模型必须写进 state**。
+        #   请求类早有 `video_model`（:98）、Java 也真的发（TaskServiceImpl:438 body.put），
+        #   但运行态 state 从没写这个键 ⇒ `nodes/video.py:112` 读到的永远是 None
+        #   ⇒ 网关回落到 `settings.video_model_fast`（Flash）：画布底部选「Agnes Video 2.5 HD」
+        #   完全无效（档位/画幅规则都不同），且没有任何报错或提示。
+        #   取值做白名单校验：只认配置里的两个模型 id，脏值回落 None（= 网关默认），
+        #   与 image_ratio / shot_language 的"脏值回落默认"口径一致。
+        "video_model": (
+            (req.video_model or "").strip()
+            if (req.video_model or "").strip() in (settings.video_model_fast, settings.video_model_hd)
+            else None
+        ),
         # 首帧锁定：None（未传）按开 —— 有首帧图时这才是「视频从这张图长出来」的路
         "lock_first_frame": True if req.lock_first_frame is None else bool(req.lock_first_frame),
         "chain_frames": bool(req.chain_frames),

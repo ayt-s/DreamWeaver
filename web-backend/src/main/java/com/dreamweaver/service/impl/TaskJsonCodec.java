@@ -134,6 +134,12 @@ public class TaskJsonCodec {
         params.put("imageRatio", request.getImageRatio());
         params.put("lockFirstFrame", request.getLockFirstFrame());
         params.put("chainFrames", request.getChainFrames());
+        // ★ 2026-09-19 修（#22·#32）：**视频模型也要存**。
+        //   画布底部的「视频模型」下拉（Agnes Video 2.5 / HD）提交时是发出去的，
+        //   但重生链路会重建 CreateTaskRequest，若 gen_params 里没有它，
+        //   重生/自动重试就会用 agent 的默认 `agnes-video-2.5-flash` 重出全部段
+        //   —— 用户看到的是「重生成后画质变差」，且没有任何提示。
+        params.put("videoModel", request.getVideoModel());
         try {
             return objectMapper.writeValueAsString(params);
         } catch (Exception e) {
@@ -162,6 +168,8 @@ public class TaskJsonCodec {
             request.setImageRatio(asText(params.get("imageRatio")));
             request.setLockFirstFrame(asBool(params.get("lockFirstFrame")));
             request.setChainFrames(asBool(params.get("chainFrames")));
+            // ★ 2026-09-19 修（#22·#32）：还原视频模型，否则重生/自动重试会用 agent 默认 Flash。
+            request.setVideoModel(asText(params.get("videoModel")));
         } catch (Exception e) {
             log.warn("解析 gen_params_json 失败: {}", e.getMessage());
         }
