@@ -127,6 +127,10 @@ async def notify_final_node(state: CreativeSessionState) -> dict:
     })
 
     # fire-and-forget：与既有 _notify_final 一致，不阻塞图结束
+    # ★ 2026-09-19 修（#33）：带上真实总秒数，Java 的 api_quota.used_seconds
+    #   才与实际生成时长挂钩（原先恒按默认 5 秒记）。
+    from app.callback.java_notify import total_shot_seconds
+
     asyncio.create_task(
         notify_java_completion(
             session_id=session_id,
@@ -134,6 +138,8 @@ async def notify_final_node(state: CreativeSessionState) -> dict:
             video_urls=video_urls,
             error_message=error_message or None,
             storyboard=storyboard_json,
+            shot_seconds=total_shot_seconds(
+                state.get("storyboard"), state.get("segments")),
         )
     )
 

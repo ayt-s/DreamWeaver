@@ -151,6 +151,9 @@ async def image_slideshow_node(state: CreativeSessionState) -> dict:
         status="completed",
         video_url=final_url,
         video_urls=[final_url],
+        # ★ 2026-09-19 修（#33）：图片合成视频的真实时长 = 段数 × 每段秒数，
+        #   这里已经有 ffprobe 得到的成片时长（duration），比默认 5 秒准确。
+        shot_seconds=int(round(duration)) if duration else None,
     ))
     await events.emit(session_id, "completed", {})
 

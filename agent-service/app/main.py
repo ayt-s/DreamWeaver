@@ -39,7 +39,7 @@ from app.graph import compiled_graph
 from app.state import CreativeSessionState, TaskStatus
 from app.utils.prompting import normalize_camera_spec, normalize_image_ratio
 from app.poller import poller
-from app.scheduler import scheduler
+from app.scheduler import QueueFullError, scheduler
 from app.agent.chat_api import router as agent_chat_router
 from app.controller.novel_api import router as novel_api_router
 from app.controller.novel_anchors_api import router as novel_anchors_router
@@ -230,10 +230,65 @@ def _release_session(session_id: str) -> None:
 
     保留期设为 1 小时是有意的：任务结束后用户仍会回看轨迹（含 SSE 重放），
     过期才释放。
+
+    ⚠️ 本函数**只该由 `_schedule_session_release` 调用**：定时器句柄必须与
+    会话同生共死（见那边的注释）。
     """
     _sessions.pop(session_id, None)
     asyncio.get_running_loop().create_task(events.clear(session_id))
     logger.debug("会话 %s 保留期结束，已释放内存态与事件总线", session_id)
+
+
+# ★ 2026-09-19 修（#4）：保留期定时器必须**可重挂 + 可撤销**。
+#
+# 改前形状（两条独立的漏洞，合起来让「保留期」形同虚设）：
+#   1. `_run_session` 收尾时 `call_later(3600, _release_session, sid)` 挂一次定时器，
+#      此后再没有任何路径重新挂 —— 连 `_release_session` 自己都只是 `pop`，不安排下一次。
+#   2. `get_task` 内存未命中回落 Redis 快照后会把整份 state **回填** `_sessions[sid]`
+#      （main.py:666 附近，注释写的理由是「前端每 3s 轮询，不回填就会反复打 Redis」）。
+#      前端 TrajectoryPanel 恰好是 3s 一次，且**完成/失败后仍会继续轮询**。
+#   后果链（真实可达，非理论）：任务完成 → 1 小时后 _release_session 把 state 与事件总线
+#   都释放 → 用户还开着轨迹面板，下一次轮询（3s 内）从 Redis 快照回填 → 整份 state
+#   （storyboard + trace + 逐镜质检明细）**永久回到内存**，且**没有任何定时器**会再释放它。
+#   进程只要不重启就一直在，恰恰是注释里想避免的「无界增长」。
+#   还有一处对称的浪费：内存命中时本不该碰 Redis，可回填后内存态永远不会被清，
+#   于是轮询变成「内存命中」——看似变快了，代价是把释放彻底废掉。
+#
+# 改法：所有回填点统一走 `_schedule_session_release`，它
+#   (a) 撤销该会话可能存在的旧定时器（避免重复/提前释放），
+#   (b) 重新挂一个 1 小时的释放定时器，
+# 即「只要有人（重新）看到它，保留期就重新计时」；没人看则 1 小时后照旧释放。
+_release_timers: dict[str, asyncio.TimerHandle] = {}
+
+
+def _schedule_session_release(session_id: str, delay_s: float = 3600.0) -> None:
+    """安排（或重排）会话内存态与事件总线的释放。
+
+    幂等：重复调用只是把释放时间往后推（撤销旧句柄再挂新的），
+    不会叠加出多个定时器，也不会提前释放。
+    """
+    if not session_id:
+        return
+    old = _release_timers.pop(session_id, None)
+    if old is not None:
+        old.cancel()
+    try:
+        handle = asyncio.get_running_loop().call_later(
+            delay_s, _release_session, session_id)
+    except RuntimeError:  # 无运行中的事件循环（同步调用/测试收尾）：不做定时
+        return
+    _release_timers[session_id] = handle
+
+
+def _cancel_scheduled_release(session_id: str) -> None:
+    """撤销会话的释放定时器（会话已彻底消失时调用，避免句柄表无界增长）。
+
+    调用场景：`cancel` 已把快照与活跃索引都删掉、用户已无法再查到该会话 ——
+    此时再留一个 1 小时后会 no-op 的定时器只是句柄泄漏。
+    """
+    old = _release_timers.pop(session_id, None)
+    if old is not None:
+        old.cancel()
 
 
 async def _run_session(state: CreativeSessionState) -> None:
@@ -272,8 +327,8 @@ async def _run_session(state: CreativeSessionState) -> None:
         # 轨迹完成事件（节点可能已发过 completed，重复无害）
         await events.emit(state["session_id"], "completed", {})
         # 会话保留 1 小时用于查轨迹，之后释放，防止 _sessions / _buses 无界增长
-        asyncio.get_running_loop().call_later(
-            3600, _release_session, state["session_id"])
+        # ★ 2026-09-19 修（#4）：走可重挂的定时器（见 _schedule_session_release）
+        _schedule_session_release(state["session_id"])
         settled = True
     except Exception as exc:  # 节点异常 → 记 FAILED，不裸崩后台任务
         # 异常 str() 可能为空（如部分 asyncio 异常），兜底用异常类型名；
@@ -313,8 +368,8 @@ async def _run_session(state: CreativeSessionState) -> None:
         )
         # 不 re-raise：避免 "Task exception was never retrieved" 日志污染
         # 会话保留 1 小时用于查轨迹，之后释放，防止 _sessions / _buses 无界增长
-        asyncio.get_running_loop().call_later(
-            3600, _release_session, state["session_id"])
+        # ★ 2026-09-19 修（#4）：与成功分支同一口径（可重挂定时器）
+        _schedule_session_release(state["session_id"])
         settled = True
     finally:
         # 会话收尾：无论成功/失败/被取消都先停心跳。
@@ -419,7 +474,16 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
 
     session_id = uuid.uuid4().hex[:12]
 
-    if scheduler.snapshot()["queued_count"] >= _queue_maxsize():
+    # ★ 2026-09-19 修（#5）：队列满的**预检口径**必须与闸门同源。
+    #   改前形状：这里读 `scheduler.snapshot()["queued_count"]`（按 `_pending` 镜像数、
+    #   且**排除已软取消的项**），而真正的闸门是 `asyncio.Queue(maxsize=...)` 的
+    #   `put_nowait`（scheduler.py:35）。两个数字不同源：队列里还留着「排队期被取消、
+    #   worker 尚未取走」的残留项，以及「worker 已取走但还没 task_done」的项 ——
+    #   镜像都会少算。于是预检放行、`put_nowait` 抛 `asyncio.QueueFull`，
+    #   一路冒到 FastAPI 就是 **500「服务器开小差了，请稍后重试」**（而非 429），
+    #   用户与 Java 重试器都拿不到「该退避重试」的语义。
+    #   改法：预检与闸门统一用 `is_queue_full()`（= `asyncio.Queue.qsize() >= maxsize`）。
+    if scheduler.is_queue_full():
         raise AppError("任务队列已满，请稍后再试", status_code=429, retryable=True)
 
     ref_images = _parse_json_list(req.reference_images, "reference_images")
@@ -464,7 +528,18 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
     # Redis 不可用时静默降级，绝不影响任务提交
     await session_store.save_state(session_id, state)
     await session_store.add_active(session_id)
-    position = scheduler.submit(session_id)
+    # ★ 2026-09-19 修（#5）：入队与上面两步之间的**竞态**也必须收口。
+    #   `put_nowait` 是唯一可能抛的闸门，且它发生在 state 已落盘/已标活跃之后 ——
+    #   若在这里抛 QueueFull 而不管，Redis 里就留下一个「活跃但永不执行」的僵尸会话：
+    #   启动恢复会把它捡回来重跑（白烧额度），GET /v1/tasks/{sid} 也能查到它。
+    #   所以这里必须回滚（删快照 + 摘活跃索引），并把异常翻成 429 + retryable。
+    try:
+        position = scheduler.submit(session_id)
+    except QueueFullError as exc:
+        _sessions.pop(session_id, None)
+        await session_store.delete_session(session_id)
+        logger.warning("会话 %s 入队失败（队列满），已回滚会话态: %s", session_id, exc)
+        raise AppError("任务队列已满，请稍后再试", status_code=429, retryable=True) from exc
     return ApiResponse(
         code=0,
         message="ok",
@@ -484,6 +559,16 @@ async def cancel_task(session_id: str) -> ApiResponse:
     if scheduler.cancel(session_id):
         _sessions[session_id]["status"] = TaskStatus.FAILED
         _sessions[session_id]["error_message"] = "用户取消排队"
+        # ★ 2026-09-19 修（#4）：cancel 路径此前**从不释放**，是第二个漏洞。
+        #   改前形状：只改状态 + 删 Redis 快照，`_sessions[sid]` 与 events 总线
+        #   都留着（与 `_release_session` 的注释「两样都要放」自相矛盾），
+        #   而保留期定时器只在会话**跑完**时才会挂 —— 取消发生在排队期，
+        #   那条路径根本没挂过定时器 ⇒ 该会话的 state + 事件缓冲**永久驻留**进程。
+        #   改法：补挂保留期定时器（与「跑完」同一口径，1 小时后释放内存态 + 事件总线）。
+        #   ⚠️ 刻意不在这里立即释放：取消后前端仍会轮询一次 `GET /v1/tasks/{sid}`
+        #   把卡片刷成「已取消」，而 Redis 快照已随取消删除 —— 立刻释放会让它变成 404，
+        #   卡片停留在「排队中」。所以保留 1 小时可查，到期由定时器释放。
+        _schedule_session_release(session_id)
         # 已取消 = 永远不会执行，清掉 Redis 快照与活跃索引，
         # 否则下次启动恢复会把这个用户已经取消的任务重新捡起来跑
         await session_store.delete_session(session_id)
@@ -664,7 +749,13 @@ async def get_task(session_id: str) -> ApiResponse:
         state = snapshot
         # 回填内存：前端轮询很密（3s 一次），不回填就会每次都打 Redis
         _sessions[session_id] = state
-        logger.debug("会话 %s 内存未命中，已从 Redis 快照回填", session_id)
+        # ★ 2026-09-19 修（#4）：回填**必须同时重挂保留期定时器**，否则这次回填
+        #   就是永久驻留 —— 内存命中后 `_release_session` 再也不会被安排，
+        #   state 与事件总线一起泄漏到进程结束（正是 _release_session 注释里
+        #   要避免的「无界增长」）。前端轨迹面板在任务终态后仍以 3s 轮询，
+        #   所以「释放后 3s 内又被回填」是必然路径，不是边界情况。
+        _schedule_session_release(session_id)
+        logger.debug("会话 %s 内存未命中，已从 Redis 快照回填（保留期重新计时）", session_id)
     return ApiResponse(
         code=0,
         message="ok",
@@ -698,8 +789,19 @@ def _queue_maxsize() -> int:
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
+    # ★ 2026-09-19 修（#1）：停机顺序决定「会话能不能续跑」。
+    #   改前顺序：`ag.close()` → `poller.stop()` → `scheduler.stop()`。
+    #   两个问题：
+    #   (a) **先关网关**：还在飞的长任务（video_generator 可能跑 15 分钟以上）下一轮
+    #       心跳/轮询会撞上已关闭的 httpx client，异常路径比「安静地交给重启」更脏；
+    #   (b) `poller.stop()` 在 `scheduler.stop()` **之前**：poller 先把在途 future
+    #       判成 TimeoutError（旧实现），而此刻会话任务还活着 —— 它会把失败当结果收下、
+    #       走 notify_final 回调 Java 落成终态（链条见 poller.stop 的注释）。
+    #   现在的顺序：先停调度器（worker 被 cancel → `_run_session` 的 settled 保持 False
+    #   → 快照保留、不发终态回调），再停 poller（在途 future 保留未决），最后才关网关。
+    #   结果：Ctrl+C 后 Java 侧任务停在非终态 → 看门狗转 interrupted → 重启 recovery 续跑。
+    await scheduler.stop()
+    await poller.stop()
     from app.gateway.agnes import gateway as ag
     await ag.close()
-    await poller.stop()
-    await scheduler.stop()
     await session_store.close()

@@ -71,6 +71,37 @@ public class TaskJsonCodec {
     }
 
     /**
+     * 段配置里是否**真有分段**（而不是一个「无分段」占位符）。
+     *
+     * <p>★ 2026-09-19 修（#20）：`"[]"` 是 Agent 侧「本次没有分镜」的序列化产物，但它
+     * **不是空白串** —— 拿 `isBlank()` 当「有没有分镜」的判据，会把占位符当成有分镜
+     * 存进 `segments_json`。后果链（实测 27 条 `text_image` 任务，agent 直出图/文生图
+     * 把 `storyboard=[]` 原样回调）：
+     * <pre>
+     *   segments_json="[]" → 前端 `!!task.segmentsJson` 为真 → 渲染「按段重生」面板
+     *   → 但 getSegments 解析 "[]" 只得到空列表 → 面板 0 段可勾
+     *   → 用户无路可走（提交撞 doReworkCore「未选择需要重新生成的段」400）
+     * </pre>
+     * 这里把判据收成一处，**兼容 Agent 侧三种「无分段」写法**：`null` / 字段缺省 /
+     * `"[]"`（以及 `" [ ] "`、坏 JSON、非数组 —— {@link #parseSegments} 一律回空列表）。
+     * 只有解析出非空数组才算「有分段」。
+     */
+    public boolean hasSegments(String json) {
+        return !parseSegments(json).isEmpty();
+    }
+
+    /**
+     * 读取侧归一化：无分段一律回 {@code null}。
+     *
+     * <p>「空数组」与「没有段配置」必须**等价**：只要返回字面量 `"[]"`，前端
+     * `!!task.segmentsJson` 这类存在性判据就会把占位符当成分段数据（见
+     * {@link #hasSegments} 的后果链）。有分段时原样返回，不改写内容。
+     */
+    public String normalizeSegmentsJson(String json) {
+        return hasSegments(json) ? json : null;
+    }
+
+    /**
      * 把可灵式精细控制参数序列化为 JSON 落库。
      *
      * <p>全空时返回 {@code null}（**不是** {@code "{}"}）—— 这是调用方判断

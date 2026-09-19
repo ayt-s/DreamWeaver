@@ -22,13 +22,25 @@ export type TaskStatus =
   | 'interrupted';
 
 // 生成类型（与 Java/模型侧 gen_type 对齐）
-export type GenType = 'text_video' | 'image_video' | 'text_image' | 'comic_video';
+//
+// ★ 2026-09-19 修（#34）：删掉 `comic_video`（中文标签「漫剧」）——
+//   它在前端是**不可达类型**：生成类型选择只有 3 项（CreatePanel.tsx:59-63）、
+//   画布提交只会给 image_video/text_video（ImageVideoPage.tsx:1897）、
+//   合成视频固定 image_video（api/tasks.ts:181）⇒ 全前端**零生产者**。
+//   而画廊把它当成可筛类型（GEN_TYPE_FILTERS）：用户点「漫剧」永远空列表，
+//   会以为作品丢了 / 筛选坏了。另外 4 处下游代码为它保活（见各处注释）。
+//   ⚠️ wire 层 Java/agent **仍然接受** `comic_video`（且把它当 text_image 的别称，无漫剧专属行为）：
+//   `SegmentReworkPlanner.java:44` / `TaskServiceImpl.java:720` / `app/graph.py:111,149` /
+//   `app/nodes/image.py:147,151,423` 均为 `("text_image","comic_video")`。那两层本轮不改（另人负责），
+//   但**前端要恢复它必须连带真生产者与漫剧专属链路**，别只把筛选项加回来。
+//   注：本联合类型本来就不是 wire 全集（库里存在 `novel_image`，前端同样不声明），
+//   展示侧一律用 `GEN_TYPE_LABEL[x] ?? x` 兜底（已在用：TaskCard.tsx:255）。
+export type GenType = 'text_video' | 'image_video' | 'text_image';
 
 export const GEN_TYPE_LABEL: Record<GenType, string> = {
   text_video: '文生视频',
   image_video: '图生视频',
   text_image: '文生图',
-  comic_video: '漫剧',
 };
 
 /** 任务状态中文文案（展示用，避免把英文状态码直接抛给用户） */
@@ -122,8 +134,11 @@ export interface TaskListResponse {
 }
 
 /**
- * 画廊分类筛选（待补充生成类型在此数组追加即可；'' = 全部）。
- * key 对应后端 gen_type。
+ * 画廊分类筛选（'' = 全部）。key 对应后端 gen_type。
+ *
+ * ⚠️ 加项前先确认**真有生产者**（见 GEN_TYPE_PRODUCERS）：
+ * 原来这里写的是「待补充生成类型在此数组追加即可」，而 comic_video
+ * 就是这么加进来的（#34）—— 筛选按钮指向一个没人产出的类型 = 永远空列表。
  */
 /**
  * 草稿/成品筛选（二维，与 genType 分类正交）。
@@ -138,10 +153,25 @@ export const DRAFT_FILTERS: Array<{ key: DraftFilter; label: string }> = [
   { key: 'draft', label: '草稿' },
 ];
 
+/**
+ * 前端**真正能产出**的 gen_type（画廊筛选项的准入名单）。
+ *
+ * ★ 2026-09-19 修（#34）新增的护栏：筛选按钮必须对应一个有生产者的类型。
+ * 生产者（改本数组前先核这三处）：
+ * - `components/CreatePanel.tsx`:59-63 生成类型三选一（image_video 点进去是画布页）
+ * - `pages/ImageVideoPage.tsx`:1897 画布提交：按 plan.segments 给 image_video / text_video
+ * - `api/tasks.ts`:181 合成视频（createSlideshowTask）：固定 image_video
+ * 由 `task.test.ts` 的「筛选项 ⊆ 生产者」用例兵底校验。
+ */
+export const GEN_TYPE_PRODUCERS: readonly GenType[] = [
+  'text_image',
+  'text_video',
+  'image_video',
+];
+
 export const GEN_TYPE_FILTERS: Array<{ key: GenType | ''; label: string }> = [
   { key: '', label: '全部' },
   { key: 'text_image', label: '文生图' },
-  { key: 'comic_video', label: '漫剧' },
   { key: 'text_video', label: '文生视频' },
   { key: 'image_video', label: '图生视频' },
 ];

@@ -89,7 +89,12 @@ def recompose_prompt(
     prompt: str,
     declared: set[str] | None,
     *,
-    recompute_camera: bool = True,
+    # 默认 **False**：镜头是用户的表达 —— 画布上选的景别存在 data.cameraSpec，
+    # 而本函数只读 prompt 文本，看不到那个选择。默认重算「[镜头]」会把用户手选的
+    # 近景/特写按红线降成中景（_sanitize_camera），且 prompt 与 cameraSpec 从此打架。
+    # 本入口的规则变更目标是 [角色锚]/[场景]（场景锚只画环境、角色锚裁剪、动物移出），
+    # 镜头不在其中；确需重算时由调用方显式传 True。
+    recompute_camera: bool = False,
 ) -> dict:
     """按当前规则重写**一条**提示词。
 
@@ -161,7 +166,12 @@ def recompose_prompts(
     analysis: Any = None,
     nodes: list[dict] | None = None,
     *,
-    recompute_camera: bool = True,
+    # 默认 **False**：镜头是用户的表达 —— 画布上选的景别存在 data.cameraSpec，
+    # 而本函数只读 prompt 文本，看不到那个选择。默认重算「[镜头]」会把用户手选的
+    # 近景/特写按红线降成中景（_sanitize_camera），且 prompt 与 cameraSpec 从此打架。
+    # 本入口的规则变更目标是 [角色锚]/[场景]（场景锚只画环境、角色锚裁剪、动物移出），
+    # 镜头不在其中；确需重算时由调用方显式传 True。
+    recompute_camera: bool = False,
 ) -> dict:
     """批量重算：`nodes` = `[{id, prompt}]`（其余字段不看、也不回传）。
 

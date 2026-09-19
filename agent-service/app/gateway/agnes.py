@@ -30,12 +30,20 @@ T = TypeVar("T")
 
 
 async def _with_retry(operation: Callable[[], Awaitable[httpx.Response]],
-                      what: str) -> httpx.Response:
+                      what: str, *, require_status: bool = False) -> httpx.Response:
     """带指数退避的重试包装（429/5xx/网络错误共用）。
 
     - 429 限流：5s→10s→20s→30s 封顶，最多 3 次
     - 5xx：2s→4s→8s→10s 封顶，最多 3 次
     - httpx.HTTPError（网络抖动）：固定 5s，最多 3 次
+
+    ★ 2026-09-19 修（#8）：新增 `require_status`。
+      改前形状：重试耗尽后**原样返回最后一个错误响应**（429/5xx 的 resp），
+      调用方 `query_video` 直接 `resp.json()` 当正常结果用 —— 一次上游 5xx
+      的 body 里若恰好带 `error` 键，`poller._check_task` 的失败判定就会命中，
+      把**还在生成**的镜永久判失败（已付费产物被丢）。
+      置 `require_status=True` 时，重试耗尽后抛 `httpx.HTTPStatusError`，
+      把「查询失败」与「查询成功但状态为失败」彻底分开。
     """
     max_retries = 3
     resp: httpx.Response | None = None
@@ -67,6 +75,9 @@ async def _with_retry(operation: Callable[[], Awaitable[httpx.Response]],
             await asyncio.sleep(5)
     # 理论不可达（HTTPError 已 raise）
     assert resp is not None
+    # ★ 2026-09-19（#8）：重试耗尽且仍未拿到可接受状态 → 必须抛，不能把错误体当结果
+    if require_status:
+        resp.raise_for_status()
     return resp
 
 
@@ -478,6 +489,27 @@ class AgnesGateway:
 
         # 单 provider 内尝试次数（每个 provider 独立预算）
         attempts_per_provider = max(1, settings.video_submit_max_attempts)
+        # ★ 2026-09-19 修（#11）：**读超时**的独立预算（默认 1 = 不重试）。
+        #
+        # 改前形状：读超时被当成普通 TransportError 处理 —— 与 429/503 一样
+        # `attempt` 自增后 `continue`，于是同一个 payload 会被重复 POST 到
+        # `/videos`（最多 6 次/provider × N 个 provider）。而 `/videos` 是**非幂等**
+        # 的创建接口，读超时的语义是「请求已送达、平台可能已经在建任务，只是我没等到响应」
+        # （`_describe_transport_error` 的文案也写着「读超时（等平台响应超时；平台排队/限流时常见）」）。
+        # 后果链（每条都能在代码里对上）：
+        #   1. 重试再建一个任务 → 平台侧出现**孤儿任务**：它的 video_id 从来没有
+        #      返回给 agent，因此不写 `progress.submitted`（session_store.mark_submitted
+        #      在 tools/video.py 里只记最终返回的那个），不进产物、不退款；
+        #   2. HD 档按秒计费（$0.025–0.055/秒），孤儿任务照扣；
+        #   3. 平台视频 RPM≈2/分钟，重复提交直接把提交配额吃满 → 同一会话后续段
+        #      全部 429 退避，长任务被拖成超时失败。
+        # 改法：按**错误类型**分流重试预算 ——
+        #   - 读/写超时（ReadTimeout/WriteTimeout）：`timeout_attempts` 单独计数，
+        #     默认 1 次即放弃（换 provider 也不重试：换账号同样会再建一个任务）；
+        #   - 连接类（ConnectTimeout/ConnectError/PoolTimeout）：请求根本没送出去，
+        #     重试安全，沿用原预算。
+        timeout_attempts = max(1, settings.video_submit_timeout_max_attempts)
+        connect_attempts = max(1, settings.video_submit_connect_max_attempts)
         # 决定起点：如果有 session 粘性走粘性 provider 开始，否则 round-robin
         starting_index = 0
         if session_id and session_id in self._session_provider:
@@ -488,25 +520,42 @@ class AgnesGateway:
         last_reason = "未知错误"
         for provider_name in rotated:
             client = self.providers[provider_name]
-            for attempt in range(1, attempts_per_provider + 1):
+            # 读超时已经发生过 → 平台侧可能已建任务，**换 provider 也不该再提交**
+            # （新账号建的是第二个任务，同样拿不到 id）。直接跳出整个 provider 循环。
+            if timeout_attempts <= 0:
+                logger.warning(
+                    "视频提交：读超时后不再重试/不再切换 provider（避免非幂等重复提交），"
+                    "session=%s last_reason=%s", session_id, last_reason)
+                break
+            attempt = 0
+            while attempt < max(attempts_per_provider, timeout_attempts, connect_attempts):
+                attempt += 1
                 await get_video_gate().acquire()
                 try:
                     resp = await client._client.post("/videos", json=payload)
                 except httpx.TransportError as e:
+                    is_read_timeout = isinstance(e, httpx.TimeoutException) and not isinstance(
+                        e, httpx.ConnectTimeout)
+                    if is_read_timeout:
+                        timeout_attempts -= 1
+                        budget = timeout_attempts
+                    else:
+                        connect_attempts -= 1
+                        budget = connect_attempts
                     # 超时多半是平台排队（agnes 免费额度只有 RPM 限制），
                     # 用与 5xx 同量级的长退避；真·连接失败几次之后会如实抛出。
                     # 原实现对所有 TransportError 一律 `5 * attempt`（5~25s），
                     # 对「队列要几分钟才消化」的排队场景明显偏短。
-                    is_timeout = isinstance(e, httpx.TimeoutException)
-                    base_wait = min(30 * attempt, 60) if is_timeout else 5 * attempt
+                    base_wait = min(30 * attempt, 60) if is_read_timeout else 5 * attempt
                     wait = base_wait * (1 + random.uniform(-0.2, 0.2))
                     last_reason = f"[{provider_name}] {_describe_transport_error(e)}"
-                    if attempt == attempts_per_provider:
+                    if budget <= 0:
                         break
                     # 格式串里不再重复 `[provider]`：last_reason 本身已带前缀，
                     # 写成 `视频提交[%s]%s` 会输出「视频提交[intl][intl] 读超时…」
                     logger.warning("视频提交%s，%.1fs 后重试 (%d/%d)",
-                                   last_reason, wait, attempt, attempts_per_provider)
+                                   last_reason, wait, attempt,
+                                   max(attempts_per_provider, timeout_attempts, connect_attempts))
                     await asyncio.sleep(wait)
                     continue
 
@@ -526,7 +575,7 @@ class AgnesGateway:
                     base_wait = min(5 * (2 ** (attempt - 1)), 30)
                     wait = base_wait * (1 + random.uniform(-0.2, 0.2))
                     last_reason = f"[{provider_name}] 平台限流(429)"
-                    if attempt == attempts_per_provider:
+                    if attempt >= attempts_per_provider:
                         break
                     logger.warning("视频提交[%s]被限流，%.1fs 后重试 (%d/%d)",
                                    provider_name, wait, attempt, attempts_per_provider)
@@ -540,7 +589,7 @@ class AgnesGateway:
                     base_wait = min(30 * attempt, 60) if queue_full else min(10 * attempt, 60)
                     wait = base_wait * (1 + random.uniform(-0.2, 0.2))
                     last_reason = f"[{provider_name}] 服务端 {resp.status_code} ({code or 'server error'})"
-                    if attempt == attempts_per_provider:
+                    if attempt >= attempts_per_provider:
                         break
                     # 同上：去重 provider 前缀
                     logger.warning("视频提交%s，%.1fs 后重试 (%d/%d)",
@@ -579,6 +628,16 @@ class AgnesGateway:
         保证和提交时的 provider 一致）。未指定时走 session 粘性（若可查）或第一个。
 
         重试策略：429 限流时指数退避（最多 3 次），5xx 服务端错误同样重试。
+
+        ★ 2026-09-19 修（#8）：**必须校验 HTTP 状态**。
+        改前形状只有 `return resp.json()` —— 既没有 `raise_for_status`，而 `_with_retry`
+        重试耗尽后又会把最后一个错误响应（429/5xx）原样返回。于是上游一次
+        401/404/5xx（key 轮换、账号不对、video_id 过期、平台抽风）产出的错误体
+        会被当成**查询结果**交给 `poller._check_task`；只要该 body 里有 `error` 键
+        （agnes 的错误体正是 `{"error": {...}}`），轮询器就命中「失败判定」分支，
+        把这一镜**永久判失败**（future 置异常、从 pending 表摘除、已完成的产物被丢）。
+        正确语义：查询侧的状态码异常 = **本次查询没成功**，调用方应重试/稍后再查，
+        绝不能等价于「任务失败」。
         """
         client = await self.pick_client(provider_name=provider_name)
         resp = await _with_retry(
@@ -587,6 +646,7 @@ class AgnesGateway:
                 params={"video_id": video_id, "model_name": model_name},
             ),
             f"视频查询({client.name}) {video_id}",
+            require_status=True,
         )
         return resp.json()
 

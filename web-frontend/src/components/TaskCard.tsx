@@ -322,7 +322,7 @@ export default function TaskCard({ task, subscribe = false }: TaskCardProps) {
         </div>
       </div>
 
-      {/* 图片产物（text_image / comic_video / image_video 首帧） */}
+      {/* 图片产物（text_image / image_video 首帧） */}
       {imageUrls.length > 0 && (
         <div className="border-t border-slate-100 p-5">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -352,7 +352,7 @@ export default function TaskCard({ task, subscribe = false }: TaskCardProps) {
               </div>
             ))}
           </div>
-          {/* 图片任务（文生图/漫剧）段重生按钮：无分镜数据的旧任务置灰并说明原因 */}
+          {/* 图片任务（文生图）段重生按钮：无分镜数据的旧任务置灰并说明原因 */}
           {isTerminal && (
             <div className="mt-3 flex items-center justify-end">
               <button

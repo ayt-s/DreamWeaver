@@ -66,7 +66,6 @@ const PLACEHOLDER: Record<GenType, string> = {
   text_video: '描述你想创作的视频内容...',
   image_video: '在画布中添加片段（图片 + 视频内容描述），模型会自动拼接成长视频...',
   text_image: '描述你想生成的画面，如：赛博朋克城市夜景，霓虹灯牌...',
-  comic_video: '描述你想生成的漫画剧画面，如：少女在樱花树下回头一笑...',
 };
 
 export default function CreatePanel() {
@@ -97,10 +96,11 @@ export default function CreatePanel() {
 
   // AI 丰富提示词：仅文生图/文生视频可用（图生视频走画布页）
   const isEnrichable = genType === 'text_image' || genType === 'text_video';
-  // 时间轴适用范围：标准视频给总时长+镜头数；漫剧/文生图只给分镜张数
+  // 时间轴适用范围：标准视频给总时长+镜头数；文生图只给分镜张数
   const isVideoTimeline = genType === 'text_video';
-  const isShotCountApplicable =
-    genType === 'text_video' || genType === 'comic_video' || genType === 'text_image';
+  // ★ 2026-09-19 修（#34）：原来还有 `|| genType === 'comic_video'` —— 一个**前端零生产者**
+  //   的不可达类型（类型定义已删，见 types/task.ts）。删掉后「镜头数」参数的适用面没变。
+  const isShotCountApplicable = genType === 'text_video' || genType === 'text_image';
   const onEnrich = async () => {
     const current = watch('prompt').trim();
     if (!current) {
@@ -326,7 +326,7 @@ export default function CreatePanel() {
                 />
               </div>
 
-              {/* ② 时间轴：标准视频给「总时长+镜头数」；漫剧只出图，仅给镜头数（分镜张数） */}
+              {/* ② 时间轴：标准视频给「总时长+镜头数」；文生图只出图，仅给镜头数（分镜张数） */}
               {isShotCountApplicable && (
                 <div className={`grid gap-3 ${isVideoTimeline ? 'grid-cols-2' : 'grid-cols-1'}`}>
                   {isVideoTimeline && (

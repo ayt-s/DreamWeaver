@@ -32,7 +32,7 @@ def _make_fakes(monkeypatch, tmp_path, fail_urls=()):
         Path(output).write_bytes(b"FAKEMP4")
         return True
 
-    async def fake_notify(session_id, status, video_urls, error_message=None):
+    async def fake_notify(session_id, status, video_urls, error_message=None, shot_seconds=None):
         rec["notified"].append({
             "session_id": session_id, "status": status,
             "video_urls": list(video_urls), "error_message": error_message,

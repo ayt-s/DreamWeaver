@@ -265,10 +265,34 @@ async def recover_session(sid: str) -> bool:
         "会话 %s 已恢复并重新入队（复用已完成 %d 段）", sid, reused
     )
 
-    # 4) 通知 Java 重新武装看门狗（接口可能尚不存在 → notify 内部重试+fallback，静默降级）
+    # 4) 通知 Java：两件事分开做（#6/#19）
+    #
+    # ★ 2026-09-19 修（#6/#19）：**看门狗续期不能依赖状态转移**。
+    #   改前形状只有 `notify_java_completion(status="queued")` 一条，注释写的是
+    #   「让 Java 侧重新武装看门狗」。但 Java `TRANSITION_TABLE` 里
+    #   `queued → {completed, failed, interrupted}` —— **没有 queued→queued**，
+    #   而 Phase 1 的实际路径就是「agent 从不发 video_generating，任务一直是 queued」
+    #   （迁移表注释原文）。于是这条回退报到在最常见的情形下必被
+    #   「非法状态跳转」丢弃，`stuckTaskWatchdog.watch(...)` 那行也不会执行。
+    #   最坏情形（真实可达）：Redis 里该任务的看门狗 TTL 条目已过期 +
+    #   会话刚恢复、还排在调度队列里没开始跑（心跳协程由 `_run_session` 启动，
+    #   排队期间不存在）→ 既无 TTL 也无心跳，任务彻底无兜底。
+    #   改法：额外显式调一次 `/internal/heartbeat`（`renew_watchdog`）——
+    #   该端点对**非终态**任务无条件 `watch(taskId, genType)`，与 from 状态无关。
+    #   依赖的 Java 侧现状（2026-09-19 实测现读，非推测）：
+    #     - `NotifyServiceImpl.handleHeartbeat` 对非终态任务调 `stuckTaskWatchdog.watch`；
+    #     - 返回 `{"data": {"tracked": bool}}`；任务不存在/已终态 → tracked=false。
+    #   ⚠️ 状态回退那一条仍然保留（发 queued）——它在 interrupted → queued 时是合法的，
+    #   能让 Java 卡片回到「排队中」；只是在 queued → queued 时会被丢弃，那时
+    #   兜底由 heartbeat 负责。
     try:
-        from app.callback.java_notify import notify_java_completion
+        from app.callback.java_notify import notify_java_completion, renew_watchdog
 
+        tracked = await renew_watchdog(sid)
+        logger.info(
+            "会话 %s 恢复后看门狗续期（/internal/heartbeat，Java 答复 tracked=%s）",
+            sid, tracked,
+        )
         asyncio.create_task(
             notify_java_completion(session_id=sid, status="queued")
         )

@@ -23,6 +23,55 @@ logger = logging.getLogger(__name__)
 _RETRY_DELAYS = (1.0, 3.0, 5.0)
 
 
+def _to_int_seconds(raw) -> int | None:
+    """把分镜/段配置里的 seconds 解析成正整数秒；不可判定返回 None。
+
+    容忍 storyboard 里的字符串形式（`storyboard.py` 写的是 `str(seconds)`）、
+    float（`image_slideshow` 的 slide_seconds）与脏值（"5s" / "" / None）。
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(str(raw).strip().rstrip("sS"))
+    except (TypeError, ValueError):
+        return None
+    if value <= 0 or value != value:  # NaN 也被 != 拦下
+        return None
+    return int(round(value))
+
+
+def total_shot_seconds(storyboard: list | None,
+                       segments: list | None = None) -> int | None:
+    """汇总本次会话**实际提交生成**的总秒数（#33 的配额口径）。
+
+    ★ 2026-09-19 新增（#33）：Java 的 `api_quota.used_seconds` 靠回调里的
+      `shot_seconds` 累加，而 agent 从来没发过它 → 每条回调都按 Java 的
+      `DEFAULT_SHOT_SECONDS=5` 记账，配额与实际生成时长无关。
+
+    口径（与「按段计费」的语义对齐）：
+      - 逐镜取 `seconds`，取不到时用 `settings.default_seconds`（提交时网关也用这个兜底）；
+      - `segments` 非空时以 **segments** 为准（画布模式每段独立提交，storyboard
+        可能是由 segments 重建的，但段里才带真实秒数）；
+      - 全都取不到 / 列表为空 → 返回 **None**（= 不发字段，保留 Java 默认行为）。
+        **刻意不返回 0**：0 会把配额页写成「消耗 0 秒」，比默认 5 秒更错。
+    """
+    items = segments if segments else storyboard
+    if not isinstance(items, list) or not items:
+        return None
+    fallback = _to_int_seconds(getattr(settings, "default_seconds", None)) or 5
+    total = 0
+    seen = False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        secs = _to_int_seconds(item.get("seconds"))
+        if secs is None:
+            secs = fallback
+        total += secs
+        seen = True
+    return total if seen else None
+
+
 async def notify_java_completion(
     session_id: str,
     status: str,
@@ -33,6 +82,7 @@ async def notify_java_completion(
     error_message: str | None = None,
     image_urls: list[str] | None = None,
     storyboard: str | None = None,
+    shot_seconds: int | None = None,
 ) -> None:
     """通知 Java 视频生成结果。
 
@@ -44,6 +94,16 @@ async def notify_java_completion(
         video_url: 单值兼容字段（已弃用，保留兼容）
         video_urls: 全量视频 URL 数组（主载荷）
         error_message: 失败时的错误信息
+        shot_seconds: **本次生成消耗的总秒数**（#33）。
+            Java 的 `NotifyRequest.shot_seconds`（Integer，单位秒）声明了它、
+            `NotifyServiceImpl` 也真的拿它去 `apiQuotaMapper.increment(...)`
+            （`shot_seconds != null ? 它 : DEFAULT_SHOT_SECONDS=5`），
+            但 agent 侧**从来没发过这个字段** —— 于是每条回调都按默认 5 秒记账。
+            后果：`api_quota.used_seconds` 与实际生成时长无关。实测量级：
+            6 段 × 5 秒的任务，真实 30 秒只记 5 秒（少 6 倍）；反过来 1 段 12 秒
+            只记 5 秒（少一半多）。配额页因此完全不可信。
+            填法见 `total_shot_seconds()`；**None = 保持 Java 的默认行为**，
+            刻意不发（例如失败回调、纯图片回调），避免把「不知道」写成 0。
     """
     if not settings.java_notify_url:
         logger.debug("JAVA_NOTIFY_URL 未配置，跳过 Java 回调通知")
@@ -64,6 +124,11 @@ async def notify_java_completion(
         payload["image_urls"] = image_urls
     if storyboard is not None:
         payload["storyboard"] = storyboard
+    # ★ 2026-09-19 修（#33）：把真实消耗秒数发给 Java（字段名以 Java 的
+    #   NotifyRequest.shot_seconds 为准）。None 时**不发**这个键 ——
+    #   发了 null 会被 Jackson 解析成 null 与「不发」等价，但显式省略更清楚。
+    if shot_seconds is not None:
+        payload["shot_seconds"] = int(shot_seconds)
 
     last_err: Exception | None = None
     for i, delay in enumerate(_RETRY_DELAYS):
@@ -139,3 +204,29 @@ async def probe_session_tracked(session_id: str) -> bool | None:
     except Exception as exc:
         logger.debug("probe_session_tracked(%s) 无法判定: %s", session_id, exc)
         return None
+
+
+async def renew_watchdog(session_id: str) -> bool | None:
+    """★ 2026-09-19 新增（#6/#19）：**只续期看门狗，不依赖任何状态转移**。
+
+    为什么需要单独一只（而不是复用 `notify_java_completion(status="queued")`）：
+
+    Java `NotifyServiceImpl.TRANSITION_TABLE`（web-backend，2026-09-19 现读）是
+      queued          → {completed, failed, interrupted}
+      video_generating→ {completed, failed}
+      interrupted     → {completed, failed, queued}
+    恢复流程原来只发 `status=queued` 想让 Java「重新武装看门狗」。可是
+    **queued → queued 不在表里**（Java 侧任务卡在 queued 是 Phase 1 的常态：
+    agent 从不发 video_generating），于是这条回退报到被 `非法状态跳转` 丢掉，
+    `stuckTaskWatchdog.watch(...)` 那一行（只在合法转移后执行）也没跑到。
+    最坏情形：Redis 里的看门狗 TTL 条目已过期 + 会话刚被恢复、还排在调度队列里
+    没开始跑（心跳协程由 `_run_session` 启动，排队期间不存在）→ 整段时间
+    任务既无 TTL 也无心跳，彻底无兜底。
+
+    本函数走 `/internal/heartbeat`：Java 侧 `handleHeartbeat` 对**非终态**任务
+    无条件 `stuckTaskWatchdog.watch(taskId, genType)` —— 与 from 状态无关，
+    因此对 queued / interrupted / video_generating 都成立。
+
+    Returns: 同 `probe_session_tracked`（True/False/None），供调用方记日志。
+    """
+    return await probe_session_tracked(session_id)

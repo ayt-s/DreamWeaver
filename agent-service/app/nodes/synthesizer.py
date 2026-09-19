@@ -30,7 +30,8 @@ def _error_text(exc: BaseException) -> str:
 
 
 async def _notify_final(session_id: str, status: str, video_urls: list[str],
-                        error_message: str | None = None) -> None:
+                        error_message: str | None = None,
+                        shot_seconds: int | None = None) -> None:
     """画布模式最终完成回调：携带拼接后的长视频 URL（放首位）+ 各分段 URL。"""
     from app.callback.java_notify import notify_java_completion
     asyncio.create_task(
@@ -41,6 +42,10 @@ async def _notify_final(session_id: str, status: str, video_urls: list[str],
             status=status,
             video_urls=video_urls,
             error_message=error_message,
+            # ★ 2026-09-19 修（#33）：画布模式是「N 段 × 每段 seconds」最常见的场景
+            #   （实测 6 段 × 5 秒 = 30 秒），但回调里从来没带 shot_seconds →
+            #   Java 的 api_quota.used_seconds 每条只记默认 5 秒，配额页失真 6 倍。
+            shot_seconds=shot_seconds,
         )
     )
 
@@ -109,8 +114,12 @@ async def synthesizer_node(state: CreativeSessionState) -> dict:
         from app.nodes.notify_final import summarize_qc_report
 
         qc_note = summarize_qc_report(state.get("qc_report"))
+        from app.callback.java_notify import total_shot_seconds
+
         await _notify_final(session_id, "completed", [final_url] + video_urls,
-                            error_message=qc_note or None)
+                            error_message=qc_note or None,
+                            shot_seconds=total_shot_seconds(
+                                state.get("storyboard"), state.get("segments")))
         await events.emit(session_id, "completed", {})
         return {
             "final_video_url": final_url,
@@ -125,7 +134,12 @@ async def synthesizer_node(state: CreativeSessionState) -> dict:
         await events.emit(session_id, "error", {"error": msg})
         await events.emit(session_id, "node_completed",
                           {"node_id": "synthesizer", "summary": f"拼接失败，透传 {len(video_urls)} 段"})
-        await _notify_final(session_id, "completed", video_urls, error_message=msg)
+        from app.callback.java_notify import total_shot_seconds
+
+        # ★ 2026-09-19（#33）：拼接失败但**分段真的生成过** → 配额照样按真实秒数记
+        await _notify_final(session_id, "completed", video_urls, error_message=msg,
+                            shot_seconds=total_shot_seconds(
+                                state.get("storyboard"), state.get("segments")))
         await events.emit(session_id, "completed", {})
         return {
             "final_video_url": "",

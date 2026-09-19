@@ -34,7 +34,7 @@ async def test_canvas_completion_callback_carries_qc_summary(monkeypatch, tmp_pa
     """QC 判失败时，合成回调的 error_message 必须写明「哪几镜、为什么」。"""
     captured: dict = {}
 
-    async def _fake_notify(session_id, status, video_urls, error_message=None):
+    async def _fake_notify(session_id, status, video_urls, error_message=None, shot_seconds=None):
         captured.update(session_id=session_id, status=status,
                         urls=list(video_urls), error=error_message)
 
@@ -81,7 +81,7 @@ async def test_canvas_completion_callback_is_clean_when_qc_passes(monkeypatch, t
     """QC 全过时不加噪音（避免用户以为出了问题）。"""
     captured: dict = {}
 
-    async def _fake_notify(session_id, status, video_urls, error_message=None):
+    async def _fake_notify(session_id, status, video_urls, error_message=None, shot_seconds=None):
         captured.update(error=error_message)
 
     async def _fake_concat(files, dest):

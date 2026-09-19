@@ -49,7 +49,9 @@ export async function recomposePrompts(
   const resp = await fetch('/v1/novel/recompose-prompts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ analysis, nodes }),
+    // 显式关掉「[镜头] 重算」：避免把用户在画布上手选的景别（cameraSpec 近景/特写）
+    // 按红线降成中景，造成 prompt 与 cameraSpec 两处口径打架。
+    body: JSON.stringify({ analysis, nodes, recompute_camera: false }),
   });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');

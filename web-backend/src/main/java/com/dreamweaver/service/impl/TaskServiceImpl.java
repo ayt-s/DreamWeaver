@@ -41,8 +41,31 @@ public class TaskServiceImpl implements TaskService {
     private final TaskJsonCodec taskJsonCodec;
     private final SegmentReworkPlanner reworkPlanner;
 
-    /** 终态集合：可直接删除 / 可重新生成 */
+    /** 终态集合：生成已结束**且产物可信**（可直接删除 / 可重新生成） */
     private static final Set<String> TERMINAL_STATUSES = Set.of("completed", "failed", "expired");
+
+    /**
+     * 「生成已经停下了」的用户可操作集合 = 终态 + {@code interrupted}。
+     *
+     * <p>★ 2026-09-19 修（#15 Java 一半）：{@code interrupted} 是看门狗兜底出的
+     * **非终态**（{@link TaskAutoRetryer#TARGET_STATUSES} 会重试它、
+     * {@link #regenerateTask} 也已显式放行它），但前端 {@code TaskCard.tsx:61}
+     * 把 interrupted 当终态并因此渲染「确认成品/退回草稿」「拼接成片」这些按钮 ——
+     * 而后端此前只认 {@link #TERMINAL_STATUSES} ⇒ 按钮点下去**必然 400**
+     * （「仅已终态的任务可…（当前=interrupted）」）。
+     * 两边统一到「interrupted 不是终态，但生成确实已经停下」：按钮有意义、后端也认。
+     *
+     * <p>⚠️ **不合并进 {@link #TERMINAL_STATUSES}**：那个集合还承担另一个语义 ——
+     * 「Agent 侧会话是否可能还活着」（删除/重生前要不要先 cancel）。interrupted 的会话
+     * 可能已被 Agent 自动恢复并继续生成，必须照旧取消（见 {@link #deleteTask} 与
+     * {@link #cancelOldAgentSession}）。两个问题（能不能整理 / 会话还在不在）用一个集合
+     * 回答，就是这条缺陷的成因。
+     *
+     * <p>仍需 {@code completed} 的入口不在这里放宽：「按段重生」依赖**产物与段的对齐**
+     * （{@link #doReworkCore} 自己校验），interrupted 任务的产物正是不可信的。
+     */
+    private static final Set<String> STOPPED_STATUSES =
+            Set.of("completed", "failed", "expired", "interrupted");
 
     @Override
     @Transactional
@@ -240,8 +263,9 @@ public class TaskServiceImpl implements TaskService {
         }
         // interrupted = 看门狗兜底出的非终态（Agent 可能已失联/恢复失败）：
         // 不在终态集合里，但仍必须允许用户「重新生成」原地重跑，否则该状态无恢复出口
-        if (!TERMINAL_STATUSES.contains(original.getStatus())
-                && !"interrupted".equals(original.getStatus())) {
+        // （★ 2026-09-19 #15：这条放行现在由 STOPPED_STATUSES 统一表达，避免「每个入口
+        //   各自记住一个额外状态」的写法 —— 漏一处就是又一个「按钮点了必然 400」）
+        if (!STOPPED_STATUSES.contains(original.getStatus())) {
             throw new IllegalArgumentException(
                     "任务正在生成中（status=" + original.getStatus() + "），无法重新生成");
         }
@@ -379,7 +403,9 @@ public class TaskServiceImpl implements TaskService {
         task.setSource(request.getSource() == null || request.getSource().isBlank()
                 ? "default" : request.getSource().trim());
         // 段配置落库：重生时取此作为输入源（未勾选段复用已有视频、勾选段重新生成）
-        task.setSegmentsJson(request.getSegments());
+        // ★ 2026-09-19 修（#20）：落库前归一化 —— 请求里传 `"[]"` 时不要写占位符
+        //   （它会让「按段重生」入口出现但 0 段可勾；见 TaskJsonCodec#hasSegments）。
+        task.setSegmentsJson(taskJsonCodec.normalizeSegmentsJson(request.getSegments()));
         // 精细控制参数落库：regenerate 从 entity 重建请求时需要还原
         task.setGenParamsJson(taskJsonCodec.buildGenParamsJson(request));
         task.setCreatedAt(LocalDateTime.now());
@@ -553,9 +579,9 @@ public class TaskServiceImpl implements TaskService {
         if (task == null) {
             throw new IllegalArgumentException("任务不存在（id=" + id + "）");
         }
-        if (!TERMINAL_STATUSES.contains(task.getStatus())) {
+        if (!STOPPED_STATUSES.contains(task.getStatus())) {
             throw new IllegalArgumentException(
-                    "仅已终态的任务可拼接成片（当前=" + task.getStatus() + "）");
+                    "任务正在生成中（当前=" + task.getStatus() + "），无法拼接成片");
         }
         // force=true（「重新拼接」）必须真的重拼：拼接算法会修，而幂等短路会让既有成片
         // 永远拿不到修复（实测：2026-09-18 修「多段成片整条没声音」时，旧成片全是无声的）
@@ -662,7 +688,9 @@ public class TaskServiceImpl implements TaskService {
             throw new IllegalArgumentException(
                     "任务未完成（status=" + original.getStatus() + "），无法重新生成指定段");
         }
-        if (original.getSegmentsJson() == null || original.getSegmentsJson().isBlank()) {
+        // ★ 2026-09-19 修（#20）：判据换成 hasSegments —— `segments_json="[]"`（占位符）
+        //   必须与「没有段配置」同等对待，否则这条 400 与上面两条 400 一起把用户关在门外。
+        if (!taskJsonCodec.hasSegments(original.getSegmentsJson())) {
             throw new IllegalArgumentException("该任务未保存段配置，无法重新生成指定段");
         }
         if (reworkIndices == null || reworkIndices.isEmpty()) {
@@ -681,7 +709,10 @@ public class TaskServiceImpl implements TaskService {
                 reworkIndices,
                 editedPrompts);
         String newSegmentsJson = plan.segmentsJson();
-
+        // ★ 2026-09-19 修（#20）：落库前先归一化再剥复用键 —— 若段组装意外产出空数组
+        //   （`"[]"`），落库必须是 null 而不是占位符，否则又给「按段重生」入口留一个 0 段可勾的死路。
+        String stripped = reworkPlanner.stripReuseKeys(newSegmentsJson);
+        String storedSegmentsJson = taskJsonCodec.normalizeSegmentsJson(stripped);
 
         // 3. 重置任务为 pending（旧产物存 prev_result_json 供回滚），段配置更新为最新版
         // ⚠️ 落库的必须是**剥掉运行期复用键**的版本（2026-09-19 修）：带 `existing_video_url`
@@ -689,7 +720,7 @@ public class TaskServiceImpl implements TaskService {
         //    短路，只有上次勾选的段真的重跑（实测库中 id=54/38/36/29 均已被污染）。
         //    派发用的 `newSegmentsJson` 仍带复用键（本次不用重生的段就该复用，省额度）。
         taskMapper.update(null, resetTaskForRerun(id, original.getResultJson())
-                .set(Task::getSegmentsJson, reworkPlanner.stripReuseKeys(newSegmentsJson)));
+                .set(Task::getSegmentsJson, storedSegmentsJson));
 
         CreateTaskRequest request = new CreateTaskRequest();
         request.setPrompt(original.getPrompt());
@@ -706,7 +737,10 @@ public class TaskServiceImpl implements TaskService {
     @Override
     public List<Map<String, Object>> getSegments(Long id) {
         Task task = taskMapper.selectById(id);
-        if (task == null || task.getSegmentsJson() == null || task.getSegmentsJson().isBlank()) {
+        // ★ 2026-09-19 修（#20）：判据统一走 hasSegments —— 存量 `segments_json="[]"`
+        //   的 27 条任务在这里被当成「没有分段」，返回空列表（前端据此不渲染段面板）。
+        //   读侧归一化是必需的：存量脏数据不靠 SQL 迁移也能立刻不再误导用户。
+        if (task == null || !taskJsonCodec.hasSegments(task.getSegmentsJson())) {
             return new java.util.ArrayList<>();
         }
         List<Map<String, Object>> segs = taskJsonCodec.parseSegments(task.getSegmentsJson());
@@ -744,9 +778,10 @@ public class TaskServiceImpl implements TaskService {
         if (task == null) {
             throw new IllegalArgumentException("任务不存在（id=" + id + "）");
         }
-        // 运行中任务不应进草稿区（生成还在进行，标记无意义）
-        if (!TERMINAL_STATUSES.contains(task.getStatus())) {
-            throw new IllegalArgumentException("仅已终态的任务可标记草稿（当前=" + task.getStatus() + "）");
+        // 运行中任务不应进草稿区（生成还在进行，标记无意义）；
+        // interrupted 允许整理（★ 2026-09-19 #15：生成已停下，用户把不要的中断任务退回草稿是合理出口）
+        if (!STOPPED_STATUSES.contains(task.getStatus())) {
+            throw new IllegalArgumentException("任务正在生成中（当前=" + task.getStatus() + "），无法标记草稿");
         }
         task.setIsDraft(isDraft ? 1 : 0);
         taskMapper.updateById(task);
@@ -761,7 +796,12 @@ public class TaskServiceImpl implements TaskService {
         resp.setGenType(task.getGenType());
         resp.setResultJson(task.getResultJson());
         resp.setImageUrls(task.getImageUrls());
-        resp.setSegmentsJson(task.getSegmentsJson());
+        // ★ 2026-09-19 修（#20）：**出参也要归一化**。存量 27 条任务的 segments_json 是
+        //   字面量 "[]"（agent 侧「本次无分镜」的序列化产物），而前端多处判据是
+        //   `!!task.segmentsJson`（存在性）而不是「解析后非空」⇒ 段面板/「按段重生」入口
+        //   照样渲染，点下去仍是「0 段可勾 → 400」。读取侧把「空数组」归一化成 null 后，
+        //   前端现有判据（不改前端）自然走「旧任务无分镜」的置灰分支。
+        resp.setSegmentsJson(taskJsonCodec.normalizeSegmentsJson(task.getSegmentsJson()));
         // 画廊「编辑参数」入口需要它反序列化预填历史参数
         resp.setGenParamsJson(task.getGenParamsJson());
         resp.setErrorMessage(task.getErrorMessage());

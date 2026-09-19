@@ -52,6 +52,7 @@ class NotifyServiceImplTest {
     private static final String SESSION_ID = "s-1";
 
     private TaskMapper taskMapper;
+    private StuckTaskWatchdog watchdog;
     private NotifyServiceImpl service;
 
     @BeforeAll
@@ -66,12 +67,14 @@ class NotifyServiceImplTest {
     @BeforeEach
     void setUp() {
         taskMapper = mock(TaskMapper.class);
+        watchdog = mock(StuckTaskWatchdog.class);
         service = new NotifyServiceImpl(
                 taskMapper,
                 mock(ApiQuotaMapper.class),
                 new ObjectMapper(),
-                mock(StuckTaskWatchdog.class),
-                mock(ImageCacheService.class));
+                watchdog,
+                mock(ImageCacheService.class),
+                new TaskJsonCodec(new ObjectMapper()));
     }
 
     // ------------------------------------------------------------------ 用例
@@ -141,6 +144,110 @@ class NotifyServiceImplTest {
         service.handleCompletion(request("failed", "炸了"));
 
         verify(taskMapper, never()).updateById(any(Task.class));
+    }
+
+    // ------------------------------------------- #6/#19：queued→queued 恢复报到
+
+    @Test
+    @DisplayName("★ #6/#19：任务本就 queued 时收到「回退报到」→ 重新武装看门狗，不写库")
+    void queuedToQueuedRearmsWatchdog() {
+        Task t = task("queued", null);
+        t.setGenType("text_video");
+        when(taskMapper.selectList(any())).thenReturn(List.of(t));
+
+        service.handleCompletion(request("queued", "Agent 重启恢复，重新排队"));
+
+        // 信号不再被当「非法状态跳转」丢掉 —— 这是本条缺陷的核心
+        verify(watchdog).watch(TASK_ID, "text_video");
+        // 状态没变 ⇒ 不该写库：不动 started_at/completed_at、不推 version、不碰产物
+        verify(taskMapper, never()).update(isNull(), any());
+        verify(taskMapper, never()).updateById(any(Task.class));
+    }
+
+    @Test
+    @DisplayName("★ #6/#19：终态任务的「回退报到」不得把看门狗重新点着（防僵尸续期）")
+    void queuedReportOnTerminalTaskIsIgnored() {
+        when(taskMapper.selectList(any())).thenReturn(List.of(task("completed", null)));
+
+        service.handleCompletion(request("queued", "Agent 重启恢复"));
+
+        verify(watchdog, never()).watch(any(), any());
+        verify(taskMapper, never()).update(isNull(), any());
+    }
+
+    @Test
+    @DisplayName("★ #6/#19 回归护栏：非法跳变仍被挡（queued → video_generating 不在表里）")
+    void illegalTransitionStillRejected() {
+        when(taskMapper.selectList(any())).thenReturn(List.of(task("queued", null)));
+
+        service.handleCompletion(request("video_generating", null));
+
+        verify(taskMapper, never()).update(isNull(), any());
+        verify(watchdog, never()).watch(any(), any());
+    }
+
+    @Test
+    @DisplayName("★ #6/#19 回归护栏：interrupted → queued 仍按「回退排队」正常写库并重新武装")
+    void interruptedToQueuedStillWritesAndRearms() {
+        Task t = task("interrupted", "Agent 长时间未回调，已标记中断");
+        t.setGenType("text_image");
+        when(taskMapper.selectList(any())).thenReturn(List.of(t));
+        var wrapper = captureUpdate();
+
+        service.handleCompletion(request("queued", "Agent 重启恢复"));
+
+        assertEquals("queued", paramValueAfter(wrapper, "status"));
+        assertNull(paramValueAfter(wrapper, "completed_at"));
+        verify(watchdog).watch(TASK_ID, "text_image");
+    }
+
+    // ------------------------------------------------- #20：storyboard 占位符
+
+    @Test
+    @DisplayName("★ #20：storyboard=\"[]\"（无分镜占位符）不得写进 segments_json")
+    void emptyStoryboardPlaceholderIsNotStored() {
+        when(taskMapper.selectList(any())).thenReturn(List.of(task("queued", null)));
+        var wrapper = captureUpdate();
+
+        NotifyRequest req = request("completed", null);
+        req.setStoryboard("[]");
+
+        service.handleCompletion(req);
+
+        assertNull(paramValueAfter(wrapper, "segments_json"),
+                "占位符 \"[]\" 会被前端 !!segmentsJson 当成有分镜 → 面板 0 段可勾 → 提交 400");
+    }
+
+    @Test
+    @DisplayName("★ #20：字段缺省 / null / 坏 JSON 同样不写 segments_json")
+    void missingOrBrokenStoryboardIsNotStored() {
+        when(taskMapper.selectList(any())).thenReturn(List.of(task("queued", null)));
+        var wrapper = captureUpdate();
+        NotifyRequest req = request("completed", null);
+        req.setStoryboard("  ");
+        service.handleCompletion(req);
+        assertNull(paramValueAfter(wrapper, "segments_json"));
+
+        when(taskMapper.selectList(any())).thenReturn(List.of(task("queued", null)));
+        wrapper = captureUpdate();
+        NotifyRequest broken = request("completed", null);
+        broken.setStoryboard("[[[");
+        service.handleCompletion(broken);
+        assertNull(paramValueAfter(wrapper, "segments_json"), "坏 JSON 按「无分段」处理");
+    }
+
+    @Test
+    @DisplayName("#20：真分镜照旧落库（回归护栏，别把正常路径一起挡掉）")
+    void realStoryboardIsStillStored() {
+        when(taskMapper.selectList(any())).thenReturn(List.of(task("queued", null)));
+        var wrapper = captureUpdate();
+
+        NotifyRequest req = request("completed", null);
+        req.setStoryboard("[{\"prompt\":\"镜头一\"}]");
+
+        service.handleCompletion(req);
+
+        assertEquals("[{\"prompt\":\"镜头一\"}]", paramValueAfter(wrapper, "segments_json"));
     }
 
     // ------------------------------------------------------------------ 工具

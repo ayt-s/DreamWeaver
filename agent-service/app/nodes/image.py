@@ -16,6 +16,8 @@ from app.gateway.agnes import gateway
 from app import abort
 from app.state import CreativeSessionState, TaskStatus
 from app.utils import trace as trace_util
+# ★ 2026-09-19（#33）：回调里的 shot_seconds 统一从这一个函数取，避免各节点各写一份
+from app.callback.java_notify import total_shot_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +68,8 @@ def _reused_images_complete(state: CreativeSessionState) -> list[str]:
 
 
 async def _finish_segment_rework(session_id: str, image_urls: list[str],
-                                 storyboard: list, failed_indices: list[int]) -> None:
+                                 storyboard: list, failed_indices: list[int],
+                                 shot_seconds: int | None = None) -> None:
     """段重生/图片重生分支的收尾回调 + SSE 事件（原内联于节点内）。"""
     from app import events
     from app.callback.java_notify import notify_java_completion
@@ -81,6 +84,8 @@ async def _finish_segment_rework(session_id: str, image_urls: list[str],
                 status="completed",
                 image_urls=image_urls,  # 完整列表（含空串），索引与 segments 对齐
                 storyboard=_json.dumps(storyboard, ensure_ascii=False),
+                # ★ 2026-09-19 修（#33）：带上真实总秒数（见 java_notify 的说明）
+                shot_seconds=shot_seconds,
             )
         )
         await events.emit(session_id, "completed", {})
@@ -96,14 +101,31 @@ async def _finish_segment_rework(session_id: str, image_urls: list[str],
 
 
 async def _finish_text_image(session_id: str, storyboard: list,
-                             image_urls: list[str]) -> None:
-    """文生图/漫剧模式的会话级完成回调（原内联于节点内）。"""
+                             image_urls: list[str],
+                             shot_seconds: int | None = None) -> None:
+    """文生图/漫剧模式的会话级完成回调（原内联于节点内）。
+
+    ★ 2026-09-19 修（#30）：**「无分段」必须发成 `None`，不能发 `[]`**。
+    改前形状：`sb_json = json.dumps(storyboard)`，直出图传的是 `[]` → 发出去
+    字面量 `"[]"`。Java `NotifyServiceImpl` 的写入条件是
+    `request.getStoryboard() != null && !isBlank() && (task.segmentsJson 为空)`
+    —— `"[]"` 既非 null 也非 blank，于是**被当作有效分镜写进 `segments_json`**。
+    后果链：前端的判据是 `!segmentsJson`（"有没有段配置"），`"[]"` 让它判定
+    「有段配置」→ 卡片上「按段重生」按钮可点 → 点下去按段重生拿到 0 段 →
+    必进死路（既没有可重生的段，也没有可提示的错误）。
+    改法：storyboard 为空（直出图 / 无分段的场景）时**整个 storyboard 键都不发**
+    （`storyboard=None` → payload 里没有该键）：
+      - Java 侧 `request.getStoryboard()` 为 null → 不写 segments_json →
+        保持库里既有的值（重复回调也不会覆盖），前端判据回到「真的没有段」；
+      - 语义明确：「本次回调没有分镜配置」，而不是「分镜配置是空数组」。
+    """
     from app import events
     from app.callback.java_notify import notify_java_completion
     import json as _json
 
-    # 带 storyboard，让 Java 保存 segments_json 供下次段重生
-    sb_json = _json.dumps(storyboard, ensure_ascii=False)
+    # 带 storyboard，让 Java 保存 segments_json 供下次段重生；
+    # 无分段（空列表）时**不发该字段**，见上面的 #30 说明。
+    sb_json = _json.dumps(storyboard, ensure_ascii=False) if storyboard else None
     asyncio.create_task(
         notify_java_completion(
             video_id="",
@@ -113,10 +135,13 @@ async def _finish_text_image(session_id: str, storyboard: list,
             video_url="",
             image_urls=[u for u in image_urls if u],
             storyboard=sb_json,
+            # ★ 2026-09-19 修（#33）：带上真实总秒数（见 java_notify 的说明）
+            shot_seconds=shot_seconds,
         )
     )
-    logger.info("text_image/comic_video 会话完成回调已发: session=%s, images=%d",
-                session_id, len(image_urls))
+    logger.info("text_image/comic_video 会话完成回调已发: session=%s, images=%d, storyboard=%s",
+                session_id, len(image_urls),
+                f"{len(storyboard)} 段" if storyboard else "无（不写 segments_json）")
     await events.emit(session_id, "completed", {})
 
 
@@ -146,10 +171,15 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
         terminal = bool(state.get("segments")) or state.get("gen_type") in (
             "text_image", "comic_video")
         if state.get("segments"):
-            await _finish_segment_rework(session_id, reused,
-                                         state.get("storyboard") or [], [])
+            await _finish_segment_rework(
+                session_id, reused, state.get("storyboard") or [], [],
+                shot_seconds=total_shot_seconds(
+                    state.get("storyboard"), state.get("segments")))
         elif state.get("gen_type") in ("text_image", "comic_video"):
-            await _finish_text_image(session_id, state.get("storyboard") or [], reused)
+            await _finish_text_image(
+                session_id, state.get("storyboard") or [], reused,
+                shot_seconds=total_shot_seconds(
+                    state.get("storyboard"), state.get("segments")))
         return {
             "image_urls": reused,
             "status": TaskStatus.COMPLETED if terminal
@@ -247,7 +277,9 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
                            "summary": f"段重生：{len(image_urls)} 张（复用 {len(segments) - len([1 for s in segments if not str(s.get('existing_image_url','')).strip()])} 张）"})
 
         # 段重生分支也必须发完成回调，否则任务永远停在 pending（Java 不会主动轮询 agent）
-        await _finish_segment_rework(session_id, image_urls, storyboard, failed_indices)
+        await _finish_segment_rework(session_id, image_urls, storyboard, failed_indices,
+                                     shot_seconds=total_shot_seconds(
+                                         storyboard, state.get("segments")))
         non_empty_urls = [u for u in image_urls if u]
 
         return {
@@ -322,7 +354,8 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
         # ⚠️ 回调必须在这里发：text_image 模式的图路由是 text_done → END，
         # **不经过 notify_final**，漏了这一步任务会永远停在 pending
         if direct_urls:
-            # storyboard 传空：直出图没有分镜，Java 侧不会覆盖已有 segments_json
+            # storyboard 传空：直出图没有分镜 → **不发 storyboard 键**（#30），
+            # Java 侧据此保持 segments_json 为空，前端的「按段重生」判据才正确。
             await _finish_text_image(sid, [], direct_urls)
             # ★ 2026-09-19 修（#1·#9）：text_image 的图路由是 text_done → END，
             #   本节点就是最后一步 —— 还返回 ASSET_GENERATING 会让会话快照永远停在
@@ -421,7 +454,9 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
     # 文生图/漫剧模式：video 节点不会执行，这里直接发会话级完成回调
     final_status = TaskStatus.ASSET_GENERATING
     if state.get("gen_type") in ("text_image", "comic_video"):
-        await _finish_text_image(session_id, storyboard, image_urls)
+        await _finish_text_image(
+            session_id, storyboard, image_urls,
+            shot_seconds=total_shot_seconds(storyboard, state.get("segments")))
         # ★ 2026-09-19 修（#1·#9）：这两个类型到此就是**终态**（video 节点不执行）。
         #   原来恒返回 ASSET_GENERATING ⇒ 会话快照永远停在「资产生成中」，
         #   与刚发出的 completed 回调自相矛盾，前端轨迹面板一直转圈。

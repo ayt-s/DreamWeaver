@@ -126,6 +126,38 @@ class TaskJsonCodecTest {
         assertTrue(codec.parseSegments("{\"a\":1}").isEmpty()); // 对象不是数组
     }
 
+    // ------------------------------------------------- hasSegments / 归一化
+
+    @Test
+    @DisplayName("★ #20：hasSegments —— 占位符 \"[]\" 与 null / 缺省 一律算「无分段」")
+    void hasSegmentsTreatsPlaceholderAsAbsent() {
+        // Agent 侧「本次无分镜」会序列化成 "[]"，它不是空白串 ——
+        // 旧判据 isBlank() 会把它当成有分镜存进 segments_json，
+        // 于是前端 !!segmentsJson 为真、面板却 0 段可勾（实测 27 条 text_image 任务）。
+        assertFalse(codec.hasSegments("[]"), "空数组 ≠ 有分段");
+        assertFalse(codec.hasSegments(" [ ] "), "带空白的空数组同样不算");
+        assertFalse(codec.hasSegments(null), "字段缺省 = 无分段");
+        assertFalse(codec.hasSegments(""));
+        assertFalse(codec.hasSegments("   "));
+        assertFalse(codec.hasSegments("[[["), "坏 JSON 按无分段处理（不阻断回调）");
+        assertFalse(codec.hasSegments("{\"a\":1}"), "对象不是段数组");
+
+        assertTrue(codec.hasSegments("[{\"prompt\":\"镜头一\"}]"));
+    }
+
+    @Test
+    @DisplayName("★ #20：normalizeSegmentsJson —— 无分段回 null，有分段原样返回")
+    void normalizeSegmentsJsonCollapsesPlaceholders() {
+        assertNull(codec.normalizeSegmentsJson("[]"));
+        assertNull(codec.normalizeSegmentsJson(" [ ] "));
+        assertNull(codec.normalizeSegmentsJson(null));
+        assertNull(codec.normalizeSegmentsJson(""));
+        assertNull(codec.normalizeSegmentsJson("坏数据"));
+        // 有分段时**一字不改**（不能顺手重排/丢字段，段配置是重生输入）
+        String real = "[{\"prompt\":\"镜头一\",\"seconds\":4}]";
+        assertEquals(real, codec.normalizeSegmentsJson(real));
+    }
+
     // ---------------------------------------------------- buildGenParamsJson
 
     @Test

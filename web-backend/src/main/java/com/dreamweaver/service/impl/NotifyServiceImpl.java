@@ -33,6 +33,8 @@ import java.util.HashMap;
  *
  * <p>状态转移表（from → to）：
  * - queued → completed / failed / interrupted（Phase 1 实际路径：FastAPI 内联轮询完成后整会话回调一次）
+ * - queued → queued（★ 2026-09-19 加：Agent 重启恢复后的「回退报到」= 续期信号，
+ *   状态没变所以不写库，只重新武装看门狗 TTL，见 handleCompletion 第 3 步）
  * - video_generating → completed / failed（Phase 2 异步回调预留：补发生成中通知后支持三态）
  * - interrupted → completed / failed / queued（Agent 重启恢复：迟到回调落定 或 重新报到回退排队）
  */
@@ -46,6 +48,8 @@ public class NotifyServiceImpl implements NotifyService {
     private final ObjectMapper objectMapper;
     private final StuckTaskWatchdog stuckTaskWatchdog;
     private final ImageCacheService imageCacheService;
+    /** 段配置判据/归一化的唯一出处（`"[]"` 占位符 ≠ 有分镜，见 #20） */
+    private final TaskJsonCodec taskJsonCodec;
 
     /** 默认单镜时长（秒），当回调未携带 shot_seconds 时使用 */
     private static final int DEFAULT_SHOT_SECONDS = 5;
@@ -96,9 +100,35 @@ public class NotifyServiceImpl implements NotifyService {
             return;
         }
 
-        // 3. 状态机校验：from → to 是否在转移表内
+        // 3. 「回退报到」= 续期信号处理（★ 2026-09-19 修 #6/#19 Java 一半）
+        //
+        // 场景：Agent 重启恢复后把「我还在、请重新武装看门狗」这条信号以 status=queued
+        // 发回来（回退报到）。当 Java 侧任务**本来就还是 queued**（Agent 重启时任务尚未
+        // 离开排队态，这是最常见的一种），旧转移表 queued→{completed,failed,interrupted}
+        // 不认这条边 ⇒ 信号被当「非法状态跳转」丢掉。后果不是「少记一条日志」：
+        // Redis 里那条 TTL 可能刚随 Redis 重启丢掉、或已经过期，
+        // 于是「会话还在 Agent 排队队列里（无心跳）+ Java 侧没有 TTL 条目」= 彻底没有兜底，
+        // 任务永久停在 queued（regenerate 被 400 挡、看门狗不会再来）。
+        //
+        // 修法：把它当**续期**（与 handleHeartbeat 完全同义）——
+        // 状态没变就不写库：不动 started_at/completed_at、不推 version、不累配额，
+        // 只重新武装 TTL。这样「恢复报到」与「心跳」两条信号在 Java 侧等价，
+        // Agent 侧不需要额外区分用哪个端点。
+        //
+        // ⚠️ 只放行 to == from == "queued" 这一条边：其余转移（尤其转 completed/failed
+        //    这些终态、以及 queued→interrupted）仍全部由下面的 TRANSITION_TABLE 把关，
+        //    非法状态跳变一条都不会被漏过。终态任务在上面的终态检查已经返回，
+        //    所以过期的「回退报到」也不会把终态任务的看门狗重新点着。
         String fromStatus = task.getStatus();
         String toStatus = request.getStatus();
+        if ("queued".equals(fromStatus) && "queued".equals(toStatus)) {
+            stuckTaskWatchdog.watch(task.getId(), task.getGenType());
+            log.info("notify 任务 {} 恢复报到（queued → queued）= 续期，重新武装看门狗 TTL（不改库）",
+                    task.getId());
+            return;
+        }
+
+        // 4. 状态机校验：from → to 是否在转移表内
         Set<String> allowedTos = TRANSITION_TABLE.get(fromStatus);
         if (allowedTos == null || !allowedTos.contains(toStatus)) {
             log.warn("notify 任务 {} 非法状态跳转: {} → {}，丢弃回调",
@@ -124,11 +154,22 @@ public class NotifyServiceImpl implements NotifyService {
         }
 
         // 4.2 保存 storyboard 为 segments_json（标准模式分镜 / 文生图分镜，供段重生用）
-        if (request.getStoryboard() != null && !request.getStoryboard().isBlank()
+        //
+        // ★ 2026-09-19 修（#20）：判据从 `!isBlank()` 换成 `taskJsonCodec.hasSegments()`。
+        //   旧判据把字面量 `"[]"` 当「有分镜」—— 而它是 agent 侧「本次没有分镜」的正常
+        //   序列化产物（直出图/文生图 storyboard=[]），于是 27 条任务的 segments_json 被
+        //   写成 `"[]"`：前端 `!!segmentsJson` 为真 → 渲染「按段重生」入口，
+        //   getSegments 却只解析出空列表 ⇒ 面板 0 段可勾、提交撞 400。
+        //   `hasSegments` 兼容 agent 侧三种写法（null / 字段缺省 / `"[]"`，含坏 JSON），
+        //   只有真解析出非空数组才落库；「空数组」一律按「无分段」处理（不写、保持 null）。
+        if (taskJsonCodec.hasSegments(request.getStoryboard())
                 && (task.getSegmentsJson() == null || task.getSegmentsJson().isBlank())) {
             task.setSegmentsJson(request.getStoryboard());
             log.info("notify 任务 {} 保存 storyboard 为 segments_json（长度={}）",
                     task.getId(), request.getStoryboard().length());
+        } else if (request.getStoryboard() != null && !request.getStoryboard().isBlank()) {
+            log.debug("notify 任务 {} 的 storyboard 无分段（占位符/坏数据），不写 segments_json",
+                    task.getId());
         }
 
         // 5. 更新状态（通过 updateById 触发乐观锁 version+1）

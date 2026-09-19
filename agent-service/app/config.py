@@ -89,6 +89,19 @@ class Settings:
     #   429 退避封顶 30s + ±20% 抖动防并发会话同时退避完撞墙
     #   503 队列满封顶 60s + 抖动（队列消化需时间）
     video_submit_max_attempts: int = int(_env("AGNES_VIDEO_MAX_ATTEMPTS", "6"))
+    # ★ 2026-09-19 新增（#11）：**读超时**（httpx.ReadTimeout）提交最多重试几次。
+    #   默认 1 = 不重试。为什么与上面那个上限分开（详见 gateway/agnes.py 的
+    #   submit_video 注释）：/videos 是**非幂等**的创建接口，读超时发生在
+    #   「请求已经送达、平台已经在建任务」之后 —— 重试会再建一个任务，
+    #   多出的那个 video_id 拿不到（不写进 progress.submitted、不进产物、不退款），
+    #   还占掉 ≈2 次/分钟的提交配额。连接超时（连不上）则可以安全重试，
+    #   所以它是另一个独立预算 `video_submit_connect_max_attempts`。
+    video_submit_timeout_max_attempts: int = int(
+        _env("AGNES_VIDEO_TIMEOUT_MAX_ATTEMPTS", "1"))
+    # 连接类错误（ConnectTimeout / ConnectError / PoolTimeout：请求**没送出去**）的重试次数。
+    # 安全：平台侧没有建过任务，重试不产生孤儿任务。
+    video_submit_connect_max_attempts: int = int(
+        _env("AGNES_VIDEO_CONNECT_MAX_ATTEMPTS", "3"))
 
     # Phase 2 回调目标（Java Spring Boot 地址）
     java_notify_url: str = _env("JAVA_NOTIFY_URL", "")

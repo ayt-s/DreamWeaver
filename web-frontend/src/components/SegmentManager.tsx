@@ -25,8 +25,14 @@ interface SegmentManagerProps {
  * 后端容错：段数少于历史产物数时按索引尽力对齐，缺少可复用产物的段自动补入重生列表。
  */
 export default function SegmentManager({ taskId, onClose, onChanged, segments: segmentsProp, genType }: SegmentManagerProps) {
-  // 图片类任务（文生图 / 漫画）与视频类任务的段重生语义不同：前者重生单张图片，后者重生片段并拼接
-  const isImageTask = genType === 'text_image' || genType === 'comic_video';
+  // 图片类任务（文生图）与视频类任务的段重生语义不同：前者重生单张图片，后者重生片段并拼接
+  // ★ 2026-09-19 修（#34）：原来还有 `|| genType === 'comic_video'` —— 前端零生产者的
+  //   不可达类型（类型定义已删，见 types/task.ts），这个分支永远不执行。
+  //   ⚠️ 后端**仍把 comic_video 当图片类**（SegmentReworkPlanner.java:44
+  //   的 IMAGE_GEN_TYPES = {text_image, comic_video}）。将来真有生产者时，
+  //   恢复筛选项之前必须连这里一起补回来，否则该类型任务会被当成视频类显示
+  //   （「第 N 段 / 重生 N 段并重新拼接」，而实际重的是图）。
+  const isImageTask = genType === 'text_image';
   const [segments, setSegments] = useState<TaskSegment[] | null>(segmentsProp ?? null);
   const [loadError, setLoadError] = useState('');
   const [selected, setSelected] = useState<Set<number>>(new Set());
