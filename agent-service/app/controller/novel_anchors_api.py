@@ -12,7 +12,7 @@ import asyncio
 import logging
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from app.errors import AppError
 from app.utils.prompting import strip_subject_clauses
@@ -51,7 +51,15 @@ class NovelAnchorsRequest(BaseModel):
         description="场景描述列表",
     )
     style: str = Field(default="电影写实", description="整体视觉风格短语")
-    max_per_type: int = Field(default=5, ge=1, le=10, description="每类最多生成几张")
+    # ★ 2026-09-19 修（#35）：前端 `api/novelAnchors.ts` 发的是**驼峰** `maxPerType`，
+    #   而这里只声明了蛇形 `max_per_type` ⇒ pydantic 默认忽略未知字段，**传了也不生效**
+    #   （静默按默认 5 张生成：多花额度、且与 UI 声明不符）。用 AliasChoices 兼容两种拼写。
+    #   属"字段名在层间不一致"的休眠缺陷 —— 目前没有调用方传值，所以未造成现网影响。
+    max_per_type: int = Field(
+        default=5, ge=1, le=10,
+        validation_alias=AliasChoices("max_per_type", "maxPerType"),
+        description="每类最多生成几张",
+    )
 
 
 class NovelAnchorsResponse(BaseModel):

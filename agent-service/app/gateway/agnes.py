@@ -145,12 +145,18 @@ class VideoSubmitGate:
         async with self._lock:
             loop = asyncio.get_running_loop()
             now = loop.time()
+            prev_release = self._last      # ★ 修（#13）：下面会被覆盖，先留一份真值
             wait = self._last + self._interval - now
             if wait > 0:
                 await asyncio.sleep(wait)
                 now = loop.time()
             self._last = now
-            logger.info("视频提交门放行（距上次 %.1fs）", now - (self._last - self._interval))
+            # ★ 2026-09-19 修（#13）：原日志打印 `now - (self._last - self._interval)`，
+            #   而 `self._last = now` 就在上一行 ⇒ 该表达式**恒等于 interval**（实测永久 35.0s），
+            #   真实间隔完全丢失 —— 排查「提交被节流饿死 / 任务排队」时会得出"每次都是满间隔"
+            #   的错误结论（首个放行、长间隔时真实等待其实是 0）。只影响排障判断，不影响产物。
+            logger.info("视频提交门放行（距上次真实 %.1fs；本次等待 %.1fs；间隔上限 %.1fs）",
+                        now - prev_release, max(0.0, wait), self._interval)
 
 
 _gate: VideoSubmitGate | None = None
