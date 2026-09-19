@@ -1156,23 +1156,38 @@ export default function CanvasPage() {
   //   character_refs / scene_refs**（污染别的项目的锚定图数据）。
   //   所以在项目切换时把参数从 URL 清掉；留在原项目里时照常工作。
   const anchorRefsParam = searchParams.get('anchorRefs');
-  const anchorRefsProjectRef = useRef<number | null>(null);
+  const anchorRefsOwnerRef = useRef<number | null>(null);
+  const urlAnchorKeysRef = useRef<{ chars: string[]; scenes: string[] }>({ chars: [], scenes: [] });
   useEffect(() => {
     if (!anchorRefsParam) return;
-    if (anchorRefsProjectRef.current === null) {
-      anchorRefsProjectRef.current = currentProjectId;   // 记住带入时的项目
+    if (anchorRefsOwnerRef.current === null) {
+      if (currentProjectId === null) return;
+      anchorRefsOwnerRef.current = currentProjectId;
+      try {
+        const parsed = JSON.parse(decodeURIComponent(anchorRefsParam)) as Record<string, unknown>;
+        urlAnchorKeysRef.current = {
+          chars: Object.keys(parseAnchorRefs(parsed?.characters as never) ?? {}),
+          scenes: Object.keys(parseAnchorRefs(parsed?.scenes as never) ?? {}),
+        };
+      } catch { urlAnchorKeysRef.current = { chars: [], scenes: [] }; }
       return;
     }
-    if (anchorRefsProjectRef.current !== currentProjectId) {
-      setSearchParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          next.delete('anchorRefs');
-          return next;
-        },
-        { replace: true },
-      );
-      anchorRefsProjectRef.current = null;
+    if (anchorRefsOwnerRef.current !== currentProjectId) {
+      // ★ 修（#27 真正的原因）：**函数式 setSearchParams 在本项目的 react-router 版本下没有生效**
+      //   （探针实测：切项目后 `searchParams.get('anchorRefs')` 依旧是外来载荷）⇒ URL 参数一直在，
+      //   合并 effect 就反复把外来图写回 state，后面所有"门闸/清理"都被它绕过。
+      //   改成用当前 searchParams 构造新对象（v6 全程支持的写法）。
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('anchorRefs');
+      setSearchParams(nextParams, { replace: true });
+      const drop = <T extends Record<string, unknown>>(prev: T): T => {
+        const next = { ...prev } as Record<string, unknown>;
+        for (const k of [...urlAnchorKeysRef.current.chars, ...urlAnchorKeysRef.current.scenes]) delete next[k];
+        return next as T;
+      };
+      setAnchorCharRefs(drop);
+      setAnchorSceneRefs(drop);
+      urlAnchorKeysRef.current = { chars: [], scenes: [] };
     }
   }, [anchorRefsParam, currentProjectId, setSearchParams]);
 
@@ -1217,18 +1232,20 @@ export default function CanvasPage() {
   //   每段 reference_images = [本段图, ...角色锚定图, ...场景锚定图]，截断 5 张
   // 因此 Picture 1 = 每段自己的图（逐段不同，不可全局绑定），Picture 2 起才是锚定图。
   // 锚定图来源与提交保持一致：优先画布 state，URL anchorRefs 兜底。
+  const urlAnchorsAllowed =
+    anchorRefsOwnerRef.current === null || anchorRefsOwnerRef.current === currentProjectId;
   const effectiveCharRefs: AnchorMap = useMemo(
     () =>
       Object.keys(anchorCharRefs).length > 0
         ? anchorCharRefs
-        : parseAnchorRefs(anchorRefs?.characters),
+        : parseAnchorRefs(urlAnchorsAllowed ? anchorRefs?.characters : null),
     [anchorCharRefs, anchorRefs],
   );
   const effectiveSceneRefs: AnchorMap = useMemo(
     () =>
       Object.keys(anchorSceneRefs).length > 0
         ? anchorSceneRefs
-        : parseAnchorRefs(anchorRefs?.scenes),
+        : parseAnchorRefs(urlAnchorsAllowed ? anchorRefs?.scenes : null),
     [anchorSceneRefs, anchorRefs],
   );
   // 纯 url 视图：提交载荷（reference_images）与面板缩略图仍按 url 处理
@@ -1263,6 +1280,7 @@ export default function CanvasPage() {
   // 必须在项目加载完成后执行，否则 currentProjectId 还没设置
   useEffect(() => {
     if (!anchorRefs || !currentProjectId) return;
+    if (anchorRefsOwnerRef.current !== null && anchorRefsOwnerRef.current !== currentProjectId) return;
     // URL 载荷可能是旧的「名字 → url」或新的「名字 → {url, desc}」（转画布时带上描述），
     // parseAnchorRefs 两种都吃。
     const chars = parseAnchorRefs(anchorRefs.characters);

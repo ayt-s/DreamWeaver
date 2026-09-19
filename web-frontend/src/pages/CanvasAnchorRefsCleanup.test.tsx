@@ -164,11 +164,19 @@ describe('切换画布项目时清理 ?anchorRefs（#27）', () => {
 
   afterEach(() => vi.restoreAllMocks());
 
-  it.skip('切到另一个项目后，外来的锚定图不再出现在提交载荷里（⚠️ 尚未修好，见文件头）', async () => {
+  it('切到另一个项目后，外来的锚定图不再出现在提交载荷里', async () => {
     const { container } = renderAt(
       `/canvas?anchorRefs=${encodeURIComponent(JSON.stringify(FOREIGN))}`,
     );
     await screen.findByTitle(/切换画布项目/);
+    // ★★ 关键前置条件（前五条修法全被否就是栽在这里）：
+    //   「带入时那个项目」必须**先真的被选中** —— 页面不会自动选中第一个项目
+    //   （currentProjectId 只在用户下拉选择/新建保存后才设置）。
+    //   不先选项目 1，载荷就是"没有项目时"带进来的，随后切到项目 2 时认领 2 是**正确行为**，
+    //   "跨项目污染"这个前提根本没建立 ⇒ 用例会永远红，而产品代码是对的。
+    fireEvent.change(container.querySelector('select') as HTMLSelectElement, { target: { value: '1' } });
+    await waitFor(() =>
+      expect([...container.querySelectorAll('input')].some((i) => i.value === '长生烬9-17-1')).toBe(true));
 
     // 1) 进入项目 1：URL 带入的锚定图**在**参与（提示词含锚定图名「陈浔」→ 命中）
     fillDesc('陈浔站在山坡上');
