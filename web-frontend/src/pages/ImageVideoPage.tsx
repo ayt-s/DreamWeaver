@@ -442,7 +442,12 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
   // 排序/换位的规则抽在 utils/shotOrder.ts（纯函数 + 单测，因为排错了不会报错，
   // 只会让成片顺序不对）。
   const ORDER = (data as { __order?: number }).__order ?? 0;
-  const ORDER_TOTAL = (data as { __orderTotal?: number }).__orderTotal ?? 0;
+  // ★ 2026-09-19 修（#26）：段号与"位次"是两件事，拆开读 ——
+  //   `__order` = 成片里的第几段（只有**会真正提交**的节点才有，见下面注入处）；
+  //   `__place` = 该节点在 chain 里的位次（所有图片节点都有）⇒ 驱动 ▲▼ 与禁用边界。
+  //   原来共用一个值，导致没放图的节点也顶着「第 N 段」的假段号。
+  const PLACE = (data as { __place?: number }).__place ?? 0;
+  const PLACE_TOTAL = (data as { __placeTotal?: number }).__placeTotal ?? 0;
 
   const moveShot = (dir: -1 | 1) => {
     const shots = sortShots(
@@ -631,12 +636,12 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
       <div className="mb-2 flex items-center gap-1 text-[11px] font-semibold text-slate-500">
         <ImagePlus className="h-3.5 w-3.5" /> 图片节点
         {/* 成片顺序徽标 + 前后移动：chain 按 x 坐标排，拖动节点也能改顺序 —— 不显示序号用户看不出来 */}
-        {ORDER > 0 ? (
+        {PLACE > 0 ? (
           <span className="ml-auto flex shrink-0 items-center gap-0.5">
             <button
               type="button"
               className="nodrag rounded px-0.5 text-[10px] text-indigo-500 hover:bg-indigo-50 disabled:opacity-25"
-              disabled={ORDER <= 1}
+              disabled={PLACE <= 1}
               title="前移一段（在成片里提前）"
               onClick={() => moveShot(-1)}
             >
@@ -646,12 +651,12 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
               className="rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-600"
               title="成片里的第几段（按画布从左到右排序）"
             >
-              第 {ORDER} 段
+              {ORDER > 0 ? `第 ${ORDER} 段` : '待放图（不参与成片）'}
             </span>
             <button
               type="button"
               className="nodrag rounded px-0.5 text-[10px] text-indigo-500 hover:bg-indigo-50 disabled:opacity-25"
-              disabled={ORDER_TOTAL === 0 || ORDER >= ORDER_TOTAL}
+              disabled={PLACE_TOTAL === 0 || PLACE >= PLACE_TOTAL}
               title="后移一段（在成片里推后）"
               onClick={() => moveShot(1)}
             >
@@ -2323,24 +2328,39 @@ export default function CanvasPage() {
   // === 成片顺序写进图片节点（画布上显示「第 N 段」）===
   // chain 按 x 坐标排序 → 拖动节点即改顺序；不显示序号用户根本判断不出提交顺序。
   useEffect(() => {
+    // ★ 2026-09-19 修（#26）：段号与"排顺序"必须分开算。
+    //   - `place`：图片节点在 chain 里的位次（**所有**图片节点都有）→ 驱动 ▲▼ 与禁用边界
+    //     （顺序由 x 坐标决定，拖动/▲▼ 对任何节点都有意义，没放图时也要能排）；
+    //   - `order`：**会真正提交的**节点（有 imageUrl —— plan 里的
+    //     `if (!img.imageUrl.trim()) continue;` 会跳过没图的）才有的「成片第几段」→ 驱动徽标。
+    //   原来两者共用 order ⇒ 没放图的节点也显示「第 N 段」，而它根本不会被提交：
+    //   徽标在说谎，用户按徽标判断顺序会点错对象（做「按段重生」时尤其明显）。
     const order = new Map<string, number>();
+    const place = new Map<string, number>();
     let seq = 0;
+    let placeSeq = 0;
     for (const id of chain) {
       const node = nodes.find((x) => x.id === id);
-      if (node?.type === 'imageNode') order.set(id, (seq += 1));
+      if (node?.type !== 'imageNode') continue;
+      place.set(id, (placeSeq += 1));
+      if (((node.data as ImageNodeData).imageUrl || '').trim()) order.set(id, (seq += 1));
     }
-    if (order.size === 0) return;
-    // __orderTotal 同时写：节点上的 ▲▼ 要用它判断「已经是最后一段」
+    if (place.size === 0) return;
+    // __orderTotal = 会提交的段数（成片段数）；__placeTotal = 图片节点总数（可排位数量）
     const total = order.size;
+    const placeTotal = place.size;
     setNodes((nds) => {
       let changed = false;
       const next = nds.map((node) => {
         if (node.type !== 'imageNode') return node;
         const want = order.get(node.id) ?? 0;
-        const d = node.data as { __order?: number; __orderTotal?: number };
-        if (d.__order === want && d.__orderTotal === total) return node;
+        const wantPlace = place.get(node.id) ?? 0;
+        const d = node.data as { __order?: number; __orderTotal?: number; __place?: number; __placeTotal?: number };
+        if (d.__order === want && d.__orderTotal === total
+            && d.__place === wantPlace && d.__placeTotal === placeTotal) return node;
         changed = true;
-        return { ...node, data: { ...node.data, __order: want, __orderTotal: total } };
+        return { ...node, data: { ...node.data, __order: want, __orderTotal: total,
+                                  __place: wantPlace, __placeTotal: placeTotal } };
       });
       return changed ? next : nds;
     });

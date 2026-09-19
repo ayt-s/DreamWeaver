@@ -101,6 +101,24 @@ function moveBtn(el: Element, arrow: string) {
   return Array.from(el.querySelectorAll('button')).find((b) => b.textContent === arrow)!;
 }
 
+/**
+ * 画布上的图片节点（**不依赖「第 N 段」徽标**）。
+ *
+ * 2026-09-19（#26）起徽标语义拆成两件事：▲▼ 负责"排顺序"（任何图片节点都有），
+ * 「第 N 段」只表示"会是成片里第几段"（**放了图、会被提交**的节点才配显示，
+ * 没放图的显示「待放图（不参与成片）」）。所以测"排序"不能再按 `第 N 段` 找节点。
+ */
+function imageNodesOnCanvas() {
+  return Array.from(document.querySelectorAll('[data-testid^="rf__node-"]'))
+    .map((el) => ({
+      id: (el.getAttribute('data-testid') || '').replace('rf__node-', ''),
+      x: xOf(el),
+      label: el.textContent || '',
+      el,
+    }))
+    .filter((n) => moveBtn(n.el, '▼') || moveBtn(n.el, '▲'));
+}
+
 describe('ImageVideoPage 无限画布页', () => {
   it('挂载渲染成功（标题/节点类型/素材来源/比例/提交按钮齐全）', () => {
     renderPage();
@@ -136,19 +154,20 @@ describe('ImageVideoPage 无限画布页', () => {
     const add = () => screen.getAllByRole('button', { name: '图片节点' })[0];
     for (let i = 0; i < 3 && shots().length < 3; i += 1) fireEvent.click(add());
 
-    const before = shots();
+    const before = imageNodesOnCanvas().sort((a, b) => a.x - b.x);
     expect(before.length).toBeGreaterThanOrEqual(3);
-    const first = before.find((n) => n.order === 1)!;
-    const second = before.find((n) => n.order === 2)!;
+    const [first, second] = before;
 
     fireEvent.click(moveBtn(first.el, '▼'));
 
-    const after = shots();
-    expect(after.find((n) => n.id === first.id)!.order).toBe(2);
-    expect(after.find((n) => n.id === second.id)!.order).toBe(1);
-    // x 归一化成 base + k*340（与后端 reorder_shots 同口径）
-    const sorted = [...after].sort((a, b) => a.x - b.x);
-    sorted.forEach((n, k) => expect(n.x).toBeCloseTo(sorted[0].x + k * 340, 3));
+    const after = imageNodesOnCanvas().sort((a, b) => a.x - b.x);
+    // x 归一化成 base + k*340（与后端 reorder_shots 同口径）：换位就是换 x
+    after.forEach((n, k) => expect(n.x).toBeCloseTo(after[0].x + k * 340, 3));
+    expect(after[0].id).toBe(second.id);
+    expect(after[1].id).toBe(first.id);
+    // ★ 新契约（#26）：没放图的节点**不显示假段号**，但 ▲▼ 照样能用（排顺序不受影响）
+    expect(after.every((n) => !/第 \d+ 段/.test(n.label))).toBe(true);
+    expect(after.every((n) => n.label.includes('待放图'))).toBe(true);
   });
 
   it('分镜 ▲▼ 边界禁用态正确（第 1 段 ▲ 灰 / 最后一段 ▼ 灰）', () => {
@@ -156,9 +175,9 @@ describe('ImageVideoPage 无限画布页', () => {
     const add = () => screen.getAllByRole('button', { name: '图片节点' })[0];
     for (let i = 0; i < 3 && shots().length < 3; i += 1) fireEvent.click(add());
 
-    const list = shots();
-    const first = list.find((n) => n.order === 1)!;
-    const last = list.find((n) => n.order === list.length)!;
+    const list = imageNodesOnCanvas().sort((a, b) => a.x - b.x);
+    const first = list[0];
+    const last = list[list.length - 1];
     expect(moveBtn(first.el, '▲')).toBeDisabled();
     expect(moveBtn(first.el, '▼')).not.toBeDisabled();
     expect(moveBtn(last.el, '▼')).toBeDisabled();
