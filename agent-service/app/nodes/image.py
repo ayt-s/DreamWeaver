@@ -324,6 +324,10 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
         if direct_urls:
             # storyboard 传空：直出图没有分镜，Java 侧不会覆盖已有 segments_json
             await _finish_text_image(sid, [], direct_urls)
+            # ★ 2026-09-19 修（#1·#9）：text_image 的图路由是 text_done → END，
+            #   本节点就是最后一步 —— 还返回 ASSET_GENERATING 会让会话快照永远停在
+            #   「资产生成中」，与刚刚发出的 completed 回调自相矛盾（前端轨迹面板一直转圈）。
+            _final_status = TaskStatus.COMPLETED
         else:
             from app.callback.java_notify import notify_java_completion
             asyncio.create_task(
@@ -334,10 +338,11 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
                 )
             )
             await events.emit(sid, "failed", {})
+            _final_status = TaskStatus.FAILED
         return {
             "image_urls": direct_urls,
             "trace": trace,
-            "status": TaskStatus.ASSET_GENERATING,
+            "status": _final_status,
         }
 
     # ---- 文生图模式：storyboard 逐镜生成 ----
@@ -414,12 +419,18 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
                        "summary": f"生成 {len(image_urls)} 张图片"})
 
     # 文生图/漫剧模式：video 节点不会执行，这里直接发会话级完成回调
+    final_status = TaskStatus.ASSET_GENERATING
     if state.get("gen_type") in ("text_image", "comic_video"):
         await _finish_text_image(session_id, storyboard, image_urls)
+        # ★ 2026-09-19 修（#1·#9）：这两个类型到此就是**终态**（video 节点不执行）。
+        #   原来恒返回 ASSET_GENERATING ⇒ 会话快照永远停在「资产生成中」，
+        #   与刚发出的 completed 回调自相矛盾，前端轨迹面板一直转圈。
+        #   一张图都没出才算失败（与 _finish_text_image 的成功回调口径一致）。
+        final_status = TaskStatus.COMPLETED if any(image_urls) else TaskStatus.FAILED
 
     return {
         "image_urls": image_urls,
         "storyboard": storyboard,
         "trace": trace,
-        "status": TaskStatus.ASSET_GENERATING,
+        "status": final_status,
     }

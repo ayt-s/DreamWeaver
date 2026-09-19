@@ -282,6 +282,15 @@ async def _run_session(state: CreativeSessionState) -> None:
         logger.error(f"Session {state['session_id']} failed", exc_info=exc)
         state["status"] = TaskStatus.FAILED
         state["error_message"] = msg
+        state["updated_at"] = int(time.time())
+        # ★ 2026-09-19 修（#1·#9）：**失败态必须写进 Redis 快照**。
+        #   原样只写 _sessions（内存）—— 而 _sessions 1 小时后就被 _release_session 释放，
+        #   之后 GET /v1/tasks/{sid} 只能读快照，快照却停在最后一个 checkpoint 的状态：
+        #   实测 DB 里 failed 的会话，agent 侧一直报 storyboard_writing / asset_generating。
+        #   危害有二：① 前端轨迹面板恰好在失败时看不到失败原因与逐镜明细；
+        #   ② recovery 的「终态守卫」按快照 status 判断，拿不到终态时会**把已失败的会话
+        #   从头重跑**（白烧额度）。所以这里与每个 checkpoint 的持久化口径对齐。
+        await session_store.save_state(state["session_id"], state)
         _sessions[state["session_id"]] = state
         await events.emit(state["session_id"], "failed", {"error": msg})
         # Phase 2 回调通知失败状态

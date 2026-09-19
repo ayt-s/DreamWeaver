@@ -195,8 +195,12 @@ async def test_text_image_only_no_video():
     config = {"configurable": {"thread_id": "test-novel"}}
     result = await graph.compiled_graph.ainvoke(state, config=config)
 
-    # 1. 终点是 image_generator（asset_generating），不是 QC_CHECKING
-    assert result["status"] == TaskStatus.ASSET_GENERATING
+    # 1. 终点是 image_generator（本节点就是最后一步），不是 QC_CHECKING
+    #    ⚠️ 2026-09-19 更新：这里原本断言 ASSET_GENERATING —— 那正是 #1·#9 的缺陷：
+    #    text_image 的图路由是 text_done → END，本节点返回 ASSET_GENERATING 会让会话快照
+    #    永远停在「资产生成中」（与已发出的 completed 回调矛盾）。节点的**终态**应为 COMPLETED。
+    #    本用例的意图（链终点在此、不走 QC/视频）不变。
+    assert result["status"] == TaskStatus.COMPLETED
 
     # 2. 有图无视频
     assert len(result["image_urls"]) == 2
