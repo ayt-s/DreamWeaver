@@ -8,13 +8,22 @@
  * - 关键：用例里先断言「切换真的发生了」（项目名输入框变成目标项目名）再断言载荷，
  *   所以这次**不是**"其实没切成"的假失败。
  *
- * ## 已试过但**不足以**修好的两条
- * 1. `4276dd0` 的"切项目时把 `?anchorRefs` 从 URL 清掉" —— 不够（本用例证明）；
- * 2. 再加"owner 门闸"（URL 载荷只对带入时那个项目生效，给合并 effect 加 early return）——
- *    **仍然红** ⇒ 外来锚定图是通过**别的路径**活下来的。
- *    下一个嫌疑：节点「文生图」的处理函数持有了**旧的 effective refs 闭包**
- *    （切换后重渲染了，但 handler 里用的还是进入时那份 anchors）—— 需要顺着
- *    `firstFrameRefsFor(rawPrompt, urlMapOf(anchors.chars), …)` 往上查 handler 的依赖数组。
+ * ## 已试过、**全部被否**的三条（2026-09-20，逐条实测）
+ * 1. `4276dd0`：切项目时把 `?anchorRefs` 从 URL 清掉 —— 不够；
+ * 2. 再给「URL 载荷合并进 state」的 effect 加 owner 门闸 —— **仍然红**；
+ * 3. 再给 `effectiveCharRefs / effectiveSceneRefs` 的**兜底**加 owner 门闸
+ *    （URL 载荷不属于当前项目就不许兜底）—— **仍然红**。
+ * ⇒ 外来锚定图是通过**第四条路**活下来的，我还没定位到。**停手不改**（不留未验证的行为变更）。
+ *
+ * ## 下一条线索（按嫌疑排序）
+ * a) `锚定图来源`（`anchors = useContext(AnchorsCtx)`，节点组件在 ~396 行）—— 若 image 节点组件是
+ *    `React.memo` 且比较器忽略了 context，切换项目后**节点不会重渲染** ⇒ handler 拿到旧 anchors；
+ * b) 「切换项目时从项目数据同步锚定图 state」那条 effect：`parseAnchorRefs(p.characterRefs)` 在
+ *    项目没有锚定图（`characterRefs` 为 undefined）时**是否真的返回空对象** —— 若它抛错/返回非空，
+ *    state 里的外来图就永远清不掉；
+ * c) `plan`/提交那条路径是否还有**第二处**读 `anchorRefs`（URL）的地方没被门闸覆盖。
+ * 查法：在用例里分别对 a/b/c 打点（例如断言切换后节点组件是否重渲染、`anchorCharRefs` 是否为空），
+ * 先把"外来图到底从哪个变量流进载荷"这条链子钉死，再改代码。
  *
  * ## 为什么保留这个文件
  * 删掉就等于把"已复现的缺陷"和上面两条否定结论一起丢掉。保留为 skip，修好后去掉 `.skip` 即可。
