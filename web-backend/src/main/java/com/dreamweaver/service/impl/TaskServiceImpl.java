@@ -493,6 +493,13 @@ public class TaskServiceImpl implements TaskService {
             task.setErrorMessage(null);
             task.setResultJson(null);
             task.setImageUrls(null);
+            // ★ 2026-09-19 修（#17）：**completed_at 也必须挡掉**。
+            //   resetTaskForRerun 虽已用 wrapper 把库里置空，但 entity 是在那之前加载的，
+            //   内存里仍留着**上一轮的 completed_at** —— 这里的 updateById 会把残留值重新写回
+            //   ⇒ 非终态（queued）任务带上终态时间戳，破坏「completed_at 只写终态」的不变式
+            //   （实测 id=36「queue 却带 completed_at」；前端还会因此把耗时算成负数）。
+            //   上面三个字段的注释讲的就是这个道理，当初漏了 completed_at。
+            task.setCompletedAt(null);
             task.setUpdatedAt(LocalDateTime.now());
             taskMapper.updateById(task);
             // 武装 Redis TTL 看门狗：视频任务 30 分钟、其余 10 分钟无回调自动转 failed
