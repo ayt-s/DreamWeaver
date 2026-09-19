@@ -370,11 +370,20 @@ async def image_generator_node(state: CreativeSessionState) -> dict:
                           {"tool_name": "generate_image", "shot_index": idx})
 
         start = time.time()
-        urls = await gateway.generate_image(
-            prompt=prompt_en, model=settings.image_model,
-            # 画幅取本镜的 aspect_ratio（storyboard 已归一）；不传 = 1:1 正方形
-            ratio=str(shot.get("aspect_ratio") or state.get("image_ratio") or ""),
-        )
+        # ★ 2026-09-19 修（#12）：逐镜出图必须**单镜隔离**。
+        #   本函数是"逐镜批量出图"，一张图撞上 429/504 并耗尽重试时异常会冒泡到 main 的
+        #   失败分支 → 整会话 failed，其余镜**已付费**的图与本会话全部内容一起丢。
+        #   对比直出图路径（:296-311）本来就做了 try/except —— 两条路径不对称。
+        #   失败只让该镜留空串占位（下面 `else:` 分支已正确处理 urls 为空），继续后续镜。
+        try:
+            urls = await gateway.generate_image(
+                prompt=prompt_en, model=settings.image_model,
+                # 画幅取本镜的 aspect_ratio（storyboard 已归一）；不传 = 1:1 正方形
+                ratio=str(shot.get("aspect_ratio") or state.get("image_ratio") or ""),
+            )
+        except Exception as exc:
+            logger.warning("第 %d 镜出图失败（继续后续镜，索引占位对齐）: %s", idx + 1, exc)
+            urls = []
         latency_ms = int((time.time() - start) * 1000)
 
         if urls:

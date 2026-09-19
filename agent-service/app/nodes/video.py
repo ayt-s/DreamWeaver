@@ -51,6 +51,12 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
 
     # 收集所有 Future 和对应的 shot 信息
     pending_shots: list[tuple[int, str, asyncio.Future]] = []
+    # ★ 2026-09-19 修（#10）：**提交阶段**的单镜失败也要记账，但不能让它清空整会话。
+    #   原样没有 try/except：任一镜提交抛错（参数类 4xx、所有 provider 重试耗尽）会冒泡到
+    #   main 的失败分支 → 整会话 failed，同会话其它**已生成/已付费**的图与视频全都不进 Java
+    #   （额度照扣，用户看到 failed + 空产物）。这里收进 error_msgs 通道，
+    #   由 notify_final 随产物一起带回 Java（见本函数末尾 video_error 的用法）。
+    submit_errors: list[str] = []
 
     for idx, shot in enumerate(state["storyboard"]):
         # 断点恢复跳过：该索引已有 URL 且**未被标记为待重生** → 不重复提交。
@@ -88,19 +94,32 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
                 continue
         await events.emit(state["session_id"], "tool_called",
                           {"tool_name": "generate_video", "shot_index": idx})
-        result = await generate_video_tool(
-            prompt=_effective_prompt(shot),
-            seconds=shot["seconds"],
-            mode=shot.get("mode", "text"),
-            aspect_ratio=shot["aspect_ratio"],
-            reference_images=shot.get("reference_images", []),
-            # keyframe 模式用（首帧锁定）；非 keyframe 时网关会忽略，见 submit_video 的互斥守卫
-            first_frame=shot.get("first_frame"),
-            last_frame=shot.get("last_frame"),
-            session_id=state["session_id"],
-            shot_index=idx,
-            model=state.get("video_model"),
-        )
+        # ★ 2026-09-19 修（#10）：单镜提交失败**只让这一段失败**，其余段继续。
+        #   原来是裸调用：任一镜抛错（4xx 参数类、所有 provider 重试耗尽、网关异常）会一路
+        #   冒泡到 main 的失败分支，整会话 failed —— 同会话其它已付费的图/视频全部不进 Java。
+        try:
+            result = await generate_video_tool(
+                prompt=_effective_prompt(shot),
+                seconds=shot["seconds"],
+                mode=shot.get("mode", "text"),
+                aspect_ratio=shot["aspect_ratio"],
+                reference_images=shot.get("reference_images", []),
+                # keyframe 模式用（首帧锁定）；非 keyframe 时网关会忽略，见 submit_video 的互斥守卫
+                first_frame=shot.get("first_frame"),
+                last_frame=shot.get("last_frame"),
+                session_id=state["session_id"],
+                shot_index=idx,
+                model=state.get("video_model"),
+            )
+        except Exception as exc:
+            msg = f"第 {idx + 1} 段提交失败: {exc}"
+            logger.warning("视频提交失败，继续其余段（已付费产物必须能进 Java）: %s", msg)
+            submit_errors.append(msg)
+            trace = trace_util.append(
+                trace, trace_util.shot("video_generator", idx), trace_util.STATUS_FAILED)
+            await events.emit(state["session_id"], "error",
+                              {"error": msg, "shot_index": idx})
+            continue
         video_id = result["video_id"]
         # 会话持久化（全方案最关键的一行）：提交成功**立刻**落盘 video_id。
         # 进程此后被杀，恢复时用 query_video(video_id) 就能零成本取回结果，
@@ -113,7 +132,8 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
         pending_shots.append((idx, video_id, future))
 
     # 等待所有任务完成（future 由 VideoPoller 后台解决，节点不轮询）
-    error_msgs: list[str] = []
+    # ⚠️ 起始值是提交阶段的失败（#10 修复），下面再追加"等待结果"阶段的失败
+    error_msgs: list[str] = list(submit_errors)
     if pending_shots:
         all_futures = [f for _, _, f in pending_shots]
         results = await asyncio.gather(*all_futures, return_exceptions=True)
