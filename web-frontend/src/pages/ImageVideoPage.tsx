@@ -1934,6 +1934,22 @@ export default function CanvasPage() {
   const [batchFailed, setBatchFailed] = useState(0);
   const batchStopRef = useRef(false);
 
+  // URL ?autoImages=1：从小说页「一键直接生成」跳进来时，自动开跑一键文生图。
+  // 守卫用 ref：HMR/重渲染/StrictMode 都不能让它跑第二遍（每张都是钱）。
+  // 触发后立刻把参数从 URL 上摘掉——否则刷新页面会再跑一轮。
+  const autoImagesRef = useRef(false);
+  useEffect(() => {
+    if (searchParams.get('autoImages') !== '1' || autoImagesRef.current) return;
+    if (currentProjectId === null) return; // 等项目加载完再判断
+    // 参数一旦"消费"就摘掉：否则用户之后手动加一个无图节点，会被这条 effect 误当成
+    // 「刚跳进来」而自动开跑一轮出图（每张都是钱）。
+    autoImagesRef.current = true;
+    setSearchParams({ project: String(currentProjectId) }, { replace: true });
+    if (pendingImageNodes.length === 0 || batchRunning) return; // 没有待生成节点：丢弃参数
+    void runBatchTextToImage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, currentProjectId, pendingImageNodes.length, batchRunning]);
+
   const runBatchTextToImage = async () => {
     const targets = pendingImageNodes.map((n) => {
       const rawPrompt = ((n.data as ImageNodeData).prompt || '').trim();

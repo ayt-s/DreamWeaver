@@ -91,7 +91,11 @@ export default function NovelPage() {
     }
   };
 
-  const handleToCanvas = async () => {
+  /**
+   * 转入画布。autoImages=true 时跳转链接带上 autoImages=1，画布页加载完会自动逐镜出图
+   * ——「预处理完成直接生成」的一步入口。
+   */
+  const handleToCanvas = async (autoImages = false) => {
     if (!project) return;
     setConverting(true);
     try {
@@ -183,9 +187,10 @@ export default function NovelPage() {
       if (!canvasId) {
         throw new Error('转入画布失败：后端未返回画布');
       }
+      const auto = autoImages ? '&autoImages=1' : '';
       const url = anchorRefs
-        ? `/canvas?project=${canvasId}&anchorRefs=${anchorRefs}`
-        : `/canvas?project=${canvasId}`;
+        ? `/canvas?project=${canvasId}&anchorRefs=${anchorRefs}${auto}`
+        : `/canvas?project=${canvasId}${auto}`;
       navigate(url);
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
@@ -251,7 +256,8 @@ export default function NovelPage() {
           <SegmentsPanel
             project={project}
             converting={converting}
-            onToCanvas={handleToCanvas}
+            onToCanvas={() => handleToCanvas(false)}
+            onGenerateAll={() => handleToCanvas(true)}
             onBack={reset}
           />
         )}
@@ -661,9 +667,11 @@ function SegmentsPanel(props: {
   project: NovelProject;
   converting: boolean;
   onToCanvas: () => void;
+  /** 转入画布并自动为每镜出图（画布页会接着跑一键文生图） */
+  onGenerateAll: () => void;
   onBack: () => void;
 }) {
-  const { project, converting, onToCanvas, onBack } = props;
+  const { project, converting, onToCanvas, onGenerateAll, onBack } = props;
   const totalSec = project.segments.reduce((s, x) => s + (x.seconds || 0), 0);
 
   return (
@@ -688,18 +696,34 @@ function SegmentsPanel(props: {
               <span>章节 {project.chaptersJson ? '已切分' : '未标记'}</span>
             </div>
           </div>
-          <button
-            onClick={onToCanvas}
-            disabled={converting}
-            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {converting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Film className="h-4 w-4" />
-            )}
-            转入无限画布
-          </button>
+          <div className="flex flex-col items-end gap-1.5">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={onGenerateAll}
+                disabled={converting}
+                title="转入画布后自动为每个分镜出图（按张计费），出完你确认后再生成成片"
+                className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {converting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Wand2 className="h-4 w-4" />
+                )}
+                一键直接生成
+              </button>
+              <button
+                onClick={onToCanvas}
+                disabled={converting}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-600 px-4 py-2.5 text-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Film className="h-4 w-4" />
+                只转画布
+              </button>
+            </div>
+            <span className="text-[11px] text-slate-500">
+              一键直接生成 = 转入画布并自动出图（按张计费）；想逐镜挑图就用「只转画布」
+            </span>
+          </div>
         </div>
       </div>
 
