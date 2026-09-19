@@ -280,6 +280,15 @@ async def _run_session(state: CreativeSessionState) -> None:
         # 用户侧文案友好化，完整异常只进日志
         msg = friendly_error_message(exc)
         logger.error(f"Session {state['session_id']} failed", exc_info=exc)
+        # ★ 2026-09-19 修（#3）：失败态必须建立在**已累积的最新 state** 上。
+        #   stream 每帧都会把 _sessions[sid] 更新成累积态（含 storyboard/trace/qc_report），
+        #   而这里原来直接用**最初的输入 state** 赋值 → GET /v1/tasks/{sid} 立刻丢掉
+        #   分镜/轨迹/质检明细 —— 而"哪一镜为什么失败"恰恰是失败时最需要看的信息。
+        #   更糟的是重启后从快照拿回的是旧累积态，同一会话出现两种口径
+        #   （内存=空、Redis=有），排障时必然误判。改为：以累积态为底，只覆盖终态字段。
+        _accumulated = _sessions.get(state["session_id"])
+        if isinstance(_accumulated, dict) and _accumulated.get("session_id") == state["session_id"]:
+            state = {**_accumulated}
         state["status"] = TaskStatus.FAILED
         state["error_message"] = msg
         state["updated_at"] = int(time.time())
