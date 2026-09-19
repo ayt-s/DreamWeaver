@@ -581,6 +581,10 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
       });
       const taskId = Number(res.id);
       const t0 = Date.now();
+      // ★ 2026-09-19 修（#28）：轮询到期必须有**终态**，否则状态永远停在「文生图进行中…」
+      //   （排队 + 出图经常超过 90 秒）—— 用户以为卡死，往往会再点一次 ⇒ 重复出图白花钱。
+      //   90 秒上限本身是既定行为，本次只补"到期后的出口与说明"。
+      let settled = false;
       while (Date.now() - t0 < 90_000) {
         await new Promise((r) => setTimeout(r, 4000));
         const cur: TaskResponse | null = await getTask(taskId);
@@ -595,17 +599,23 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
           } else {
             setStatus('生成完成但无图片');
           }
+          settled = true;
           break;
         }
         if (cur.status === 'failed' || cur.status === 'expired') {
           setStatus('生成失败：' + (cur.errorMessage || '未知原因'));
+          settled = true;
           break;
         }
         // 已中断：任务已停下（后端可能稍后自动续跑），不要一直卡在「进行中…」
         if (cur.status === 'interrupted') {
           setStatus('任务已中断，Agent 将在后台自动恢复续跑，可稍后刷新查看');
+          settled = true;
           break;
         }
+      }
+      if (!settled) {
+        setStatus(`生成超时（已等待 90 秒，任务 id ${taskId}）：可能仍在排队，可稍后到画廊查看或重试`);
       }
     } catch (e) {
       setStatus(e instanceof Error ? e.message : '文生图失败');
@@ -1128,7 +1138,33 @@ export default function CanvasPage() {
   // React Flow 实例：新节点要落在「当前视口中心」，要用它做屏幕→画布坐标换算（见 spawnPosition）。
   // 页面本身在 <ReactFlow> 之外，拿不到 ReactFlowProvider 的 context，只能用 onInit 存实例。
   const rfRef = useRef<ReactFlowInstance<GraphNode, Edge> | null>(null);
+  // ★ 2026-09-19 修（#27）：`?anchorRefs` 是「小说转画布」的一次性带入，**只属于进入时那个项目**。
+  //   原样从不清理 ⇒ 下拉切到别的画布项目后，这套锚定图仍是
+  //   `effectiveCharRefs / effectiveSceneRefs` 的兜底 ⇒ 会被当参考图参与那个项目的提交；
+  //   更糟的是：只要在那个项目里做任何锚定图增删，就会把这份外来图**写进它的
+  //   character_refs / scene_refs**（污染别的项目的锚定图数据）。
+  //   所以在项目切换时把参数从 URL 清掉；留在原项目里时照常工作。
   const anchorRefsParam = searchParams.get('anchorRefs');
+  const anchorRefsProjectRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!anchorRefsParam) return;
+    if (anchorRefsProjectRef.current === null) {
+      anchorRefsProjectRef.current = currentProjectId;   // 记住带入时的项目
+      return;
+    }
+    if (anchorRefsProjectRef.current !== currentProjectId) {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete('anchorRefs');
+          return next;
+        },
+        { replace: true },
+      );
+      anchorRefsProjectRef.current = null;
+    }
+  }, [anchorRefsParam, currentProjectId, setSearchParams]);
+
   const anchorRefs = useMemo(() => {
     if (!anchorRefsParam) return null;
     try {
@@ -1637,10 +1673,15 @@ export default function CanvasPage() {
         if (!img.imageUrl.trim()) continue;
         const incoming = edges.find((e) => e.target === id);
         const textN = incoming ? byId.get(incoming.source) : undefined;
-        const prompt =
+        // ★ 2026-09-19 修（#24）：**空的上游文本节点不能覆盖图节点自己的提示词**。
+        //   原来只判类型（`textN.type === 'textNode'`）：上游挂着一个还没填内容的文本节点时，
+        //   本段提示词被静默换成空串 ⇒ 该段视频走通用运镜兜底。
+        //   用户看到的是「我明明在图节点写了提示词，生成的视频却跟我写的不一样」，且查不出原因。
+        const promptFromText =
           textN && textN.type === 'textNode'
             ? (textN.data as TextNodeData).content.trim()
-            : img.prompt.trim();
+            : '';
+        const prompt = promptFromText || img.prompt.trim();
         segments.push({
           image_url: img.imageUrl.trim(),
           prompt,
@@ -2286,7 +2327,14 @@ export default function CanvasPage() {
     let seq = 0;
     for (const id of chain) {
       const node = nodes.find((x) => x.id === id);
-      if (node?.type === 'imageNode') order.set(id, (seq += 1));
+      // ★ 2026-09-19 修（#26）：**只给会真正提交的节点编号**。
+      //   提交侧的过滤是「图片节点且 imageUrl 非空」（见 plan 里的
+      //   `if (!img.imageUrl.trim()) continue;`），而这里原来把所有 imageNode 都算进顺序
+      //   ⇒ 没图的节点也占一个号：画布徽标上的「第 N 段」与成片里的段号错位，
+      //   用户按徽标判断顺序会点错对象（做「按段重生」时尤其明显）。
+      if (node?.type === 'imageNode' && ((node.data as ImageNodeData).imageUrl || '').trim()) {
+        order.set(id, (seq += 1));
+      }
     }
     if (order.size === 0) return;
     // __orderTotal 同时写：节点上的 ▲▼ 要用它判断「已经是最后一段」
