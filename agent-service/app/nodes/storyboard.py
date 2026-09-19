@@ -213,6 +213,22 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
         if lock and first:
             sb_shot["mode"] = "keyframe"
             sb_shot["first_frame"] = first
+            # ★ 2026-09-19 修（#25）：**keyframe 会丢掉参考图，必须同时清掉悬空的 <Picture N> 声明**。
+            #   元素绑定（`<Picture N>`）是给 reference 模式用的；而官方约束 keyframe 与 reference
+            #   互斥（keyframe 不许带 images）⇒ 参考图被网关丢弃，提示词里却还留着
+            #   "Picture 2 is X ..." 这种**指向不存在图片**的指令：模型可能理解成
+            #   「画面里要有这些元素」而画出不该有的对象，用户也会觉得"绑定明明配了却没效果"且查不出原因。
+            #   这里按**这一段真实的参考图数组**重算同一批子句并**逐字删除**（精确匹配，不用正则；
+            #   子句文本由 build_reference_bindings 现算，与注入时同一来源）。
+            #   设计上本就不指望绑定在锁定首帧时生效 —— 跨段一致性由每段已被用户认可的首帧图承担。
+            _seg_refs = list(sb_shot.get("reference_images") or [])
+            if _seg_refs and sb_shot.get("prompt_en"):
+                _role, _keep = build_reference_bindings(bindings, _seg_refs)
+                for _clause in (*_role, *_keep):
+                    _clause = str(_clause).strip()
+                    if _clause:
+                        sb_shot["prompt_en"] = sb_shot["prompt_en"].replace(_clause, "")
+                sb_shot["prompt_en"] = " ".join(sb_shot["prompt_en"].split())
             # 段间衔接：下一段的首帧当本段尾帧（last_frame）——让相邻段首尾接得上。
             # 默认关：强制结尾构图会压住本段的运动，不是所有题材都想要。
             if chain and idx + 1 < len(storyboard):

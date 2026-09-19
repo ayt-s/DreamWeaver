@@ -178,32 +178,47 @@ def test_create_task_shot_language_defaults_empty(client, mock_graph):
 
 @pytest.mark.asyncio
 async def test_canvas_storyboard_injects_reference_bindings(monkeypatch):
-    """④ 画布模式：元素绑定同样注入 <Picture N>，保证锚定图跨镜一致。"""
+    """④ 画布模式：元素绑定注入 <Picture N>（**仅在 reference 模式**；锁定首帧时不注入，见 #25）。"""
     async def fake_chat(prompt, model=None, temperature=None, session_id=None):
         return "The rider gallops across the snowfield."
 
     monkeypatch.setattr(sb_mod.gateway, "chat", fake_chat)
 
-    state = {
-        "session_id": "s6",
-        "segments": [{
-            "image_url": "https://example.com/seg1.png",
-            "reference_images": [
-                "https://example.com/seg1.png",
-                "https://example.com/char.png",
-                "https://example.com/bike.png",
+    def _canvas_state(**over):
+        return {
+            "session_id": "s6",
+            "segments": [{
+                "image_url": "https://example.com/seg1.png",
+                "reference_images": [
+                    "https://example.com/seg1.png",
+                    "https://example.com/char.png",
+                    "https://example.com/bike.png",
+                ],
+                "prompt": "骑手冲过雪原",
+                "seconds": 5,
+            }],
+            "reference_bindings": [
+                {"name": "我", "imageIndex": 2},
+                {"name": "破旧摩托车", "imageIndex": 3},
             ],
-            "prompt": "骑手冲过雪原",
-            "seconds": 5,
-        }],
-        "reference_bindings": [
-            {"name": "我", "imageIndex": 2},
-            {"name": "破旧摩托车", "imageIndex": 3},
-        ],
-    }
-    out = await sb_mod.canvas_storyboarder_node(state)
-    prompt_en = out["storyboard"][0]["prompt_en"]
+            **over,
+        }
 
+    # ★ 2026-09-19 更新（#25）：本用例原来断言「绑定一定被注入」—— 而它的 fixture 恰好是
+    #   **首帧锁定=开（默认）+ 本段有首帧图** 的那个状态。官方约束 keyframe 与 reference 互斥
+    #   （keyframe 不许带 images）⇒ 参考图会被网关丢弃，提示词里再留着 `Picture 2 is "我"`
+    #   就是**指向不存在图片**的指令：模型可能理解成「画面里要有这些元素」而画出不该有的对象，
+    #   用户也会觉得「绑定明明配了却没效果」查不出原因。所以两个分支都要锁住：
+    out = await sb_mod.canvas_storyboarder_node(_canvas_state())
+    shot = out["storyboard"][0]
+    assert shot["mode"] == "keyframe", "默认锁定首帧"
+    assert "<Picture" not in shot["prompt_en"], shot["prompt_en"]
+    assert "Keep the appearance of" not in shot["prompt_en"]
+
+    # 关掉首帧锁定 → 回到 reference 模式（参考图真的会发出去），这时绑定才有意义
+    out2 = await sb_mod.canvas_storyboarder_node(_canvas_state(lock_first_frame=False))
+    prompt_en = out2["storyboard"][0]["prompt_en"]
+    assert out2["storyboard"][0]["mode"] == "reference"
     assert '"我" refers to <Picture 2>' in prompt_en
     assert '"破旧摩托车" refers to <Picture 3>' in prompt_en
     assert "Keep the appearance of 我, 破旧摩托车" in prompt_en
