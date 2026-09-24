@@ -5,13 +5,18 @@
 """
 from __future__ import annotations
 
-from pydantic_ai import Agent
+import json
+from typing import Any
+
+from pydantic_ai import Agent, UsageLimits
+from pydantic_ai.messages import RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from app.agent import tools as _tools
 from app.config import settings
+from app.utils.observability import traced
 
 
 # Agnes 是 OpenAI 兼容端点
@@ -102,3 +107,130 @@ chat_agent: Agent = Agent(
         _tools.concat_task,
     ],
 )
+
+
+# 单轮对话的资源上限。
+#
+# ⚠️ 不传 `usage_limits` 时 Pydantic AI 用的是**默认值** `UsageLimits(request_limit=50)`
+# （见 pydantic_ai/usage.py:449）—— 不是无限，但也远超一轮画布助手对话的正常量
+# （一轮工具调用 ≈ 2 次请求）。收紧到 20 次请求 / 20 次工具调用：
+# 正常排障与批量出图够用，而模型万一在工具循环里打转时，代价被压在 20 轮内。
+DEFAULT_USAGE_LIMITS = UsageLimits(request_limit=20, tool_calls_limit=20)
+
+#: 工具返回值回传上限（字符）。`inspect_canvas` 一次能返回 12KB 的画布 JSON，
+#: 原样塞进 HTTP 响应里会把响应体撑爆，而前端只展示前几行。
+_TOOL_RESULT_MAX_CHARS = 400
+
+
+def _shrink(value: Any) -> dict:
+    """把工具返回值压成**可安全回传**的 dict（超长截断并显式标注）。
+
+    ⚠️ 截断必须留标记：调用方（前端轨迹面板 / 排障）拿到的若是「看起来很短的完整结果」，
+    会把截断误读成工具只返回了这么点东西。
+    """
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False)
+    else:
+        text = str(value if value is not None else "")
+    if len(text) > _TOOL_RESULT_MAX_CHARS:
+        return {"result": text[:_TOOL_RESULT_MAX_CHARS], "truncated": True}
+    return {"result": text, "truncated": False}
+
+
+def extract_tool_calls(messages: list) -> list[dict]:
+    """从一轮对话的消息里提取工具调用轨迹（**跨消息配对**返回值）。
+
+    ★ 2026-09-23 修：原实现（chat_api.py）只扫 `kind == "response"` 的消息，
+    于是 `result` 恒为 `{}`、`status` 恒为 `"called"` —— 前端那个「工具调用」标签
+    永远看不出哪个工具失败了。原因是配错了消息类型：
+
+    - `ToolCallPart` 在 **response**（模型说要调什么）
+    - `ToolReturnPart` / `RetryPromptPart` 在 **request**（我们把结果/报错喂回去），
+      见 pydantic_ai/messages.py:2653 的 `ModelRequestPart` 联合类型
+
+    所以必须两遍扫描、按 `tool_call_id` 配对，而不是在同一个 parts 列表里找。
+    """
+    outcomes: dict[str, tuple[str, Any]] = {}
+    for msg in messages:
+        if getattr(msg, "kind", None) != "request":
+            continue
+        for part in getattr(msg, "parts", []) or []:
+            cid = getattr(part, "tool_call_id", None)
+            if not cid:
+                continue
+            if isinstance(part, ToolReturnPart):
+                # outcome 由 Pydantic AI 标记（success / failed）；缺失时按返回值处理
+                outcome = getattr(part, "outcome", None) or "success"
+                outcomes[cid] = ("ok" if outcome == "success" else "error", part.content)
+            elif isinstance(part, RetryPromptPart):
+                outcomes[cid] = ("error", part.content)
+
+    calls: list[dict] = []
+    for msg in messages:
+        if getattr(msg, "kind", None) != "response":
+            continue
+        for part in getattr(msg, "parts", []) or []:
+            if not isinstance(part, ToolCallPart):
+                continue
+            status, content = outcomes.get(part.tool_call_id or "", ("called", None))
+            entry: dict = {"tool_name": part.tool_name, "args": _args_dict(part.args),
+                           "status": status}
+            entry.update(_shrink(content) if content is not None else
+                         {"result": "", "truncated": False})
+            calls.append(entry)
+    return calls
+
+
+def _args_dict(raw: Any) -> dict:
+    """把 `ToolCallPart.args` 归一成 dict。
+
+    ⚠️ 实测（2026-09-24）：`args` **不一定是 dict** —— Pydantic AI 允许它是
+    **JSON 字符串**（流式/未解析形态）。原实现只认 `hasattr(args, "keys")`，
+    于是真实一轮对话里 `inspect_canvas` 的参数在轨迹里是**空的 `{}`**
+    （curl 实测：`"args":{}`，而工具确实收到了 canvas_id 并返回了 28 个节点）——
+    排障时看不到 agent 到底把哪个 node_id 传下去了。
+    """
+    if hasattr(raw, "keys"):
+        return dict(raw)
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {"_raw": text}
+        return dict(parsed) if isinstance(parsed, dict) else {"_raw": text}
+    return {}
+
+
+@traced("agent.chat", run_type="chain")
+async def run_chat(prompt: str, *,
+                   usage_limits: UsageLimits | None = None) -> dict:
+    """跑一轮画布助手对话，返回**纯可序列化**的结果。
+
+    为什么单独包一层（2026-09-23 实测）：
+
+    画布助手的 LLM 调用走 Pydantic AI（`OpenAIChatModel`），**不经 gateway**，
+    而 LangSmith 的埋点只挂在 gateway 出口与图上 —— 实测同一分钟内
+    `gateway.chat` 在 LangSmith 里有 run，`chat_agent.run` 一条都没有
+    （`Agent._instrument_default` 默认 `False`，langsmith SDK 也没有 pydantic_ai 集成）。
+    于是**用户最常触发的入口在 LangSmith 里完全不可见**。
+
+    这里用 `traceable` 包住整轮对话（run_type=chain），把回复与工具轨迹一起上报；
+    返回值刻意做成 dict（而不是 `AgentRunResult`）—— 只有可序列化的输出在
+    LangSmith 里才读得懂。tracing 关闭时 `traced` 直接透传（见 utils/observability.py）。
+    """
+    result = await chat_agent.run(prompt, usage_limits=usage_limits or DEFAULT_USAGE_LIMITS)
+    u = result.usage
+    return {
+        "reply": result.output,
+        "tool_calls": extract_tool_calls(result.all_messages()),
+        "usage": {
+            "requests": u.requests,
+            "tool_calls": u.tool_calls,
+            "input_tokens": u.input_tokens,
+            "output_tokens": u.output_tokens,
+        },
+        "model": getattr(chat_agent._model, "model_name", "unknown"),
+    }

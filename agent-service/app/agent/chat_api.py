@@ -46,8 +46,10 @@ class ChatRequest(BaseModel):
 class ToolCallRecord(BaseModel):
     tool_name: str
     args: dict
-    result: dict
-    status: str  # ok / error
+    result: str = ""
+    status: str  # ok / error / called（called = 模型调了但没看到返回值，理论上不该出现）
+    #: result 是否被截断（工具返回值可能很大，如 inspect_canvas 的整份画布 JSON）
+    truncated: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -62,7 +64,9 @@ async def chat(req: ChatRequest) -> ChatResponse:
     if not req.message.strip():
         raise AppError("message 不能为空", status_code=422)
 
-    from app.agent.chat_agent import chat_agent
+    # run_chat 是 chat_agent 的出口包装：内含 LangSmith 埋点（agent.chat）+ 资源上限，
+    # 并返回**已配好工具返回值**的轨迹（见 chat_agent.extract_tool_calls 的说明）
+    from app.agent.chat_agent import run_chat
 
     # 把当前画布 id 放到 prompt 上下文里，agent 可以直接引用
     context = f"当前画布项目 id: {req.canvas_id}" if req.canvas_id else "未指定画布项目 id（请先问用户）"
@@ -82,7 +86,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
     full_prompt = f"{context}\n{history_text}用户消息：{req.message}"
 
     try:
-        result = await chat_agent.run(full_prompt)
+        out = await run_chat(full_prompt)
     except Exception as exc:
         logger.error("Agent 调用失败: %s", exc, exc_info=True)
         # 原始异常只进日志；用户看到的是中文友好映射（与全局异常层同一规范）
@@ -93,32 +97,16 @@ async def chat(req: ChatRequest) -> ChatResponse:
             retryable=True,
         )
 
-    # 提取工具调用轨迹（Pydantic AI 2.39: kind="response" 的 msg.parts 里有 ToolCallPart）
-    tool_calls: list[ToolCallRecord] = []
-    try:
-        from pydantic_ai.messages import ToolCallPart, ToolReturnPart
-        for msg in result.all_messages():
-            if getattr(msg, "kind", None) != "response":
-                continue
-            for part in getattr(msg, "parts", []) or []:
-                if isinstance(part, ToolCallPart):
-                    tool_calls.append(ToolCallRecord(
-                        tool_name=part.tool_name,
-                        args=dict(part.args) if hasattr(part.args, "keys") else {},
-                        result={},
-                        status="called",
-                    ))
-    except Exception as exc:  # 解析失败不阻塞主流程
-        logger.warning("解析 tool calls 失败: %s", exc)
-
     return ChatResponse(
         code=0,
         message="ok",
         data={
-            "reply": result.output,
-            "tool_calls": [tc.model_dump() for tc in tool_calls],
+            "reply": out["reply"],
+            "tool_calls": out.get("tool_calls") or [],
             "canvas_id": req.canvas_id,
-            "model": chat_agent._model.model_name if hasattr(chat_agent, "_model") else "unknown",
+            "model": out.get("model", "unknown"),
+            # 本轮真实消耗（请求数 / 工具调用数 / tokens）：排障与成本核算都用得上
+            "usage": out.get("usage"),
         },
     )
 
@@ -162,26 +150,25 @@ async def enrich_prompt(req: EnrichRequest) -> EnrichResponse:
         raise AppError(f"不支持的生成类型: {req.gen_type}", status_code=422)
 
     from app.config import settings
+    from app.gateway.agnes import gateway
 
-    # 直连 agnes OpenAI 兼容端点（复用现有配置，不依赖 Pydantic AI 内部 API）
+    # ★ 2026-09-23 修：此处原本是**第三套** LLM 出口 ——
+    #   `httpx.AsyncClient(timeout=60).post(f"{settings.agnes_base_url}/chat/completions")`
+    #   直连**国际端点单点**（国内 key 一直闲着）、无退避重试、无 LangSmith 埋点，
+    #   而且 AsyncClient 建了不 close。同一个「AI 丰富提示词」功能因此在 LangSmith 里
+    #   完全查不到，国际端点抖动时也没有切换与退避。
+    # 现改为走统一出口 gateway.chat：provider 池 + session 粘性 + 429/503 退避 +
+    #   tracing + 连接复用（与 /v1/text/generate 同一条路）。
+    # system 与 user 合并成一条 user message：gateway.chat 是单消息接口，不为一个
+    #   调用点扩协议（text/generate 已是同一写法，见 main.py 的 text_generate）。
+    # ⚠️ 刻意不传 max_tokens：agnes 文本模型先吐 reasoning_content，额度给小会把
+    #   content 吃成空串（实测，见 gateway.chat_with_images 的注释），保持默认 4096。
     try:
-        import httpx
-
-        resp = await httpx.AsyncClient(timeout=60).post(
-            f"{settings.agnes_base_url.rstrip('/')}/chat/completions",
-            headers=settings.headers,
-            json={
-                "model": settings.text_model,
-                "messages": [
-                    {"role": "system", "content": _ENRICH_SYSTEM[req.gen_type]},
-                    {"role": "user", "content": req.prompt.strip()},
-                ],
-                "temperature": 0.7,
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        enriched = (data["choices"][0]["message"]["content"] or "").strip()
+        enriched = (await gateway.chat(
+            f"{_ENRICH_SYSTEM[req.gen_type]}\n\n{req.prompt.strip()}",
+            model=settings.text_model,
+            temperature=0.7,
+        ) or "").strip()
     except Exception as exc:
         logger.error("提示词增强失败: %s", exc, exc_info=True)
         raise AppError(
