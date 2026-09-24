@@ -369,6 +369,26 @@ def _collect_finished(canvas_id: int, results: dict[int, dict]) -> dict:
     return {"filled": filled, "saved": True, "version": canvas.get("version")}
 
 
+def _with_hint(out: dict, collected: dict) -> dict:
+    """把 `_collect_finished` 的冲突提示透传给调用方（LLM）。
+
+    ★ 2026-09-24 补：`generate_images` / `collect_images` 此前只取
+    `filled / saved / conflict` 三个字段，把 `hint` 丢在了中间层 ——
+    而那句正是冲突场景下唯一能阻止模型「重新生成一遍」的信息：
+
+        「图已经生成好了（任务上有 URL），只是没能写进画布；重读画布后再回填一次即可，
+          不必重新生成。」
+
+    丢掉它的后果不是报错，而是**白跑一轮生成**（图还在库里，却又出了一遍）。
+    同因，`_conflict()` 的 `message`（说明被谁挡住、下一步该重读）也一并带上。
+    """
+    if collected.get("hint"):
+        out["hint"] = collected["hint"]
+    if collected.get("conflict") and collected.get("message"):
+        out["conflict_message"] = collected["message"]
+    return out
+
+
 def generate_images(
     canvas_id: int,
     node_ids: Optional[list[str]] = None,
@@ -463,7 +483,7 @@ def generate_images(
         for tid, r in results.items()
         if r.get("status") != "completed"
     ]
-    return {
+    return _with_hint({
         "submitted": submitted,
         "filled_node_ids": collected.get("filled", []),
         "saved": collected.get("saved", False),
@@ -475,7 +495,7 @@ def generate_images(
             f"仍在生成 {len(pending)} 个。"
             + ("仍在生成的任务可用 collect_images 续收。" if pending else "")
         ),
-    }
+    }, collected)
 
 
 def collect_images(canvas_id: int, task_ids: list[int], wait_seconds: int = 15) -> dict:
@@ -489,7 +509,7 @@ def collect_images(canvas_id: int, task_ids: list[int], wait_seconds: int = 15) 
     results, pending = _poll_tasks(ids, min(int(wait_seconds or 0), MAX_WAIT_SECONDS))
     # prompt 由 _poll_tasks 一并带回，不用再逐个 GET 一遍
     collected = _collect_finished(canvas_id, results)
-    return {
+    return _with_hint({
         "filled_node_ids": collected.get("filled", []),
         "saved": collected.get("saved", False),
         "conflict": collected.get("conflict", False),
@@ -502,7 +522,7 @@ def collect_images(canvas_id: int, task_ids: list[int], wait_seconds: int = 15) 
         "message": (
             f"本次回填 {len(collected.get('filled', []))} 个节点；仍在生成 {len(pending)} 个。"
         ),
-    }
+    }, collected)
 
 
 def concat_task(task_id: int) -> dict:
