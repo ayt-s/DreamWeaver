@@ -10,13 +10,28 @@ const agentClient = axios.create({
 export interface ChatToolCall {
   tool_name: string;
   args: Record<string, unknown>;
-  result: Record<string, unknown>;
-  status: string; // called / ok / error（后端 Pydantic AI 轨迹）
+  /** 工具返回值的**摘要**（后端截断到 400 字符，超长时 truncated=true）。
+   *  2026-09-23 起后端会跨消息配对真实返回值；此前恒为空对象。 */
+  result?: string;
+  /** result 是否被截断（如 inspect_canvas 的整份画布 JSON） */
+  truncated?: boolean;
+  /** ok = 工具成功返回 / error = 抛错或被模型重试提示 / called = 调了但轨迹里没看到返回值 */
+  status: string;
+}
+
+export interface ChatUsage {
+  requests: number;
+  tool_calls: number;
+  input_tokens: number;
+  output_tokens: number;
 }
 
 export interface ChatResponseData {
   reply: string;
   tool_calls: ChatToolCall[];
+  /** 本轮真实消耗（请求数 / 工具调用数 / tokens），后端 2026-09-23 起返回 */
+  usage?: ChatUsage;
+  model?: string;
 }
 
 export interface ChatResponse {

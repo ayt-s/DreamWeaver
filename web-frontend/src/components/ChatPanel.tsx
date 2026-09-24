@@ -19,10 +19,22 @@ interface ChatMsg {
   error?: boolean;
 }
 
-/** 工具调用轨迹的可读标签 */
+/** 工具调用轨迹的可读标签。
+ *
+ * ⚠️ `called` 不能画成 ✓：那是「模型调了、但轨迹里没看到返回值」的兜底状态。
+ * 2026-09-23 之前后端只回 `called`（配对错了消息类型），所以这里的分支全是死代码；
+ * 现在 ok / error 都是真实结果。 */
 function toolCallLabel(tc: ChatToolCall): string {
   if (tc.status === 'error') return `${tc.tool_name} ✗ 失败`;
-  return `${tc.tool_name} ✓`;
+  if (tc.status === 'ok') return `${tc.tool_name} ✓`;
+  return `${tc.tool_name} …`;
+}
+
+/** 工具调用的悬浮详情：参数 + 返回值摘要 */
+function toolCallTitle(tc: ChatToolCall): string {
+  const args = JSON.stringify(tc.args, null, 2);
+  if (!tc.result) return `${tc.tool_name}\n${args}`;
+  return `${tc.tool_name}\n${args}\n→ ${tc.result}${tc.truncated ? ' …(已截断)' : ''}`;
 }
 
 /** 剥离 markdown 特殊符号（agent 回复不需要 markdown 渲染，纯文本展示更清爽） */
@@ -188,7 +200,7 @@ export default function ChatPanel({ open, onClose, canvasId, hasProject, dark }:
                     {m.toolCalls.map((tc, j) => (
                       <span
                         key={j}
-                        title={`${tc.tool_name}\n${JSON.stringify(tc.args, null, 2)}`}
+                        title={toolCallTitle(tc)}
                         className={`rounded px-1.5 py-0.5 ${
                           tc.status === 'error'
                             ? 'bg-red-500/20 text-red-400'
