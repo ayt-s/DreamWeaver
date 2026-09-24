@@ -16,10 +16,29 @@ from app.config import settings
 # Java Spring Boot 地址：默认同机 8080
 JAVA_BASE_URL = getattr(settings, "java_notify_url", "") or "http://localhost:8080"
 
+# 模块级共享 HTTP 客户端（连接复用）。
+#
+# 为什么不再用 `httpx.get/post` 顶层函数（2026-09-23）：
+#   顶层 API 每次调用内部都 `with Client(...)` 新建再关闭（httpx/_api.py:64）——
+#   一次对话 3~5 个工具调用就是 3~5 次 TCP+TLS 握手。工具由 Pydantic AI 丢线程池执行
+#   （run_in_executor），而 `httpx.Client` 本身线程安全，可以共享。
+#
+# `trust_env=False`：目标是同机 Java，**环境里的 HTTP_PROXY 不该介入**。实测
+#   （2026-09-23）在进程里注入 HTTP_PROXY 后，`list_tasks()` 打到 8080 的请求被代理
+#   拦成 502（当时 Java 根本没起）—— 也就是说用户机器上存在代理配置时工具会整片失效。
+#
+# 刻意**不设** `base_url`：`JAVA_BASE_URL` 是模块级、会被测试 monkeypatch 成 stub 服务
+#   （见 tests/test_canvas_node_tools.py），固化进 Client 会让那套 stub 失效。
+_CLIENT = httpx.Client(
+    timeout=15.0,
+    transport=httpx.HTTPTransport(retries=2),  # 仅连接类错误重试；4xx/5xx 由调用方判定
+    trust_env=False,
+)
+
 
 def _post(path: str, payload: dict | None = None, timeout: float = 15.0) -> dict:
     url = f"{JAVA_BASE_URL}{path}"
-    resp = httpx.post(url, json=payload or {}, timeout=timeout)
+    resp = _CLIENT.post(url, json=payload or {}, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
     # Java 统一响应 code/message/data
@@ -30,7 +49,7 @@ def _post(path: str, payload: dict | None = None, timeout: float = 15.0) -> dict
 
 def _put(path: str, payload: dict | None = None, timeout: float = 15.0) -> dict:
     url = f"{JAVA_BASE_URL}{path}"
-    resp = httpx.put(url, json=payload or {}, timeout=timeout)
+    resp = _CLIENT.put(url, json=payload or {}, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
     if data.get("code") != 0:
@@ -40,7 +59,7 @@ def _put(path: str, payload: dict | None = None, timeout: float = 15.0) -> dict:
 
 def _get(path: str, timeout: float = 10.0) -> dict:
     url = f"{JAVA_BASE_URL}{path}"
-    resp = httpx.get(url, timeout=timeout)
+    resp = _CLIENT.get(url, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
     if data.get("code") != 0:
