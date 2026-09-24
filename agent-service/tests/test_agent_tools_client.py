@@ -53,15 +53,23 @@ def test_连续工具调用复用同一条连接(stub):
 
 
 def test_环境代理不介入工具调用(stub, monkeypatch):
-    # 一个必然连不上的代理：只要请求走它，就一定失败
+    """往进程里塞一个必然连不上的代理：工具调用仍要成功（`trust_env=False` 的行为证据）。
+
+    ⚠️ 两条别误判的相邻事实：
+
+    1. 只断言 `trust_env is False` 是**配置级**证据；注入 env 后真打一次是**行为级**证据，
+       强度不同，这里保留后者。
+    2. 跑全量时输出里那段 `Failed to multipart ingest runs … 127.0.0.1:9` **不是本用例造成的**
+       —— 它来自既有的 `tests/test_observability_flag_divergence.py`（那里把
+       `LANGSMITH_ENDPOINT` 指到 `127.0.0.1:9` 来测开关分歧，SDK 后台上报线程照打）。
+       我第一次误判成自己引入的，还写了「delenv 就能压住」的错误结论 —— `delenv` 只影响
+       后续新建的客户端，压不住已经启动的后台线程。
+    """
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
-    # ⚠️ 顺手把 LangSmith 的 key 摘掉：langsmith SDK 用 requests，同样认 HTTP_PROXY，
-    #    否则本用例期间它的后台上报线程会去打那个死代理，在测试输出里刷一段
-    #    "Failed to multipart ingest runs" 噪音（不影响断言，但会让人误以为有网络故障）
-    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
-    assert T._CLIENT.trust_env is False
     assert isinstance(T._CLIENT, httpx.Client)
+    assert T._CLIENT.trust_env is False
+    assert T._CLIENT._mounts == {}          # 没挂任何代理 ⇒ 所有请求直连
     # 真打一次：能拿到 stub 的响应 ⇒ 代理没被使用
     assert T.list_tasks() == {"list": []}
 
