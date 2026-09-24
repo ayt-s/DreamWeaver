@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bot, Loader2, Send, X, Trash2, Sparkles } from 'lucide-react';
-import { agentChat, type ChatHistoryItem, type ChatToolCall } from '../api/agent';
+import { agentChat, clearChatHistory, type ChatHistoryItem, type ChatToolCall } from '../api/agent';
 
 interface ChatPanelProps {
   open: boolean;
@@ -35,6 +35,18 @@ function toolCallTitle(tc: ChatToolCall): string {
   const args = JSON.stringify(tc.args, null, 2);
   if (!tc.result) return `${tc.tool_name}\n${args}`;
   return `${tc.tool_name}\n${args}\n→ ${tc.result}${tc.truncated ? ' …(已截断)' : ''}`;
+}
+
+/** 生成一个对话 id（jsdom / 老浏览器没有 crypto.randomUUID 时回落）。 */
+function newConversationId(): string {
+  const c = globalThis.crypto;
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  return `conv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** 对话 id 的本地存储键：按画布分桶（未保存画布共用一个 draft 桶）。 */
+function conversationKey(canvasId: number | null): string {
+  return `dreamweaver:chat-conv:${canvasId ?? 'draft'}`;
 }
 
 /** 剥离 markdown 特殊符号（agent 回复不需要 markdown 渲染，纯文本展示更清爽） */
@@ -80,7 +92,30 @@ export default function ChatPanel({ open, onClose, canvasId, hasProject, dark }:
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [convId, setConvId] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
+  const convStorageKey = conversationKey(canvasId);
+
+  // 打开面板时准备对话 id：同一画布反复打开必须沿用**同一个** id，
+  // 否则服务端历史对不上（每打开一次就是一段新对话，多轮上下文白存）。
+  useEffect(() => {
+    if (!open) return;
+    let cur = '';
+    try {
+      cur = localStorage.getItem(convStorageKey) || '';
+    } catch {
+      cur = ''; // 隐私模式等场景 localStorage 会抛，按临时对话处理
+    }
+    if (!cur) {
+      cur = newConversationId();
+      try {
+        localStorage.setItem(convStorageKey, cur);
+      } catch {
+        /* 存不了就退化成「本次会话内有效」，不影响功能 */
+      }
+    }
+    setConvId(cur);
+  }, [open, convStorageKey]);
 
   // 打开面板时如果空，给一条提示
   useEffect(() => {
@@ -111,7 +146,9 @@ export default function ChatPanel({ open, onClose, canvasId, hasProject, dark }:
     setMessages((prev) => [...prev, { role: 'user', content: msg }]);
     setLoading(true);
     try {
-      const res = await agentChat(canvasId, msg, history);
+      // history 仍然带上是**有意的**：服务端没有真历史（Redis 降级 / 历史过期）时
+      // 它要走这条回落路径；有真历史时服务端会忽略它（避免模型看到重复内容）
+      const res = await agentChat(canvasId, msg, history, convId || undefined);
       setMessages((prev) => [
         ...prev,
         { role: 'assistant', content: res.reply, toolCalls: res.tool_calls },
@@ -125,9 +162,21 @@ export default function ChatPanel({ open, onClose, canvasId, hasProject, dark }:
     } finally {
       setLoading(false);
     }
-  }, [canvasId, loading, messages]);
+  }, [canvasId, loading, messages, convId]);
 
-  const clear = () => setMessages([]);
+  const clear = () => {
+    // 界面清空 + **服务端也清**：只清界面的话下一轮 agent 仍会引用屏幕上看不到的旧对话
+    const old = convId;
+    setMessages([]);
+    const next = newConversationId();
+    setConvId(next);
+    try {
+      localStorage.setItem(conversationKey(canvasId), next);
+    } catch {
+      /* 忽略：存不了也不影响本次对话 */
+    }
+    if (old) void clearChatHistory(old).catch(() => { /* 清理失败不影响继续用 */ });
+  };
 
   if (!open) return null;
 

@@ -126,9 +126,10 @@ async def test_一轮对话返回可序列化结果并默认带上限(monkeypatc
         def all_messages(self):
             return _msgs()
 
-    async def _fake_run(prompt, *, usage_limits=None):
+    async def _fake_run(prompt, *, message_history=None, usage_limits=None):
         captured["prompt"] = prompt
         captured["limits"] = usage_limits
+        captured["history"] = message_history
         return _FakeResult()
 
     monkeypatch.setattr(ca, "chat_agent",
@@ -146,12 +147,40 @@ async def test_一轮对话返回可序列化结果并默认带上限(monkeypatc
     assert ca.DEFAULT_USAGE_LIMITS.request_limit == 20
 
 
+@pytest.mark.asyncio
+async def test_带历史时轨迹只算本轮新增(monkeypatch):
+    """实测（2026-09-24）：第 2 轮 `usage.tool_calls=0`（本轮没调工具），
+    但 `all_messages()` 含历史 ⇒ 不切片就会把历史里的旧调用当本轮显示。"""
+    prior = _msgs()
+    new_turn = [
+        ModelRequest(parts=[UserPromptPart(content="接着改")]),
+        ModelResponse(parts=[TextPart(content="好")]),
+    ]
+
+    class _FakeResult:
+        output = "好"
+        usage = RunUsage(requests=1, tool_calls=0)
+
+        def all_messages(self):
+            return prior + new_turn
+
+    async def _fake_run(prompt, *, message_history=None, usage_limits=None):
+        return _FakeResult()
+
+    monkeypatch.setattr(ca, "chat_agent",
+                        SimpleNamespace(run=_fake_run, _model=SimpleNamespace(model_name="m")))
+
+    out = await ca.run_chat("接着改", history=prior)
+    assert out["tool_calls"] == []      # 本轮只有正文，没有工具调用
+    assert out["usage"]["tool_calls"] == 0
+
+
 # === 端点 ===================================================================
 
 def test_对话端点透传工具轨迹与用量(monkeypatch):
     captured: dict = {}
 
-    async def _fake_run_chat(prompt, *, usage_limits=None):
+    async def _fake_run_chat(prompt, *, history=None, usage_limits=None, sink=None):
         captured["prompt"] = prompt
         return {
             "reply": "改好了",

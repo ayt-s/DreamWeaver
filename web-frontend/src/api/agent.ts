@@ -32,6 +32,8 @@ export interface ChatResponseData {
   /** 本轮真实消耗（请求数 / 工具调用数 / tokens），后端 2026-09-23 起返回 */
   usage?: ChatUsage;
   model?: string;
+  /** 后端实际使用的历史来源：server = 服务端结构化真历史，client = 前端拍平的文本历史 */
+  history_source?: 'server' | 'client';
 }
 
 export interface ChatResponse {
@@ -45,21 +47,39 @@ export interface ChatHistoryItem {
   content: string;
 }
 
-/** 调用 agent 聊天接口（POST /v1/agent/chat） */
+/**
+ * 调用 agent 聊天接口（POST /v1/agent/chat）。
+ *
+ * `conversationId` 由前端按画布生成并持久化：给了它服务端就保管**结构化历史**
+ * （含工具调用与返回值），本轮只发 message；服务端没有历史时（Redis 降级 / 历史过期）
+ * 会自动回落到 `history` 这段拍平文本。两条都发是有意的 —— 回落路径需要它。
+ */
 export async function agentChat(
   canvasId: number | null,
   message: string,
   history: ChatHistoryItem[],
+  conversationId?: string,
 ): Promise<ChatResponseData> {
   const resp = await agentClient.post<ChatResponse>('/agent/chat', {
     canvas_id: canvasId,
     message,
     history,
+    conversation_id: conversationId ?? null,
   });
   if (resp.data.code !== 0) {
     throw new Error(resp.data.message || 'agent 调用失败');
   }
   return resp.data.data;
+}
+
+/**
+ * 清掉某段对话的服务端历史（「清空对话」时调用）。
+ *
+ * ⚠️ 不调的话是典型的「界面说清空了、其实没清」：气泡删了，服务端历史还在，
+ * 下一轮 agent 仍会引用已经不在屏幕上的对话。
+ */
+export async function clearChatHistory(conversationId: string): Promise<void> {
+  await agentClient.delete(`/agent/chat/${encodeURIComponent(conversationId)}`);
 }
 
 /**

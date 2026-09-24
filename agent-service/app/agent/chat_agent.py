@@ -206,7 +206,9 @@ def _args_dict(raw: Any) -> dict:
 
 @traced("agent.chat", run_type="chain")
 async def run_chat(prompt: str, *,
-                   usage_limits: UsageLimits | None = None) -> dict:
+                   history: list | None = None,
+                   usage_limits: UsageLimits | None = None,
+                   sink: dict | None = None) -> dict:
     """跑一轮画布助手对话，返回**纯可序列化**的结果。
 
     为什么单独包一层（2026-09-23 实测）：
@@ -220,12 +222,30 @@ async def run_chat(prompt: str, *,
     这里用 `traceable` 包住整轮对话（run_type=chain），把回复与工具轨迹一起上报；
     返回值刻意做成 dict（而不是 `AgentRunResult`）—— 只有可序列化的输出在
     LangSmith 里才读得懂。tracing 关闭时 `traced` 直接透传（见 utils/observability.py）。
+
+    `history` 传 Pydantic AI 的结构化历史（来自 `chat_store`，含工具调用与返回值）；
+    为 `None` 时退化成「只有本轮 prompt」——单轮语义与修复前一致。
+
+    `sink` 用来把整轮消息**带出去**给调用方（写回 `chat_store`）：
+    返回值必须保持可序列化，不能把 `all_messages()` 塞进 dict，所以走一个外部可变容器。
     """
-    result = await chat_agent.run(prompt, usage_limits=usage_limits or DEFAULT_USAGE_LIMITS)
+    result = await chat_agent.run(
+        prompt,
+        message_history=history,
+        usage_limits=usage_limits or DEFAULT_USAGE_LIMITS,
+    )
+    all_messages = list(result.all_messages())
+    # ⚠️ 轨迹只算**本轮新增**的那部分：`all_messages()` = 历史 + 本轮，
+    # 不切片的话前端在第二轮会把历史里的旧工具调用再显示一遍 ——
+    # 实测第 2 轮 usage.tool_calls=0（本轮没调工具），轨迹里却挂着上一轮的
+    # `inspect_canvas`，看起来像「它又读了一次画布」。
+    new_messages = all_messages[len(history):] if history else all_messages
+    if sink is not None:
+        sink["messages"] = all_messages
     u = result.usage
     return {
         "reply": result.output,
-        "tool_calls": extract_tool_calls(result.all_messages()),
+        "tool_calls": extract_tool_calls(new_messages),
         "usage": {
             "requests": u.requests,
             "tool_calls": u.tool_calls,

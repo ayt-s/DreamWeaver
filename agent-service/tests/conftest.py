@@ -23,6 +23,23 @@ def _disable_session_store():
 
 
 @pytest.fixture(autouse=True)
+def _disable_chat_history_store():
+    """画布助手的多轮历史默认关闭（同 session_store 的理由：单测不写真实 Redis）。
+
+    需要真实读写历史的用例在**自己的用例里**显式打开，或注入替身
+    （见 tests/test_agent_chat_history.py）。
+    """
+    from app.agent import chat_store
+
+    prev = chat_store.store.enabled
+    chat_store.store.enabled = False
+    try:
+        yield
+    finally:
+        chat_store.store.enabled = prev
+
+
+@pytest.fixture(autouse=True)
 def _quiet_side_effects(monkeypatch):
     """关掉对 Java 的副作用：不回调 8080、心跳不会真的发出去。
 

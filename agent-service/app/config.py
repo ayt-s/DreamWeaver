@@ -115,6 +115,12 @@ class Settings:
     # 让 Java 侧重武装看门狗 TTL（把「固定截止时间」变成「空闲超时」）
     heartbeat_interval_s: int = int(_env("AGENT_HEARTBEAT_INTERVAL_S", "60"))
 
+    # === 画布助手多轮对话历史（2026-09-24 新增）===
+    # 按 conversation_id 存 Pydantic AI 的**结构化消息**（真历史：含工具调用与返回值），
+    # 见 app/agent/chat_store.py。默认 6h —— 比会话快照（24h）短：对话历史的价值
+    # 集中在「刚才那几轮」，放久了既占内存、又让模型拿到过期的画布快照。
+    chat_history_ttl_s: int = int(_env("AGENT_CHAT_HISTORY_TTL_S", "21600"))
+
     # === fix_looping 镜级自愈（B1）===
     # 修正后缀策略（决定失败镜重生时是否追加按原因映射的修正指令）：
     #   off        不带后缀，原样重生

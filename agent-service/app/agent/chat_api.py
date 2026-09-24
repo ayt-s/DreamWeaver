@@ -40,7 +40,12 @@ router = APIRouter(prefix="/v1/agent", tags=["agent"])
 class ChatRequest(BaseModel):
     canvas_id: Optional[int] = Field(default=None, description="当前画布项目 id")
     message: str = Field(..., description="用户消息")
-    history: list[dict] = Field(default_factory=list, description="可选：历史对话")
+    history: list[dict] = Field(default_factory=list, description="可选：历史对话（仅服务端无真历史时使用）")
+    conversation_id: Optional[str] = Field(
+        default=None,
+        description="多轮对话 id（前端按画布生成的稳定 id）。给了它就由服务端保管结构化历史；"
+                    "不给则退化成「前端拍平文本历史」的无状态单轮。",
+    )
 
 
 class ToolCallRecord(BaseModel):
@@ -67,26 +72,37 @@ async def chat(req: ChatRequest) -> ChatResponse:
     # run_chat 是 chat_agent 的出口包装：内含 LangSmith 埋点（agent.chat）+ 资源上限，
     # 并返回**已配好工具返回值**的轨迹（见 chat_agent.extract_tool_calls 的说明）
     from app.agent.chat_agent import run_chat
+    from app.agent.chat_store import store as chat_history
+
+    # 真历史优先：有 conversation_id 且 Redis 里存着结构化消息（含工具调用与返回值）时用它，
+    # 本轮消息由 Pydantic AI 追加在后。拿不到（无 id / Redis 降级 / 历史过期 / 数据损坏）
+    # 就回落到旧的「前端拍平文本历史」路径 —— 所以 Redis 挂了只是退化，不是坏掉。
+    real_history = await chat_history.load(req.conversation_id) if req.conversation_id else None
 
     # 把当前画布 id 放到 prompt 上下文里，agent 可以直接引用
     context = f"当前画布项目 id: {req.canvas_id}" if req.canvas_id else "未指定画布项目 id（请先问用户）"
 
-    # 构造完整用户 prompt：历史对话 + 系统上下文 + 本轮消息
-    # Pydantic AI 的 agent.run() 直接接受字符串 prompt，会把系统提示 + 历史 + 本轮合成完整上下文
-    history_text = ""
-    if req.history:
-        parts = []
-        for m in req.history:
-            role = m.get("role", "user")
-            content = m.get("content", "")
-            prefix = "用户" if role == "user" else "助手"
-            parts.append(f"[历史-{prefix}] {content}")
-        history_text = "\n".join(parts) + "\n\n"
+    if real_history:
+        # ⚠️ 有真历史时**不再**把前端文本历史拼进 prompt：两套同时上会让模型看到
+        #    重复内容（服务端历史 + 拍平文本），反而更容易答乱、还白烧 token。
+        full_prompt = f"{context}\n用户消息：{req.message}"
+    else:
+        # 回落路径：构造完整用户 prompt：历史对话 + 系统上下文 + 本轮消息
+        # Pydantic AI 的 agent.run() 直接接受字符串 prompt，会把系统提示 + 历史 + 本轮合成完整上下文
+        history_text = ""
+        if req.history:
+            parts = []
+            for m in req.history:
+                role = m.get("role", "user")
+                content = m.get("content", "")
+                prefix = "用户" if role == "user" else "助手"
+                parts.append(f"[历史-{prefix}] {content}")
+            history_text = "\n".join(parts) + "\n\n"
+        full_prompt = f"{context}\n{history_text}用户消息：{req.message}"
 
-    full_prompt = f"{context}\n{history_text}用户消息：{req.message}"
-
+    sink: dict = {}
     try:
-        out = await run_chat(full_prompt)
+        out = await run_chat(full_prompt, history=real_history, sink=sink)
     except Exception as exc:
         logger.error("Agent 调用失败: %s", exc, exc_info=True)
         # 原始异常只进日志；用户看到的是中文友好映射（与全局异常层同一规范）
@@ -96,6 +112,10 @@ async def chat(req: ChatRequest) -> ChatResponse:
             detail=str(exc),
             retryable=True,
         )
+
+    # 写回本轮之后的完整历史（含工具调用与返回值）。失败静默，绝不影响响应。
+    if req.conversation_id and sink.get("messages"):
+        await chat_history.save(req.conversation_id, sink["messages"])
 
     return ChatResponse(
         code=0,
@@ -107,8 +127,25 @@ async def chat(req: ChatRequest) -> ChatResponse:
             "model": out.get("model", "unknown"),
             # 本轮真实消耗（请求数 / 工具调用数 / tokens）：排障与成本核算都用得上
             "usage": out.get("usage"),
+            "conversation_id": req.conversation_id,
+            # 本轮实际用的是哪套历史 —— 排障时一眼看出真历史是否生效
+            "history_source": "server" if real_history else "client",
         },
     )
+
+
+@router.delete("/chat/{conversation_id}", response_model=ChatResponse)
+async def clear_chat(conversation_id: str) -> ChatResponse:
+    """清掉一段对话的服务端历史（前端「清空对话」时调用）。
+
+    不清的话：用户点「清空对话」只是前端把气泡删了，服务端历史还在 ——
+    下一轮 agent 仍会引用「已经不存在的对话」，是最典型的「界面说清空了、其实没清」。
+    """
+    from app.agent.chat_store import store as chat_history
+
+    await chat_history.clear(conversation_id)
+    return ChatResponse(code=0, message="ok",
+                        data={"conversation_id": conversation_id, "cleared": True})
 
 
 class EnrichRequest(BaseModel):
