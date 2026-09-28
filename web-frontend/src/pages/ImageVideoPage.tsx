@@ -144,6 +144,15 @@ interface ImageNodeData {
   originTaskId?: number;
   /** 来源任务的原始提示词（只读）；点节点上的「填入提示词」才会写进 prompt 字段 */
   originPrompt?: string;
+  /**
+   * 本镜台词**原文** + 说话人（★ 2026-09-24）。
+   *
+   * 来自「小说转画布」（agent 的分镜台词字段）。它不参与出图，只在**生成成片**时
+   * 随段提交给 agent，由视频提示词按「台词 = 原文」逐字带上（文档速查表第 2 条）。
+   * 画外音写「画外音」→ agent 会标成 voice-over（不做口型）。
+   */
+  dialogue?: string;
+  dialogueSpeaker?: string;
 }
 
 type GraphNode = Node<any>;
@@ -1686,6 +1695,9 @@ export default function CanvasPage() {
       seconds: number;
       aspect_ratio: string;
       camera_spec?: CameraSpec;
+      /** 台词原文 + 说话人（★ 2026-09-24）：随段提交，agent 逐字写进视频提示词 */
+      dialogue?: string;
+      dialogue_speaker?: string;
     }> = [];
     const texts: string[] = [];
     // ★ 2026-09-19 修（#21）：「每段时长」是**全链**设置，必须先扫出来再用。
@@ -1720,6 +1732,8 @@ export default function CanvasPage() {
         //   （第一版我写成了 `promptFromText || img.prompt` = 上游优先 —— 那是把原来的错优先级留下来了，
         //     是 #24 的 UI 实测用渲染出来的 placeholder 当场抓出来的。）
         const prompt = img.prompt.trim() || promptFromText;
+        // ★ 2026-09-24：台词随段提交（节点上没台词就不写字段，避免给 agent 塞空串）
+        const dialogue = (img.dialogue || '').trim();
         segments.push({
           image_url: img.imageUrl.trim(),
           prompt,
@@ -1727,6 +1741,9 @@ export default function CanvasPage() {
           aspect_ratio: img.ratio || '16:9',
           // 结构化运镜：空 spec 不写字段，避免给 agent 塞无意义空对象
           ...(hasCameraSpec(img.cameraSpec) ? { camera_spec: img.cameraSpec } : {}),
+          ...(dialogue
+            ? { dialogue, dialogue_speaker: (img.dialogueSpeaker || '').trim() }
+            : {}),
         });
       }
     }

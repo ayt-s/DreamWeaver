@@ -36,8 +36,12 @@ Mood: {mood}
 - camera: 镜头运动（推/拉/摇/移/固定）+ 景别（远景/全景/中景/近景/特写）+ 机位（平视/俯拍/仰拍/航拍/过肩）
 - duration: 该镜时长（秒，4~12 之间的整数）
 - style_note: 风格提示（光照/色调/质感）
+- dialogue: 本镜台词**原文**（没有台词就留空字符串；多句用「；」分隔）
+- dialogue_speaker: 说话人（画内角色写名字；画外音/旁白写「画外音」）
 {camera_variety_line}{render_safety_line}
 要求：各镜 duration 之和必须等于 {duration_seconds} 秒（不要多也不要少）。
+台词长度必须与该镜 duration 匹配（中文口播约每字 0.2 秒，即 5 秒镜头最多约 20 字）——
+太长的台词留到下一镜，不要塞；口型问题多半来自台词与镜头时长不匹配。
 {plot_outline_rule}只输出 JSON 数组，不要其他内容。
 """
 

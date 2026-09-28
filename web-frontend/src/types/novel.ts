@@ -18,6 +18,15 @@ export interface NovelSegment {
   angle?: string;
   /** 结构化运镜：固定/推近/拉远/摇镜/移镜/跟拍/环绕 */
   movement?: string;
+  /**
+   * 本镜台词**原文**（★ 2026-09-24）。空 = 无台词。
+   *
+   * 逐字取自小说原文；生成成片时随段提交，agent 会把它逐字写进视频提示词
+   * （Agnes Video 2.5 文档速查表第 2 条「台词 = 原文」）。
+   */
+  dialogue?: string;
+  /** 说话人：画内角色名 / 「画外音」（画外标成 voice-over，不做口型） */
+  dialogueSpeaker?: string;
 }
 
 /** 分镜忠实度结论（后端 analysis_json.fidelity / 响应同名字段） */

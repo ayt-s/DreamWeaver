@@ -302,6 +302,10 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
             if (!cameraSpec.isEmpty()) {
                 imgData.put("cameraSpec", cameraSpec);
             }
+            // ★ 2026-09-24：台词随节点落库 —— 「生成成片」时前端把它带进该段提交给
+            //   agent（agent 逐字写进视频提示词）；不出图，所以只在非空时写。
+            putIfNotBlank(imgData, "dialogue", seg.getDialogue());
+            putIfNotBlank(imgData, "dialogueSpeaker", seg.getDialogueSpeaker());
             imgNode.put("data", imgData);
             nodes.add(imgNode);
         }

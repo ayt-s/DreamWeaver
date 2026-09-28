@@ -53,7 +53,8 @@ async def translate_to_en(text: str) -> str:
 
 
 async def video_prompt_from(
-    cn_description: str, seconds: object, aspect_ratio: object, camera_en: str = ""
+    cn_description: str, seconds: object, aspect_ratio: object, camera_en: str = "",
+    dialogue: str = "", speaker: str = "",
 ) -> str:
     """中文分镜描述 → 英文**视频**提示词（Agnes Video 2.5 规范）。
 
@@ -64,9 +65,19 @@ async def video_prompt_from(
 
     `camera_en` 注入模板内部（不事后追加）：实测事后追加会得到
     「…watermark., medium shot, slow push-in」——运镜重复、且把排除句挤出末位。
+    `dialogue`/`speaker` 同理由模板注入：台词**逐字**要求（文档速查表第 2 条），
+    经 LLM 翻译会被改写，所以放在指令里明令 "quote verbatim" 而不是混进中文描述。
     """
     return await translate_to_en(
-        build_video_rewrite_input(cn_description, seconds, aspect_ratio, camera_en))
+        build_video_rewrite_input(cn_description, seconds, aspect_ratio, camera_en,
+                                  dialogue=dialogue, speaker=speaker))
+
+
+def _dialogue_of(src: dict) -> tuple[str, str]:
+    """取本镜的台词与说话人（兼容 snake / camel 两种键名）。"""
+    text = str(src.get("dialogue") or src.get("dialogueText") or "").strip()
+    who = str(src.get("dialogue_speaker") or src.get("dialogueSpeaker") or "").strip()
+    return text, who
 
 
 def _decorate_prompt(
@@ -146,9 +157,11 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
         # ★ 2026-09-24：视频规范提示词单开一个字段 —— 本节点产出的 `prompt_en` 还要
         #   喂 `image_generator` 出图（nodes/image.py:396），把时间轴/声音塞进去对图像
         #   模型只是噪音。视频提示词只在 video_generator 里消费（见 nodes/video.py）。
+        _dlg_text, _dlg_who = _dialogue_of(shot)
         video_en = await video_prompt_from(cn_description, seconds=seconds,
                                            aspect_ratio=STANDARD_ASPECT_RATIO,
-                                           camera_en=global_camera_en)
+                                           camera_en=global_camera_en,
+                                           dialogue=_dlg_text, speaker=_dlg_who)
         # 元素语义绑定：<Picture N> 角色定义放句首（agnes 官方推荐显式点名每个占位符）
         # 确定性英文运镜片段：翻译之后再拼，保证术语精确
         en_prompt = _decorate_prompt(en_prompt, role_clauses, keep_clauses, global_camera_en)
@@ -163,6 +176,10 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
             "shot_id": shot.get("shot_id", len(storyboard)),
             "prompt_en": en_prompt,
             "video_prompt_en": video_en,
+            # 台词随段落库（原文 + 说话人）：Java 落库后可展示/编辑，
+            # 段重生时原样复用（描述一改由 SegmentReworkPlanner 一并清掉）
+            "dialogue": _dlg_text,
+            "dialogue_speaker": _dlg_who,
             "mode": "reference" if user_ref_images else "text",
             "seconds": str(seconds),
             "aspect_ratio": STANDARD_ASPECT_RATIO,
@@ -210,6 +227,9 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
         # 描述为空时给默认动作，避免空提示词
         if not cn:
             cn = "对参考图内容做缓慢推进的动态运镜"
+        # ★ 2026-09-24：本镜台词（原文 + 说话人）—— 画布节点/段配置里带来，
+        #   注入改写模板让正式提示词逐字带上（文档速查表第 2 条「台词 = 原文」）
+        _dlg_text, _dlg_who = _dialogue_of(seg)
         # 段级负面词覆盖全局
         seg_negative = str(seg.get("negative_prompt") or "").strip() or negative_prompt
         camera_spec = normalize_camera_spec(seg.get("camera_spec"))
@@ -230,7 +250,8 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
                 #   时间轴分段 / 声音段）—— 画布链路没有出图环节，这条正文就是提交给
                 #   agnes 的那条；此前它是「图像提示词整段翻译」，没有时间轴与声音。
                 video_en = await video_prompt_from(cn_description, seconds=seconds,
-                                                   aspect_ratio=ratio, camera_en=camera_en)
+                                                   aspect_ratio=ratio, camera_en=camera_en,
+                                                   dialogue=_dlg_text, speaker=_dlg_who)
             # 元素绑定：按**这一段真实的参考图数组**现算 <Picture N>（见 prompting.py）
             # 声音段：确定性后缀（已排除运镜 —— 它注入了改写模板内部），
             # BGM 开关关闭时明确排除背景音乐，且必须是最后一句
@@ -242,6 +263,10 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
             "shot_id": idx,
             "prompt_en": en_prompt,
             "video_prompt_en": video_en,
+            # 台词随段落库（段重生时原样复用；Java 的 SegmentReworkPlanner 会按
+            # 「勾选重生」成对清掉派生译文，这两个原文字段跟着描述一起留/清）
+            "dialogue": _dlg_text,
+            "dialogue_speaker": _dlg_who,
             "mode": "reference" if ref_images else "text",
             "seconds": str(seconds),
             "aspect_ratio": ratio,

@@ -222,6 +222,12 @@ def _parse_segments(raw: str | None) -> list:
                 "camera_spec": normalize_camera_spec(s.get("camera_spec") or s.get("camera")),
                 # 该段级负面词（覆盖全局）
                 "negative_prompt": str(s.get("negative_prompt") or "").strip(),
+                # ★ 2026-09-24：台词原文 + 说话人（文档速查表第 2 条「台词 = 原文」）。
+                #   画布节点/段配置带过来 → 注入视频改写模板逐字保留；
+                #   这里是白名单 dict，不加就会被静默丢掉。
+                "dialogue": str(s.get("dialogue") or s.get("dialogueText") or "").strip(),
+                "dialogue_speaker": str(s.get("dialogue_speaker")
+                                        or s.get("dialogueSpeaker") or "").strip(),
             })
         return segments
     except json.JSONDecodeError:

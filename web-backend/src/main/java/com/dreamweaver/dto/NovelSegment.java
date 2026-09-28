@@ -51,4 +51,15 @@ public class NovelSegment {
 
     /** 视频生成 prompt */
     private String videoPrompt;
+
+    /**
+     * 本镜台词**原文**（★ 2026-09-24）。
+     *
+     * <p>逐字取自小说原文，agent 会把它注入视频提示词并明令 "quote verbatim"
+     * （Agnes Video 2.5 文档速查表第 2 条「台词 = 原文」）。空 = 本镜无台词。
+     */
+    private String dialogue;
+
+    /** 说话人：画内角色名 / 「画外音」（画外标记为 voice-over，不做口型） */
+    private String dialogueSpeaker;
 }

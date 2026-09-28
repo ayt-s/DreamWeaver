@@ -777,6 +777,14 @@ function SegmentCard({ seg, index }: { seg: NovelSegment; index: number }) {
         <Field label="场景" value={seg.scene} />
         <Field label="镜头" value={seg.camera} />
         <Field label="情节" value={seg.plot} />
+        {/* ★ 2026-09-24：台词原文（有才显示）。它不进图片 prompt，只在生成成片时
+            随段提交、逐字写进视频提示词 —— 所以必须让用户在这里看得到。 */}
+        {seg.dialogue?.trim() ? (
+          <Field
+            label={seg.dialogueSpeaker?.trim() ? `台词（${seg.dialogueSpeaker}）` : '台词'}
+            value={seg.dialogue}
+          />
+        ) : null}
       </div>
 
       <details className="group rounded-lg border border-slate-800 bg-slate-950/50">

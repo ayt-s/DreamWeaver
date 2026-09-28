@@ -346,16 +346,23 @@ Required shape (plain text, no headings, no bullet points, no markdown):
 3. Then what happens inside the shot, split into 2-3 time phases ("0-2s: ...", "2-{seconds}s: ...").
    Each phase must state something VISIBLE: subject action, environment, light, camera movement.
    Concrete visible pictures only; no abstract metaphor or mood-only wording.
-4. Then the sound of the shot: ambient sound and action sound. If the Chinese text contains
-   dialogue, quote it verbatim and keep it short enough for the phase it belongs to; otherwise
-   state that there is no dialogue.
+4. Then the sound of the shot: ambient sound and action sound, PLUS the dialogue given below.
+   The dialogue must be quoted VERBATIM — never translate, rewrite or shorten it — and placed
+   in the time phase where it is spoken; that phase must be long enough for the line to be said
+   at natural speed. Voice-over / offscreen lines must be marked as voice-over (not lip-synced).
+   If the dialogue line says "none", state that there is no dialogue.
 5. One continuous take; never write a multi-shot / cut structure.
 6. Keep characters, costume, hairstyle and scene wording faithful to the Chinese text.
    Do NOT invent characters, props, events or dialogue that are not in it.
 7. End with what must NOT appear: deformed hands, extra limbs, on-screen text, watermark.
-8. Output English only. Do not leave any Chinese characters in the output.
+8. Output English only — EXCEPT the dialogue line, which must be reproduced character for
+   character exactly as given (never translated). Speaker ROLES must be English
+   (e.g. "voice-over" instead of 画外音); character names may stay as given.
 
 Camera (use this exact English wording inside sentence 2, only once): {camera}
+
+Dialogue — INPUT SPEC, describe it in the prompt; never copy this block or its labels:
+{dialogue_hint}
 
 Chinese shot description:
 {text}
@@ -363,9 +370,10 @@ Chinese shot description:
 
 
 def build_video_rewrite_input(
-    cn_description: str, seconds: object, aspect_ratio: object, camera_en: str = ""
+    cn_description: str, seconds: object, aspect_ratio: object, camera_en: str = "",
+    dialogue: str = "", speaker: str = "",
 ) -> str:
-    """拼出「视频改写」的 LLM 输入（模板 + 时长/画幅 + 运镜 + 中文描述）。纯拼接，无 LLM。"""
+    """拼出「视频改写」的 LLM 输入（模板 + 时长/画幅 + 运镜 + 台词 + 中文描述）。纯拼接。"""
     camera = str(camera_en or "").strip() or "as described in the Chinese text below"
     try:
         sec = int(float(seconds))  # type: ignore[arg-type]
@@ -375,5 +383,60 @@ def build_video_rewrite_input(
         duration=video_duration_head(seconds, aspect_ratio),
         seconds=sec,
         camera=camera,
+        dialogue_hint=dialogue_hint(dialogue, speaker),
         text=cn_description or "",
     )
+
+
+# ============================================================================
+# 台词（Agnes Video 2.5 文档 §2.3「台词对齐原则」+ 速查表第 2 条「台词 = 原文」）
+# ============================================================================
+#
+# ★ 2026-09-24 落地前的实测：全链路**没有台词词位** ——
+#   `novel/storyboarder.py` 的 schema 与 `nodes/script.py` 的模板都没有 dialogue
+#   字段（后者只在硬约束里写过一句「可以补充台词」），于是小说里的对话被压进
+#   `plot`/`visual` 的叙述文字里，模型只能自己编口型对白。
+#   文档明说「很多口型问题都来自台词与镜头时长不对齐」。
+
+# 台词角色标注：画内 vs 画外（文档 §2.3「画内/画外说话人」要求写清）
+OFFSCREEN_MARKERS = ("画外音", "旁白", "画外", "offscreen", "voice-over", "voiceover")
+
+
+def is_offscreen(speaker: str) -> bool:
+    """说话人是不是画外（画外音/旁白）。文档要求画内外必须写清。"""
+    s = str(speaker or "").strip().lower()
+    return any(m.lower() in s for m in OFFSCREEN_MARKERS)
+
+
+def dialogue_hint(dialogue: object, speaker: object = "") -> str:
+    """台词注入模板的那一行（英文，供改写 LLM 逐字保留）。
+
+    ⚠️ 2026-09-24 实测教训：**这一行曾被模型当成正文整段抄进输出**
+    （"Voice-over / offscreen, NOT lip-synced on screen — speaker: 画外音; quote
+    verbatim: …" 原样出现在提示词里，还把中文标签留在了英文提示词中）。
+    所以这里给的是**输入规格**形状：明确「输出里该写成的样子」，
+    并在模板里声明这是 spec、不许照抄。
+    """
+    text = str(dialogue or "").strip()
+    if not text:
+        return ("NONE — this shot has no dialogue. Do not invent dialogue, and do not show "
+                "anyone speaking or lip-syncing.")
+    who = str(speaker or "").strip() or "an unnamed character"
+    if is_offscreen(who):
+        return (f'LINE (reproduce character for character, never translate): "{text}"\n'
+                f'SPEAKER: {who} — voice-over / offscreen: the speaker is NOT shown talking '
+                f'and must not be lip-synced. Write it as: a voice-over says: "{text}"')
+    return (f'LINE (reproduce character for character, never translate): "{text}"\n'
+            f'SPEAKER: {who} — on screen, visible lip-sync. '
+            f'Write it as: {who} says: "{text}"')
+
+
+def dialogue_clause_cn(dialogue: object, speaker: object = "") -> str:
+    """中文版台词段（落库/预览用的中文视频提示词）。无台词返回空串。"""
+    text = str(dialogue or "").strip()
+    if not text:
+        return ""
+    who = str(speaker or "").strip()
+    mark = "画外音" if is_offscreen(who) else "画内"
+    name = who or "角色"
+    return f"【台词】{name}（{mark}）说：「{text}」（原文照读，按镜头时长说完，不要增删）"

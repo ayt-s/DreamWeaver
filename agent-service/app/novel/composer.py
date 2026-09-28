@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import re
 
-from app.utils.prompting import SOUND_NO_BGM_CN, video_duration_head
+from app.utils.prompting import SOUND_NO_BGM_CN, dialogue_clause_cn, video_duration_head
 
 logger = logging.getLogger(__name__)
 
@@ -418,5 +418,9 @@ def compose_video_prompt(
         seconds = 5
     head = video_duration_head(seconds, seg.get("aspect_ratio") or "16:9", lang="cn")
     out = f"时长 {head}。{base}"
+    # 台词段（文档速查表第 2 条「台词 = 原文」）：只在本镜真有台词时出现
+    dialogue = dialogue_clause_cn(seg.get("dialogue"), seg.get("dialogue_speaker"))
+    if dialogue:
+        out = f"{out} {dialogue}"
     # 声音段：BGM 开关关闭 → 明确排除（开着就不写，让模型自行配乐）
     return out if bgm else f"{out} {SOUND_NO_BGM_CN}"

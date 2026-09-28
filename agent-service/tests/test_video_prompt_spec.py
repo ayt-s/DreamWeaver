@@ -223,3 +223,100 @@ def test_compose_video_prompt_bgm_on_has_no_exclusion():
         {"plot": "少年走进山洞", "seconds": 6}, "3D 写实国漫", bgm=True)
     assert prompting.SOUND_NO_BGM_CN not in out
     assert out.startswith("时长 6 秒，16:9 横版。")
+
+
+# ============================ 台词（文档速查表第 2 条「台词 = 原文」）============================
+
+def test_dialogue_hint_none_when_no_dialogue():
+    assert "no dialogue" in prompting.dialogue_hint("", "")
+
+
+def test_dialogue_hint_marks_on_screen_and_offscreen():
+    on = prompting.dialogue_hint("今晚的海面，好像藏着什么。", "陈浔")
+    assert "character for character" in on and "陈浔" in on and "lip-sync" in on
+    off = prompting.dialogue_hint("先别打开那扇门。", "画外音")
+    assert "voice-over" in off and "NOT shown talking" in off
+    assert prompting.is_offscreen("画外音") and not prompting.is_offscreen("陈浔")
+
+
+def test_template_declares_dialogue_as_input_spec():
+    """实测教训：台词那行曾被模型**当成正文整段抄进输出**（还把中文标签留在英文提示词里）。
+
+    所以模板必须声明它是输入规格、不许照抄；同时第 8 条要给台词开一个**逐字**例外
+    （否则「全英文」会把台词翻译掉，与「台词 = 原文」直接冲突）。
+    """
+    text = prompting.build_video_rewrite_input("走", 5, "16:9", dialogue="台词", speaker="陈浔")
+    assert "never copy this block" in text
+    assert "EXCEPT the dialogue line" in text
+
+
+def test_rewrite_input_carries_dialogue_verbatim():
+    line = "今晚的海面，好像藏着什么。"
+    text = prompting.build_video_rewrite_input(
+        "少年走向灯塔", 8, "16:9", dialogue=line, speaker="陈浔")
+    assert line in text, "台词必须逐字进模板（翻译会改写，不能混进中文描述）"
+    assert "VERBATIM" in text.upper()
+
+
+def test_dialogue_clause_cn_marks_offscreen():
+    cn = prompting.dialogue_clause_cn("先别打开那扇门。", "画外音")
+    assert "画外音" in cn and "先别打开那扇门。" in cn
+    assert prompting.dialogue_clause_cn("", "") == ""
+
+
+@pytest.mark.asyncio
+async def test_canvas_storyboarder_injects_dialogue_into_video_prompt(monkeypatch):
+    monkeypatch.setattr(sb, "translate_to_en", _echo_translate)
+    state = _canvas_state()
+    state["segments"] = [{"image_url": FIRST, "prompt": "陈浔站在山坡上", "seconds": 5,
+                          "dialogue": "今晚的海面，好像藏着什么。", "dialogue_speaker": "陈浔"}]
+
+    shot = (await sb.canvas_storyboarder_node(state))["storyboard"][0]
+
+    assert "今晚的海面，好像藏着什么。" in shot["video_prompt_en"]
+    assert shot["dialogue"] == "今晚的海面，好像藏着什么。"
+    assert shot["dialogue_speaker"] == "陈浔"
+
+
+@pytest.mark.asyncio
+async def test_canvas_storyboarder_tells_model_when_no_dialogue(monkeypatch):
+    monkeypatch.setattr(sb, "translate_to_en", _echo_translate)
+
+    shot = (await sb.canvas_storyboarder_node(_canvas_state()))["storyboard"][0]
+
+    assert "no dialogue" in shot["video_prompt_en"], "无台词也要写明，免得模型自己编对白"
+    assert shot["dialogue"] == ""
+
+
+def test_parse_segments_keeps_dialogue():
+    from app.main import _parse_segments
+
+    segs = _parse_segments(json.dumps([{
+        "image_url": "http://x/a.png", "prompt": "描述", "seconds": 5,
+        "dialogue": "台词原文", "dialogueSpeaker": "陈浔",
+    }]))
+
+    assert segs[0]["dialogue"] == "台词原文"
+    assert segs[0]["dialogue_speaker"] == "陈浔", "camelCase 也要认"
+
+
+def test_novel_segment_schema_has_dialogue_defaults():
+    """小说分镜 schema：LLM 漏给台词时必须是空串，不能让校验炸掉整次预处理。"""
+    from app.novel.storyboarder import NovelSegmentPydantic
+
+    seg = NovelSegmentPydantic(id="s1", chapter=1, title="山坡", plot="少年走上山坡",
+                               characters=["陈浔"], scene="小山村山坡，清晨", camera="中景",
+                               seconds=5, mood="平静")
+    assert seg.dialogue == "" and seg.dialogue_speaker == ""
+
+
+def test_compose_video_prompt_includes_dialogue_when_present():
+    out = composer.compose_video_prompt(
+        {"plot": "少年走向灯塔", "seconds": 8,
+         "dialogue": "今晚的海面，好像藏着什么。", "dialogue_speaker": "画外音"}, "电影写实")
+    assert "【台词】" in out and "画外音" in out and "今晚的海面，好像藏着什么。" in out
+
+
+def test_compose_video_prompt_omits_dialogue_clause_when_absent():
+    out = composer.compose_video_prompt({"plot": "少年走上山坡", "seconds": 5}, "电影写实")
+    assert "【台词】" not in out
