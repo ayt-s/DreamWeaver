@@ -16,6 +16,7 @@ from app.tools.video import generate_video_tool
 from app.poller import poller
 from app.gateway.agnes import gateway  # noqa: F401 —— 测试 fixture 依赖本模块的 gateway 属性
 from app.utils import trace as trace_util
+from app.utils.prompting import insert_before_sound
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,12 @@ def _effective_prompt(shot: dict) -> str:
       里没有这个字段）。两者分开存是因为 `prompt_en` 还要喂 image_generator 出图 ——
       视频规范那份提示词对图像模型只是噪音（见 nodes/storyboard.py 的说明）。
 
+    ★ 2026-09-24（C）：**修正后缀必须插在声音排除句之前**。声音排除句（「不要额外添加
+      背景音乐」）属于「末尾约束权重最高」的那一类（文档 §2.3），而 `fix_hint` 是自愈轮
+      追加的画质修正（如 ", well-lit scene, even daylight"）—— 直接 `base + hint` 会把它
+      挤到中间，等于悄悄削弱了排除句。storyboard 因此另存一份 `video_sound`，
+      这里把后缀插到它前面；没有 `video_sound`（老会话）时行为与原来一致。
+
     **为什么 fix_hint 分开存**：`storyboard` 会被 `notify_final` 当作 `segments_json`
     交给 Java，那是「按段重生」的输入基线。把修正后缀直接追加进 `prompt_en` 会污染这个
     基线，而且每轮修复都会再叠加一次、prompt 持续膨胀漂移。
@@ -35,7 +42,9 @@ def _effective_prompt(shot: dict) -> str:
     """
     base = str(shot.get("video_prompt_en") or shot.get("prompt_en") or "")
     hint = str(shot.get("fix_hint") or "")
-    return f"{base}{hint}" if hint else base
+    if not hint:
+        return base
+    return insert_before_sound(base, shot.get("video_sound", ""), hint)
 
 
 async def video_generator_node(state: CreativeSessionState) -> dict:

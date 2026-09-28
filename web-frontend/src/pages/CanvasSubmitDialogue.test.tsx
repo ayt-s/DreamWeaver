@@ -93,4 +93,47 @@ describe('台词随段提交', () => {
     expect(segs[0].dialogue).toBe(DIALOGUE);
     expect(segs[0].dialogue_speaker).toBe('陈浔');
   }, 40_000);
+
+  it('画布上现填台词：同样进载荷（用户可编辑，不必回小说页改）', async () => {
+    // 这一条用**没有台词**的画布，走「当场填写」这条路
+    const bare = JSON.stringify({
+      nodes: [
+        {
+          id: 'img0', type: 'imageNode', position: { x: 100, y: 60 },
+          data: { prompt: '陈浔站在海边灯塔前', imageUrl: 'https://cdn.local/frame.png',
+                  ratio: '16:9' },
+        },
+        { id: 'compose', type: 'videoNode', position: { x: 700, y: 200 }, data: { seconds: 5 } },
+      ],
+      edges: [{ id: 'e0', source: 'img0', target: 'compose' }],
+    });
+    vi.mocked(listProjects).mockResolvedValue([
+      { id: 9, name: '空台词画布', nodesJson: bare, edgesJson: null, version: 1 } as never,
+    ]);
+    vi.mocked(getProject).mockResolvedValue({
+      id: 9, name: '空台词画布', nodesJson: bare, edgesJson: null, version: 1,
+    } as never);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/canvas?project=9']}>
+          <ImageVideoPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByTitle(/切换画布项目/);
+    await screen.findByDisplayValue(/陈浔站在海边灯塔前/);
+
+    fireEvent.change(screen.getByPlaceholderText('说话人'), { target: { value: '画外音' } });
+    fireEvent.change(screen.getByPlaceholderText(/台词原文/),
+      { target: { value: '先别打开那扇门。' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '生成成片' }));
+    await waitFor(() => expect(vi.mocked(createVideoTask)).toHaveBeenCalled());
+
+    const segs = JSON.parse(String(vi.mocked(createVideoTask).mock.calls[0][0].segments));
+    expect(segs[0].dialogue).toBe('先别打开那扇门。');
+    expect(segs[0].dialogue_speaker).toBe('画外音');
+  }, 40_000);
 });

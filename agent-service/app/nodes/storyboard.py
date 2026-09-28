@@ -19,6 +19,7 @@ from app.utils.prompting import (
     build_reference_bindings,
     build_video_rewrite_input,
     camera_phrase,
+    insert_before_sound,
     normalize_camera_spec,
     sound_clause,
 )
@@ -175,9 +176,10 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
         # 确定性英文运镜片段：翻译之后再拼，保证术语精确
         en_prompt = _decorate_prompt(en_prompt, role_clauses, keep_clauses, global_camera_en)
         # 视频那条**不再事后追加运镜**（已注入改写模板内部，见 video_prompt_from）；
-        # 声音段必须是最后一句（文档：末尾约束权重最高）
-        video_en = _decorate_prompt(video_en, role_clauses, keep_clauses,
-                                    sound=sound_clause(bool(state.get("bgm"))))
+        # 声音段必须是最后一句（文档：末尾约束权重最高），并**另存一份**供提交时
+        # 把 fix_hint / 首帧说明插到它前面用（见 prompting.insert_before_sound）
+        _sound = sound_clause(bool(state.get("bgm")))
+        video_en = _decorate_prompt(video_en, role_clauses, keep_clauses, sound=_sound)
         # mode 和 reference_images 的填充规则：
         # - 用户传了参考图 → 用用户图，走 mode="reference"（agnès 参考模式）
         # - 否则留空，由 image_generator 节点自动生图回填
@@ -185,6 +187,8 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
             "shot_id": shot.get("shot_id", len(storyboard)),
             "prompt_en": en_prompt,
             "video_prompt_en": video_en,
+            # 声音排除句单独留一份：提交时要把 fix_hint / 首帧说明插到它**前面**
+            "video_sound": _sound,
             # 台词随段落库（原文 + 说话人）：Java 落库后可展示/编辑，
             # 段重生时原样复用（描述一改由 SegmentReworkPlanner 一并清掉）
             "dialogue": _dlg_text,
@@ -249,6 +253,8 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
         ratio = str(seg.get("aspect_ratio") or STANDARD_ASPECT_RATIO).strip() or STANDARD_ASPECT_RATIO
         en_prompt = str(seg.get("prompt_en", "")).strip()
         video_en = str(seg.get("video_prompt_en", "")).strip()
+        # 声音排除句：段重生复用时跟着已存的 video_en 一起复用（那段原本的声音句）
+        _sound = str(seg.get("video_sound") or "").strip()
         if not en_prompt or not video_en:
             # 图像/参考提示词固定来自「本段描述」（+ 全局风格/段级负面词）
             img_cn = build_cn_description([cn], style_prompt=style_prompt,
@@ -268,14 +274,16 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
             # 元素绑定：按**这一段真实的参考图数组**现算 <Picture N>（见 prompting.py）
             # 声音段：确定性后缀（已排除运镜 —— 它注入了改写模板内部），
             # BGM 开关关闭时明确排除背景音乐，且必须是最后一句
+            _sound = sound_clause(bool(state.get("bgm")))
             seg_role, seg_keep = build_reference_bindings(bindings, ref_images)
             en_prompt = _decorate_prompt(en_prompt, seg_role, seg_keep, camera_en)
-            video_en = _decorate_prompt(video_en, seg_role, seg_keep,
-                                        sound=sound_clause(bool(state.get("bgm"))))
+            video_en = _decorate_prompt(video_en, seg_role, seg_keep, sound=_sound)
         storyboard.append({
             "shot_id": idx,
             "prompt_en": en_prompt,
             "video_prompt_en": video_en,
+            # 声音排除句单独留一份：提交时 fix_hint / 首帧说明要插到它前面
+            "video_sound": _sound,
             # 台词随段落库（段重生时原样复用；Java 的 SegmentReworkPlanner 会按
             # 「勾选重生」成对清掉派生译文，这两个原文字段跟着描述一起留/清）
             "dialogue": _dlg_text,
@@ -343,8 +351,10 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
                     sb_shot[_field] = " ".join(_text.split())
             # ★ 2026-09-24：keyframe（只给首帧）按官方语义是「只补首帧之后的动作/光影/声音」，
             #   补一句确定性说明，免得模型按 reference 的理解重构图、重计时。
+            #   插在声音排除句之前 —— 末尾约束要留在最后（见 prompting.insert_before_sound）。
             if sb_shot.get("video_prompt_en"):
-                sb_shot["video_prompt_en"] = f"{sb_shot['video_prompt_en']} {FIRST_FRAME_EN}"
+                sb_shot["video_prompt_en"] = insert_before_sound(
+                    sb_shot["video_prompt_en"], sb_shot.get("video_sound", ""), FIRST_FRAME_EN)
             # 段间衔接：下一段的首帧当本段尾帧（last_frame）——让相邻段首尾接得上。
             # 默认关：强制结尾构图会压住本段的运动，不是所有题材都想要。
             if chain and idx + 1 < len(storyboard):

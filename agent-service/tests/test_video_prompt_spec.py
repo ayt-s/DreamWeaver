@@ -127,6 +127,10 @@ async def test_keyframe_adds_first_frame_clause_and_cleans_both_prompts(monkeypa
 
     assert shot["mode"] == "keyframe"
     assert prompting.FIRST_FRAME_EN in shot["video_prompt_en"], "keyframe 要写明只延展首帧"
+    # ★ C：首帧说明也是「往末尾补一句」，必须插在声音排除句**之前**
+    assert shot["video_prompt_en"].endswith(prompting.SOUND_NO_BGM_EN), \
+        "首帧说明不该把声音排除句挤出末位"
+    assert shot["video_sound"] == prompting.SOUND_NO_BGM_EN
     for field in ("prompt_en", "video_prompt_en"):
         assert "<Picture" not in shot[field], f"{field} 里不能留悬空的 <Picture N>（keyframe 不带图）"
 
@@ -192,6 +196,33 @@ def test_video_generator_falls_back_for_old_sessions():
 
 def test_fix_hint_still_appended_to_video_prompt():
     assert vb._effective_prompt({"video_prompt_en": "V", "fix_hint": " H"}) == "V H"
+
+
+def test_fix_hint_goes_before_the_sound_clause():
+    """★ C：修正后缀必须插在声音排除句**之前** —— 末尾约束权重最高（文档 §2.3）。
+
+    改前形状 `base + fix_hint` 会把「不要额外添加背景音乐」挤到中间，等于悄悄削弱它。
+    """
+    sound = prompting.SOUND_NO_BGM_EN
+    out = vb._effective_prompt({
+        "video_prompt_en": f"正文。{sound}",
+        "video_sound": sound,
+        "fix_hint": ", well-lit scene, even exposure",
+    })
+
+    assert out.endswith(sound), "声音排除句必须仍是最后一句"
+    assert out.index(", well-lit scene, even exposure") < out.index(sound)
+
+
+def test_fix_hint_falls_back_when_no_sound_recorded():
+    """老会话没有 video_sound（新字段之前生成的 storyboard）→ 行为与原来一致。"""
+    assert vb._effective_prompt(
+        {"video_prompt_en": "V", "fix_hint": " H"}) == "V H"
+
+
+def test_insert_before_sound_requires_the_tail_to_match():
+    """只有真的以声音句结尾才重排；否则原样追加（不猜、不改写正文）。"""
+    assert prompting.insert_before_sound("正文 XX", "声音句", "补") == "正文 XX 补"
 
 
 # ============================ 段重生：video_prompt_en 必须能穿过 API 白名单 ============================

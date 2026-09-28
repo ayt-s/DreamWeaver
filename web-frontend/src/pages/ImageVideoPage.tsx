@@ -989,6 +989,24 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
         </div>
       </details>
 
+      {/* 台词（★ 2026-09-24）：不进图片提示词，只在生成成片时随段提交、
+          由 agent 逐字写进视频提示词。画外音写「画外音」——agent 会标成
+          voice-over（不做口型）；留空 = 本镜无台词。 */}
+      <div className="mb-2 flex items-start gap-1">
+        <input
+          value={data.dialogueSpeaker ?? ''}
+          onChange={(e) => patch({ dialogueSpeaker: e.target.value })}
+          placeholder="说话人"
+          className="w-20 shrink-0 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-700 outline-none focus:border-indigo-300"
+        />
+        <input
+          value={data.dialogue ?? ''}
+          onChange={(e) => patch({ dialogue: e.target.value })}
+          placeholder="台词原文（留空 = 无台词；画外写「画外音」）"
+          className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-700 outline-none focus:border-indigo-300"
+        />
+      </div>
+
       <div className="flex items-center gap-1.5">
         <button
           onClick={() => fileRef.current?.click()}

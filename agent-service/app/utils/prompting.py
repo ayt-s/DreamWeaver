@@ -322,6 +322,24 @@ def sound_clause(bgm: bool) -> str:
     return "" if bgm else SOUND_NO_BGM_EN
 
 
+def insert_before_sound(text: str, sound: str, extra: str) -> str:
+    """把 `extra` 插到**声音排除句之前**（末尾约束必须留在最后）。
+
+    ★ 2026-09-24（C）：`fix_hint`（自愈轮的画质修正）与 keyframe 的首帧说明都是
+      「再补一句」的语义，直接 `text + extra` 会把声音排除句挤到中间 ——
+      而文档明确末尾约束权重最高。凡是「往视频提示词末尾补东西」的地方都走这里。
+    """
+    s = str(sound or "").strip()
+    body = str(text or "").rstrip()
+    extra = str(extra or "").strip()
+    if not extra:
+        return body
+    if s and body.endswith(s):
+        core = body[: -len(s)].rstrip()
+        return f"{core} {extra} {s}"
+    return f"{body} {extra}"
+
+
 # keyframe（首帧锁定）模式下补的一句：文档 §4.2「双张图（首帧+尾帧）：Agnes 不会自动
 # 加切镜，只补两帧之间的动作、光影、声音」——我们目前只给首帧，同理只该往后延展，
 # 不该让模型重构图/重计时（reference 模式的语义差别见 gateway/agnes.py:446-448）。
