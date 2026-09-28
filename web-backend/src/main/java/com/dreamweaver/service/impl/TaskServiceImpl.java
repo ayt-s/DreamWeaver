@@ -476,6 +476,11 @@ public class TaskServiceImpl implements TaskService {
         if (request.getChainFrames() != null) {
             body.put("chain_frames", request.getChainFrames());
         }
+        // 背景音乐开关：agent 侧默认「不加 BGM」（提示词里写明排除），
+        // 所以只有 true（用户要 BGM）时才真的需要发；不为 null 就发，口径与 lockFirstFrame 一致
+        if (request.getBgm() != null) {
+            body.put("bgm", request.getBgm());
+        }
         if (request.getReferenceBindings() != null && !request.getReferenceBindings().isBlank()) {
             body.put("reference_bindings", request.getReferenceBindings());
         }

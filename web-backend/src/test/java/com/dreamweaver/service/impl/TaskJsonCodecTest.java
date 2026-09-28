@@ -246,6 +246,36 @@ class TaskJsonCodecTest {
     }
 
     @Test
+    @DisplayName("gen_params_json：bgm 开关要落库，否则重生会退回默认（不加 BGM）")
+    void bgmRoundTripsThroughGenParams() {
+        // ★ 2026-09-24：agent 侧 bgm 默认 false（提示词里写明「不要额外添加背景音乐」）。
+        //   不落库的话，「重新生成」会把用户勾上的「要 BGM」静默改回不加
+        //   —— 与 videoModel 当初踩的是同一个坑。
+        CreateTaskRequest src = new CreateTaskRequest();
+        src.setBgm(Boolean.TRUE);
+        String json = codec.buildGenParamsJson(src);
+
+        assertNotNull(json, "只有 bgm 一个参数时也必须落库（否则 empty 判定会把它丢掉）");
+        CreateTaskRequest restored = new CreateTaskRequest();
+        codec.applyGenParamsJson(json, restored);
+
+        assertEquals(Boolean.TRUE, restored.getBgm());
+    }
+
+    @Test
+    @DisplayName("gen_params_json：bgm 未设置时回 null，让 agent 走默认（不加 BGM）")
+    void missingBgmStaysNull() {
+        CreateTaskRequest src = new CreateTaskRequest();
+        src.setStylePrompt("写实");
+        String json = codec.buildGenParamsJson(src);
+
+        CreateTaskRequest restored = new CreateTaskRequest();
+        codec.applyGenParamsJson(json, restored);
+
+        assertNull(restored.getBgm());
+    }
+
+    @Test
     @DisplayName("applyGenParamsJson：空/坏 JSON 不抛异常，也不清掉请求里已有的值")
     void applyGenParamsJsonIsFaultTolerant() {
         CreateTaskRequest req = new CreateTaskRequest();

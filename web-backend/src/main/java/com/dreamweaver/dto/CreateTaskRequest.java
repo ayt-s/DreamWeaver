@@ -108,4 +108,14 @@ public class CreateTaskRequest {
 
     /** 段间衔接：把下一段的首帧当本段尾帧（last_frame），让相邻段首尾接得上。默认关 */
     private Boolean chainFrames;
+
+    /**
+     * 背景音乐开关：false（默认）= 视频提示词里明确写「不要额外添加背景音乐」，
+     * true = 交给模型自行配乐。
+     *
+     * <p>★ 2026-09-24 加。此前视频提示词里**没有任何声音指令**，而 agnes 产物
+     * 一律自带 aac 音轨 —— 每段 BGM 由模型自由发挥、段段不同，拼接（acrossfade）
+     * 救不了「每段换一首曲子」。官方提示词指南要求：不想要就必须明确写出来。
+     */
+    private Boolean bgm;
 }

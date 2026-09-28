@@ -317,6 +317,14 @@ export interface CreateTaskRequest {
   lockFirstFrame?: boolean;
   /** 段间衔接：下一段的首帧当本段尾帧（last_frame），让相邻段首尾接得上。默认关 */
   chainFrames?: boolean;
+  /**
+   * 背景音乐开关。false / 不传（默认）= 视频提示词里明确写「不要额外添加背景音乐」，
+   * true = 交给模型自行配乐。
+   *
+   * ★ agnes 的视频产物**一律自带音轨**（实测 h264+aac），不写这句时 BGM 由模型自己
+   * 发挥、逐段不同 —— 拼接时每段换一首曲子。官方提示词指南：不想要就必须明确写。
+   */
+  bgm?: boolean;
   /** 产物来源：默认 default（进画廊）；canvas_asset = 画布素材（画廊默认过滤） */
   source?: string;
 }

@@ -119,7 +119,8 @@ public class TaskJsonCodec {
                 && isBlank(request.getReferenceBindings())
                 && isBlank(request.getImageRatio())
                 && request.getLockFirstFrame() == null
-                && request.getChainFrames() == null;
+                && request.getChainFrames() == null
+                && request.getBgm() == null;
         if (empty) {
             return null;
         }
@@ -134,6 +135,9 @@ public class TaskJsonCodec {
         params.put("imageRatio", request.getImageRatio());
         params.put("lockFirstFrame", request.getLockFirstFrame());
         params.put("chainFrames", request.getChainFrames());
+        // 背景音乐开关：不落库的话「重新生成」会退回默认（不加 BGM），
+        // 与用户当时的选择相反且无提示（同 videoModel 的教训）
+        params.put("bgm", request.getBgm());
         // ★ 2026-09-19 修（#22·#32）：**视频模型也要存**。
         //   画布底部的「视频模型」下拉（Agnes Video 2.5 / HD）提交时是发出去的，
         //   但重生链路会重建 CreateTaskRequest，若 gen_params 里没有它，
@@ -168,6 +172,8 @@ public class TaskJsonCodec {
             request.setImageRatio(asText(params.get("imageRatio")));
             request.setLockFirstFrame(asBool(params.get("lockFirstFrame")));
             request.setChainFrames(asBool(params.get("chainFrames")));
+            // 背景音乐开关：与 videoModel 同理，重生时必须还原用户当时的选择
+            request.setBgm(asBool(params.get("bgm")));
             // ★ 2026-09-19 修（#22·#32）：还原视频模型，否则重生/自动重试会用 agent 默认 Flash。
             request.setVideoModel(asText(params.get("videoModel")));
         } catch (Exception e) {

@@ -1116,6 +1116,11 @@ export default function CanvasPage() {
   // 所以默认关；只有「同一地点的一段连续动作被切成多段」时才值得开（那时连续性
   // 才是真需求）。开关的 title 里写明了适用场景。
   const [chainFrames, setChainFrames] = useState(false);
+  // 背景音乐（默认**关** = 视频提示词里明确写「不要额外添加背景音乐」）。
+  // ★ 实测：agnes 产物一律自带音轨（h264+aac），而我们的提示词此前没有任何声音指令
+  //   ⇒ 每段 BGM 由模型自行发挥、段段不同，拼接（acrossfade）救不了「每段换一首曲子」。
+  //   官方提示词指南：不想要就必须明确写；想要就走模型默认（不写排除句）。
+  const [bgm, setBgm] = useState(false);
   const [controlPanelOpen, setControlPanelOpen] = useState(false);
   // 元素语义绑定：名词 → 参考图编号（<Picture N>），key = 锚定图标识，value = 剧本中的名词
   const [bindingNames, setBindingNames] = useState<Record<string, string>>({});
@@ -1977,6 +1982,8 @@ export default function CanvasPage() {
         // 首帧锁定 / 段间衔接（agent 侧 lock_first_frame 默认开，关掉必须显式传 false）
         lockFirstFrame,
         chainFrames,
+        // 背景音乐：agent 侧默认「不加」，勾上才需要发 true（写不写排除句见 prompting.sound_clause）
+        bgm,
         // ④ 元素语义绑定：名词 → <Picture N>
         referenceBindings,
       });
@@ -3082,6 +3089,24 @@ export default function CanvasPage() {
                             · 用下一段首帧当本段尾帧。实测接缝跳变减半（2.58→1.40），
                             但会把本段结尾**拖向下一段的画面**：只适合「同一地点的一段连续动作」，
                             不同场景请保持关闭（否则本段内容会被改掉）
+                          </span>
+                        </span>
+                      </label>
+                      <label className="flex cursor-pointer items-start gap-2">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+                          checked={bgm}
+                          onChange={(e) => setBgm(e.target.checked)}
+                        />
+                        <span>
+                          <b>背景音乐</b>
+                          <span className={theme.hint}>
+                            {' '}
+                            · 默认不勾 = 提示词里明确写「不要额外添加背景音乐」，只保留环境音与动作音。
+                            {bgm
+                              ? '已勾选：交给模型自行配乐（**每段各自配**，拼起来是段段不同的曲子）'
+                              : '不勾的好处：多段拼接后音轨一致（此前每段 BGM 由模型自由发挥）'}
                           </span>
                         </span>
                       </label>
