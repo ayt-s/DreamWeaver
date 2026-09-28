@@ -51,17 +51,19 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
     from app import events
     await events.emit(state["session_id"], "node_entered",
                       {"node_id": "video_generator", "node_name": "视频生成"})
-    video_urls = list(state.get("video_urls", []))
-    video_ids: list[str] = list(state.get("video_ids", []))
     trace = list(state.get("trace", []))
 
     # 断点恢复：`done` 之前的镜次已有 URL，默认跳过不重复提交。
-    done = len(video_urls)
+    # ★ 2026-09-24 修：判据从「下标 < 已完成数量」改成「该下标**真有 URL**」——
+    #   数组现在与 storyboard **等长对齐**（失败的镜次留空串占位，见函数末尾），
+    #   于是 `len(video_urls)` 不再等于「已成功的段数」，用它当下标闸门会把
+    #   失败的段也当成已完成而**永远跳过**（重生轮次完全空转）。
+    existing_urls = list(state.get("video_urls") or [])
 
     # 按镜次索引落位（复用段与新生段都写入对应索引），避免交错时顺序错乱。
-    # done 之前的已有 URL 先按索引放入，重建时一并保留（断点恢复语义）。
-    url_by_index: dict[int, str] = {i: u for i, u in enumerate(video_urls)}
-    id_by_index: dict[int, str] = {i: v for i, v in enumerate(video_ids)}
+    # 空串是「该段没有产物」，一律不落进索引表（否则会被当成已有产物）。
+    url_by_index: dict[int, str] = {i: u for i, u in enumerate(existing_urls) if u}
+    id_by_index: dict[int, str] = {i: v for i, v in enumerate(state.get("video_ids") or []) if v}
 
     # 收集所有 Future 和对应的 shot 信息
     pending_shots: list[tuple[int, str, asyncio.Future]] = []
@@ -73,12 +75,12 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
     submit_errors: list[str] = []
 
     for idx, shot in enumerate(state["storyboard"]):
-        # 断点恢复跳过：该索引已有 URL 且**未被标记为待重生** → 不重复提交。
+        # 断点恢复跳过：该索引**已有产物**且**未被标记为待重生** → 不重复提交。
         #
         # ⚠️ `regenerate` 必须能越过这个跳过，否则整个自愈循环是空转：
-        #   fix_looping 只清 existing_video_url，但重生轮里 `done = len(video_urls)`
-        #   仍是满的 → 失败镜被这里永远跳过（实测修复轮 0 次提交、0 次重生）。
-        if idx < done and not shot.get("regenerate"):
+        #   fix_looping 只清 existing_video_url，而重生轮里若沿用「下标 < 数量」的
+        #   判据，失败的镜会被永远跳过（实测修复轮 0 次提交、0 次重生）。
+        if idx < len(existing_urls) and existing_urls[idx] and not shot.get("regenerate"):
             continue
         # Java 侧已无人认领该会话（任务被重新生成/删除）→ 立刻停止后续提交，
         # 否则每一段都是一次白烧的 agnes 调用（回调会被 Java 按 session_id 丢弃）
@@ -171,9 +173,19 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
                 trace = trace_util.append(
                     trace, trace_util.shot("video_generator", idx), trace_util.STATUS_OK)
 
-    # 按镜次索引顺序重建，保证 video_urls / video_ids 与 storyboard 索引严格对齐
-    video_urls = [url_by_index[i] for i in sorted(url_by_index)]
-    video_ids = [id_by_index[i] for i in sorted(id_by_index)]
+    # 按镜次索引顺序重建，**与 storyboard 等长对齐**：没有产物的镜次留空串占位。
+    #
+    # ★ 2026-09-24 修（真跑任务 81 暴露）：原来用 `[url_by_index[i] for i in sorted(...)]`
+    #   —— 有段失败时数组会被**压缩**，而这段下游全都按「下标 == 镜号」取值：
+    #   · `qc_checker` 用 `enumerate(local_video_paths)` 当镜号 → 报告的「第 N 镜」指错对象
+    #     （实测：只有第 2 段成功，QC 却写「第 1 镜：画幅不符」）；
+    #   · Java `parseResultUrls` 得到压缩数组 → 与 `segments_json` 的段数不匹配 →
+    #     「重新生成」会把**成功那段的视频复用给失败那段**（更隐蔽的错配）。
+    #   `asset_fetch` 的文档把这条写成硬约束（「严格同长同序，不压缩数组」），
+    #   `image.py` 对图片也是这么做的（空串占位）—— 这里把源头补上。
+    total_shots = len(state["storyboard"])
+    video_urls = [url_by_index.get(i, "") for i in range(total_shots)]
+    video_ids = [id_by_index.get(i, "") for i in range(total_shots)]
 
     # 遍历结束，把生成阶段的错误汇总进 state，供终态节点 notify_final 一次性带回 Java。
     #
@@ -196,9 +208,10 @@ async def video_generator_node(state: CreativeSessionState) -> dict:
     # 「视频生成」永远停在"进行中"，看不出它已经收尾（trace 快照有，但两个视图
     # 的口径必须一致，否则「全链路可见」只在其中一个里成立）。
     total_shots = len(state["storyboard"])
+    ok_shots = sum(1 for u in video_urls if u)     # 空串 = 该镜没有产物（对齐用占位）
     await events.emit(state["session_id"], "node_completed", {
         "node_id": "video_generator",
-        "summary": (f"视频生成 {len(video_urls)}/{total_shots} 镜"
+        "summary": (f"视频生成 {ok_shots}/{total_shots} 镜"
                     + (f"（{len(error_msgs)} 镜失败）" if error_msgs else "")),
     })
 

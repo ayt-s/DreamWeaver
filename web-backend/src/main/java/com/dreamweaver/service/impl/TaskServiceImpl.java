@@ -594,7 +594,11 @@ public class TaskServiceImpl implements TaskService {
             return toResponse(task);
         }
         List<String> segments = taskJsonCodec.parseResultUrls(task.getResultJson());
-        if (segments.size() < 2) {
+        // ★ 2026-09-24：`result_json` 与镜次**等长对齐**（失败镜次留空串占位），
+        // 所以段数必须按**非空**计 —— 否则「3 段里 2 段失败」也会被当成够 2 段，
+        // 放行到 agent 只拼出 1 段，用户以为拼了成片、其实是丢段的产物。
+        long usable = segments.stream().filter(s -> s != null && !s.isBlank()).count();
+        if (usable < 2) {
             throw new IllegalArgumentException("分段不足 2 个，无需拼接成片");
         }
         if (task.getSessionId() == null || task.getSessionId().isBlank()) {

@@ -69,14 +69,33 @@ async def notify_final_node(state: CreativeSessionState) -> dict:
     video_urls = list(state.get("video_urls") or [])
     qc_report = state.get("qc_report")
     video_error = str(state.get("video_error") or "").strip()
+    # ★ 2026-09-24：`video_urls` 现在与 storyboard **等长对齐**（失败镜留空串占位），
+    #   所以「有没有产物」不能再判 `not video_urls`（非空列表也可能是全空串），
+    #   统一用 `any(...)` 判「至少一段真拿到产物」。
+    ok_urls = [u for u in video_urls if u]
+    total_shots = len(video_urls)
 
-    if not video_urls:
+    if not ok_urls:
         status = TaskStatus.FAILED
         error_message = video_error or "所有镜次视频生成失败"
     else:
         status = TaskStatus.COMPLETED
-        # 先取 QC 结论；QC 没跑时退回生成阶段的错误
-        error_message = summarize_qc_report(qc_report) or video_error
+        # ★ 2026-09-24 修（真跑任务 81 暴露）：原来是 `summarize_qc_report(qc) or video_error`
+        #   —— **短路**。只要 QC 有任何结论（哪怕只是一条画幅不符），生成阶段的
+        #   `video_error`（「第 1 段提交失败…」）就被整个丢掉：用户看到
+        #   「1/1 镜未通过质检」，却完全不知道**少了一段**，成片被当成正常 completed
+        #   （典型的静默降级）。现在两者都带上。
+        parts = [p for p in (summarize_qc_report(qc_report), video_error) if p]
+        error_message = "；".join(parts)
+        # 缺段必须显式说出来（有产物、但产物比镜数少）
+        if len(ok_urls) < total_shots:
+            missing = [str(i + 1) for i, u in enumerate(video_urls) if not u]
+            error_message = (f"{len(ok_urls)}/{total_shots} 镜有产物，缺少第 "
+                             f"{'、'.join(missing)} 镜"
+                             + (f"；{error_message}" if error_message else ""))
+        # Java 侧 error_message 有长度上限（512），按它的口径截断
+        if len(error_message) > 500:
+            error_message = error_message[:497] + "..."
 
     # 自动修复失败时补上「修过几轮」——用户需要知道系统自己试过、不是没管
     if state.get("fix_give_up"):
@@ -97,7 +116,7 @@ async def notify_final_node(state: CreativeSessionState) -> dict:
     # 标准模式此前**没有任何自动拼接环节** —— 画廊里平铺 N 个分段，用户得手点一次
     # 「拼接成片」（实测任务 38/39 至今没有成片）。纯本地 ffmpeg，不消耗生成额度。
     # 失败不阻断任务：分段仍可用，原因带回 Java 展示（与 synthesizer 同一降级哲学）。
-    if status == TaskStatus.COMPLETED and not state.get("segments") and len(video_urls) >= 2:
+    if status == TaskStatus.COMPLETED and not state.get("segments") and len(ok_urls) >= 2:
         from app.utils.stitch import stitch_enabled, stitch_session
 
         if stitch_enabled():

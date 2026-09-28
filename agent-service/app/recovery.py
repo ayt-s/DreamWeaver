@@ -9,8 +9,8 @@
    取 state 的，所以必须**先回填再入队**。
 2. **`progress.done` 的 url 按索引写回** storyboard / segments 各镜的 `existing_video_url`，
    并把 `state["video_urls"]`、`state["video_ids"]` 置空
-   → `video.py` 的 `done = len(video_urls)` 得到 0，逐段循环自动命中**已存在且已验证**的
-     `existing_video_url` 复用分支（零改动复用）。
+   → `video.py` 的跳过判据是「该索引**真有 URL**」，置空后一次都命中不了跳过，
+     逐段循环自动命中**已存在且已验证**的 `existing_video_url` 复用分支（零改动复用）。
    ⚠️ **必须按索引写回**，不能依赖 `enumerate` 的前缀假设——索引可能不连续
    （如 idx 0 和 2 已完成、1 还在飞）。
    ⚠️ 同时写进 `segments[idx]`，因为画布模式入口是 `canvas_storyboarder`，
@@ -85,8 +85,8 @@ def _set_pending_video(state: dict, idx: int, video_id: str) -> None:
 def merge_done_into_state(state: dict, progress: dict) -> int:
     """把 progress.done 按索引合并回 state，并把 video_urls / video_ids 置空。
 
-    ⚠️ 置空是刻意的：`video.py` 用 `done = len(video_urls)` 做断点；
-    置空后 done=0，逐段循环会走 `existing_video_url` 复用分支，从而按真实索引
+    ⚠️ 置空是刻意的：`video.py` 的跳过判据是「该索引**真有 URL**」（空串是失败占位，
+    不算产物）；置空后逐段循环会走 `existing_video_url` 复用分支，从而按真实索引
     复用已完成的段（不连续索引也正确，因为复用是逐段按 idx 判断的）。
     同时必须清 `video_ids`——否则 `id_by_index` 会残留与 url 索引错位。
 

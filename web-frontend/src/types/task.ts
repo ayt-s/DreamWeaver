@@ -228,11 +228,18 @@ export function finalVideoUrl(resultJson?: string | null): string | null {
   return null;
 }
 
-/** 分段视频 URL（去掉拼接成片），用于段列表 UI 与成片区分 */
+/** 分段视频 URL（去掉拼接成片），用于段列表 UI 与成片区分。
+ *
+ * ⚠️ 剔除空串：`video_urls` / `result_json` 是**与镜次等长对齐**的数组，
+ * 生成失败的镜次留空串占位（Java 侧按索引取段，压缩会整体错位）——
+ * 但空串在 UI 上会渲染成破视频，展示层一律剔除。
+ * 与 `parseImageUrls` 对空串的处理同一口径（那边是段重生失败的图片）。
+ */
 export function segmentVideoUrls(resultJson?: string | null): string[] {
   const urls = parseResultUrls(resultJson);
   const final = finalVideoUrl(resultJson);
-  return final ? urls.filter((u) => u !== final) : urls;
+  const segments = final ? urls.filter((u) => u !== final) : urls;
+  return segments.filter((u) => u.trim().length > 0);
 }
 
 /**

@@ -81,11 +81,15 @@ async def test_submit_failure_of_one_shot_does_not_abort_session(monkeypatch):
     result = await video_generator_node(_video_state([_shot(0), _shot(1), _shot(2)]))
 
     # 不抛异常本身就是要害：原来这里会把整个会话带成 failed
+    # ★ 2026-09-24 契约更新：数组与 storyboard **等长对齐**（失败镜留空串占位，
+    #   不再压缩）—— 下游 qc/asset_fetch/Java 全按「下标 == 镜号」取值，
+    #   压缩会让「第 N 镜」指错对象、段重生把成功段复用给失败段（真跑任务 81 暴露）。
     assert result["video_urls"] == [
         "http://mock/new/vid0.mp4",
+        "",
         "http://mock/new/vid2.mp4",
     ]
-    assert result["video_ids"] == ["vid0", "vid2"]
+    assert result["video_ids"] == ["vid0", "", "vid2"]
     # 失败原因要能被 Java 看到（error_message），并且指明是哪一段
     assert "第 2 段提交失败" in result["video_error"]
     assert "ReadTimeout" in result["video_error"]

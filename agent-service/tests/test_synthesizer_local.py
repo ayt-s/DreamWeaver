@@ -14,12 +14,13 @@ from pathlib import Path
 import pytest
 
 from app.nodes import synthesizer
+from app.state import TaskStatus
 
 
 def _make_fakes(monkeypatch, tmp_path, fail_urls=()):
     """装配 download / concat_videos / _notify_final 三个替身，返回记录容器。"""
     monkeypatch.setenv("DREAMWEAVER_OUTPUT_DIR", str(tmp_path))
-    rec = {"downloaded": [], "notified": []}
+    rec = {"downloaded": [], "notified": [], "concat": []}
 
     async def fake_download(url, dest, timeout=300.0):
         if any(bad in url for bad in fail_urls):
@@ -30,6 +31,8 @@ def _make_fakes(monkeypatch, tmp_path, fail_urls=()):
     async def fake_concat(inputs, output):
         # 必须真的写出文件：成功分支会 stat(output).st_size
         Path(output).write_bytes(b"FAKEMP4")
+        # 记录参与拼接的输入（断言「空串占位段不参与拼接」用）
+        rec["concat"].append([str(p) for p in inputs])
         return True
 
     async def fake_notify(session_id, status, video_urls, error_message=None, shot_seconds=None):
@@ -155,6 +158,55 @@ async def test_no_video_urls_without_reason_still_notifies(monkeypatch, tmp_path
 
     assert rec["notified"][0]["status"] == "failed"
     assert rec["notified"][0]["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_all_empty_placeholders_notifies_failed(monkeypatch, tmp_path):
+    """全空串对齐数组（每镜都失败）→ 也必须判 failed。
+
+    ★ 2026-09-24：`video_urls` 与镜次**等长对齐**后，「全失败」是一个**非空**列表
+    （["", ""]）。若仍用 `if not video_urls` 判空，就会走进拼接分支 → `download("")`
+    抛错 → 落到「降级透传」→ 把**全失败的会话报成 completed**（静默降级）。
+    """
+    rec = _make_fakes(monkeypatch, tmp_path)
+    out = await synthesizer.synthesizer_node({
+        "session_id": "s12",
+        "segments": [{"prompt": "a"}, {"prompt": "b"}],
+        "video_urls": ["", ""],
+        "video_error": "第 1 段提交失败: ReadTimeout；第 2 段提交失败: ReadTimeout",
+    })
+
+    assert out["status"] == TaskStatus.FAILED
+    assert rec["notified"][0]["status"] == "failed"
+    assert rec["notified"][0]["video_urls"] == []
+    assert "第 1 段提交失败" in rec["notified"][0]["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_partial_placeholders_stitch_only_real_segments(monkeypatch, tmp_path):
+    """部分段有产物（空串占位混在其中）→ 只拼接非空段，不因空串降级。"""
+    rec = _make_fakes(monkeypatch, tmp_path)
+    d = tmp_path / "s13"
+    d.mkdir()
+    for name in ("seg_000.mp4", "seg_002.mp4"):
+        (d / name).write_bytes(b"x" * 64)
+
+    out = await synthesizer.synthesizer_node({
+        "session_id": "s13",
+        "segments": [{"prompt": "a"}, {"prompt": "b"}, {"prompt": "c"}],
+        # 第 2 镜失败留空串；本地产物已存在（走复用分支，不下载）
+        "video_urls": ["http://mock/0.mp4", "", "http://mock/2.mp4"],
+        "local_video_paths": [str(d / "seg_000.mp4"), "", str(d / "seg_002.mp4")],
+    })
+
+    assert out["status"] == TaskStatus.COMPLETED
+    # 拼接只拿到 2 个真实文件（空串占位段跳过，不参与也不降级）
+    assert len(rec["concat"][-1]) == 2
+    assert rec["concat"][-1][0].endswith("seg_000.mp4")
+    assert rec["concat"][-1][1].endswith("seg_002.mp4")
+    # 回传 Java 的数组仍是**对齐**的（空串占位保留，Java 按索引取段）
+    assert rec["notified"][0]["video_urls"][1:] == ["http://mock/0.mp4", "",
+                                                    "http://mock/2.mp4"]
 
 
 @pytest.mark.asyncio

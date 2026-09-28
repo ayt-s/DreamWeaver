@@ -19,8 +19,9 @@
      `fix_history[*].used_hint` 记录本轮到哪一组
 4. **不改 `video_urls`**：失败镜的 url 由 `video.py` 重新生成时按索引覆盖。
    这里只清「复用字段」**并打上 `regenerate` 标记** —— 只清复用字段不够：
-   `video.py` 用 `done = len(video_urls)` 做断点恢复跳过，重生轮里 `video_urls`
-   仍是满的，失败镜会被永远跳过（实测：修复轮 0 次提交，纯空转）。
+   `video.py` 的跳过判据是「该索引真有 URL」（空串是失败占位），重生轮里
+   失败镜的索引本来就是空串、不会被误判成已完成，但**已成功镜**若被判定为
+   需要重生，就必须靠 `regenerate` 越过跳过（否则自愈轮纯空转）。
 5. **闸门集中判定**：`decide_repair()` 是唯一实现，`graph._fix_route` 只读结论。
    两处各写一份必然漂移，后果是无限循环或幽灵轮次（见 decide_repair 文档）。
 """
@@ -211,10 +212,10 @@ async def fix_looping_node(state: CreativeSessionState) -> dict:
         fixed.pop("existing_video_url", None)
         fixed.pop("existing_image_url", None)
         fixed.pop("pending_video_id", None)
-        # ⚠️ 光清复用字段不够：video.py 用 `done = len(video_urls)` 做断点恢复跳过，
-        #    重生轮里 video_urls 仍是满的 → 光靠 existing_video_url 判断会被跳过，
-        #    失败镜根本不会重新提交（实测：修复轮 0 次提交，纯空转）。
-        #    所以给一个**显式标记**让 video.py 越过断点恢复的跳过逻辑。
+        # ⚠️ 光清复用字段不够：失败镜的索引在 video_urls 里可能是**旧的空串**
+        #    （对齐占位），而已成功镜的索引仍是满的 —— 后者必须靠显式标记才能
+        #    越过 video.py 的「该索引真有 URL 就跳过」判据，否则自愈轮纯空转
+        #    （实测：修复轮 0 次提交）。
         fixed["regenerate"] = True
 
         # ⚠️ 修正后缀写到独立字段 `fix_hint`，**绝不改 `prompt_en`**：

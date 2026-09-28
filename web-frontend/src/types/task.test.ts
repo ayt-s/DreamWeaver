@@ -50,6 +50,23 @@ describe('finalVideoUrl / segmentVideoUrls', () => {
     expect(finalVideoUrl('not-json')).toBeNull();
     expect(segmentVideoUrls(null)).toEqual([]);
   });
+
+  /**
+   * ★ 2026-09-24 修（真跑任务 81 暴露）：`video_urls` 与镜次**等长对齐**，
+   * 生成失败的镜次留空串占位（Java 侧按索引取段，压缩会整体错位）——
+   * 但空串在画廊里会渲染成破视频，展示层必须剔除。
+   */
+  it('失败的镜次留空串占位 → 展示层剔除，不影响其它分段', () => {
+    const json = JSON.stringify([FINAL, '', SEG1]);
+    expect(finalVideoUrl(json)).toBe(FINAL);
+    expect(segmentVideoUrls(json)).toEqual([SEG1]);
+  });
+
+  it('第 1 镜失败（首元素空串）→ 不误判成成片，剩余分段照常展示', () => {
+    const json = JSON.stringify(['', SEG0]);
+    expect(finalVideoUrl(json)).toBeNull();
+    expect(segmentVideoUrls(json)).toEqual([SEG0]);
+  });
 });
 
 /**

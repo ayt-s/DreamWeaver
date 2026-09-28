@@ -94,6 +94,21 @@ class TaskStatusGateTest {
         assertTrue(e.getMessage().contains("分段不足"), e.getMessage());
     }
 
+    @Test
+    @DisplayName("★ 对齐数组的段数按**非空**计：失败镜次的占位空串不能算一段")
+    void concatCountsOnlyNonBlankSegments() {
+        Task t = task("completed");
+        // 3 段里 2 段失败（与镜次等长对齐，占位空串），实际只有 1 段产物
+        t.setResultJson("[\"\", \"https://x/a.mp4\", \"\"]");
+        t.setSessionId("s-align");
+        when(taskMapper.selectById(TASK_ID)).thenReturn(t);
+
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> service().concatTask(TASK_ID, false));
+        assertTrue(e.getMessage().contains("分段不足"),
+                "占位空串被当成分段 → 会放行去拼一条只剩 1 段的「成片」，实际: " + e.getMessage());
+    }
+
     // -------------------------------------------------------------- 草稿
 
     @Test

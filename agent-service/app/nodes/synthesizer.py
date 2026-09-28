@@ -57,7 +57,11 @@ async def synthesizer_node(state: CreativeSessionState) -> dict:
                       {"node_id": "synthesizer", "node_name": "多镜拼接"})
 
     video_urls = list(state.get("video_urls", []))
-    if not video_urls:
+    # ★ 2026-09-24：数组与镜次**等长对齐**（失败镜留空串占位），所以不能用
+    #   `not video_urls` 判「有没有产物」—— 全空串的非空列表会被当成有产物，
+    #   接着 `download("")` 抛错落进「降级透传」分支，最终把**全失败的会话报成
+    #   completed**（静默降级）。统一用 any(...)。
+    if not any(video_urls):
         # 画布模式全镜失败会走到这里。A9 把 video_generator 的终态回调挪走后，
         # 本分支必须自己补发失败态 —— 否则整条链路一次回调都不发，
         # Java 任务会一直卡在 queued，只能等看门狗兜底成 interrupted。
@@ -78,6 +82,11 @@ async def synthesizer_node(state: CreativeSessionState) -> dict:
     reused = 0
     try:
         for i, url in enumerate(video_urls):
+            # 对齐数组里的空串 = 该镜**没有产物**（不是上传失败）→ 跳过不入列，
+            # 否则 `download("")` 会抛错、整条拼接降级透传
+            if not str(url or "").strip():
+                logger.warning("synthesizer: 第 %d 段无产物（占位空串），跳过", i + 1)
+                continue
             candidate = ""
             if i < len(local_raw) and local_raw[i]:
                 candidate = str(local_raw[i]).strip()
@@ -106,7 +115,8 @@ async def synthesizer_node(state: CreativeSessionState) -> dict:
                           {"progress": 100, "phase": "拼接完成"})
         logger.info("synthesizer: 长视频生成 %s (%d bytes)", final_url, final_mp4.stat().st_size)
         await events.emit(session_id, "node_completed",
-                          {"node_id": "synthesizer", "summary": f"拼接 {len(video_urls)} 段为长视频"})
+                          {"node_id": "synthesizer",
+                           "summary": f"拼接 {len(local_files)} 段为长视频"})
 
         # 最终回调：长视频在前，分段在后（Java 任务 result_json 全量落库）
         # 质检结论随这条回调带回 —— 画布模式也过 QC 了（只报告不重生），
