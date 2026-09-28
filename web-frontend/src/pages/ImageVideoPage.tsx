@@ -153,6 +153,14 @@ interface ImageNodeData {
    */
   dialogue?: string;
   dialogueSpeaker?: string;
+  /**
+   * 视频提示词（★ 2026-09-24）：用户可在此覆盖「由本段描述改写」的那条视频提示词。
+   *
+   * 留空 = 保持原行为（用 `prompt` 走视频规范改写）。填了就以它为准改写 ——
+   * 台词 / 运镜 / 声音约束仍由 agent 确定性补上，用户不必也不能在这里管那些。
+   * 小说转画布时由后端预填（`compose_video_prompt` 的中文产物）。
+   */
+  videoPrompt?: string;
 }
 
 type GraphNode = Node<any>;
@@ -963,6 +971,24 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
         className={textareaCls + ' mb-2'}
       />
 
+      {/* 视频提示词（★ 2026-09-24）：默认折叠。留空 = 用上面的「本段描述」自动改写；
+          填了就以它为准（台词/运镜/声音约束仍由 agent 补）。
+          summary 必须带 nodrag：它是可点元素，React Flow 会把它当拖拽起点。 */}
+      <details className="mb-2 rounded-lg border border-slate-200 bg-slate-50/60">
+        <summary className="nodrag cursor-pointer select-none px-2 py-1 text-[11px] text-slate-500 hover:text-slate-700">
+          视频提示词{data.videoPrompt?.trim() ? '（已自定义）' : '（跟随本段描述）'} →
+        </summary>
+        <div className="px-2 pb-2">
+          <textarea
+            value={data.videoPrompt ?? ''}
+            onChange={(e) => patch({ videoPrompt: e.target.value })}
+            rows={5}
+            placeholder="留空 = 用上面的描述按视频规范改写；填了就用你写的这条"
+            className={textareaCls}
+          />
+        </div>
+      </details>
+
       <div className="flex items-center gap-1.5">
         <button
           onClick={() => fileRef.current?.click()}
@@ -1698,6 +1724,8 @@ export default function CanvasPage() {
       /** 台词原文 + 说话人（★ 2026-09-24）：随段提交，agent 逐字写进视频提示词 */
       dialogue?: string;
       dialogue_speaker?: string;
+      /** 用户自定义的视频提示词（中文，★ 2026-09-24）：有则 agent 以它为准改写 */
+      video_prompt_cn?: string;
     }> = [];
     const texts: string[] = [];
     // ★ 2026-09-19 修（#21）：「每段时长」是**全链**设置，必须先扫出来再用。
@@ -1734,6 +1762,8 @@ export default function CanvasPage() {
         const prompt = img.prompt.trim() || promptFromText;
         // ★ 2026-09-24：台词随段提交（节点上没台词就不写字段，避免给 agent 塞空串）
         const dialogue = (img.dialogue || '').trim();
+        // ★ 2026-09-24：用户自定义的视频提示词（留空 = 由 prompt 自动改写）
+        const videoPromptCn = (img.videoPrompt || '').trim();
         segments.push({
           image_url: img.imageUrl.trim(),
           prompt,
@@ -1744,6 +1774,7 @@ export default function CanvasPage() {
           ...(dialogue
             ? { dialogue, dialogue_speaker: (img.dialogueSpeaker || '').trim() }
             : {}),
+          ...(videoPromptCn ? { video_prompt_cn: videoPromptCn } : {}),
         });
       }
     }

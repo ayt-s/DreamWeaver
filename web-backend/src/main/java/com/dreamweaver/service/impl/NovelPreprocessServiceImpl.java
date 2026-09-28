@@ -306,6 +306,10 @@ public class NovelPreprocessServiceImpl implements NovelPreprocessService {
             //   agent（agent 逐字写进视频提示词）；不出图，所以只在非空时写。
             putIfNotBlank(imgData, "dialogue", seg.getDialogue());
             putIfNotBlank(imgData, "dialogueSpeaker", seg.getDialogueSpeaker());
+            // ★ 2026-09-24：视频提示词也落进节点 —— 画布上有个「视频提示词」编辑框，
+            //   留空即跟随本段描述。此前 agent 的视频提示词是提交时现生成的，用户
+            //   既看不到也改不了（节点 data.prompt 存的是图像提示词）。
+            putIfNotBlank(imgData, "videoPrompt", seg.getVideoPrompt());
             imgNode.put("data", imgData);
             nodes.add(imgNode);
         }

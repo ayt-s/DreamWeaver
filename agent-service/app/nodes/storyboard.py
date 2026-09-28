@@ -80,6 +80,15 @@ def _dialogue_of(src: dict) -> tuple[str, str]:
     return text, who
 
 
+def _custom_video_prompt(src: dict) -> str:
+    """用户在画布节点上写的**视频提示词**（空 = 没自定义，走「本段描述」改写）。
+
+    ★ 2026-09-24：画布节点新增该编辑框 —— 此前视频提示词是每次提交时现生成的，
+      用户既看不到也改不了（`data.prompt` 存的是图像提示词）。
+    """
+    return str(src.get("video_prompt_cn") or src.get("videoPromptCn") or "").strip()
+
+
 def _decorate_prompt(
     base: str,
     role: list[str] | tuple[str, ...] = (),
@@ -241,15 +250,19 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
         en_prompt = str(seg.get("prompt_en", "")).strip()
         video_en = str(seg.get("video_prompt_en", "")).strip()
         if not en_prompt or not video_en:
-            cn_description = build_cn_description([cn], style_prompt=style_prompt,
-                                                  negative_prompt=seg_negative)
+            # 图像/参考提示词固定来自「本段描述」（+ 全局风格/段级负面词）
+            img_cn = build_cn_description([cn], style_prompt=style_prompt,
+                                          negative_prompt=seg_negative)
             if not en_prompt:
-                en_prompt = await translate_to_en(cn_description)
+                en_prompt = await translate_to_en(img_cn)
             if not video_en:
                 # ★ 2026-09-24：视频提示词按 Agnes Video 2.5 规范改写（时长+画幅头 /
                 #   时间轴分段 / 声音段）—— 画布链路没有出图环节，这条正文就是提交给
                 #   agnes 的那条；此前它是「图像提示词整段翻译」，没有时间轴与声音。
-                video_en = await video_prompt_from(cn_description, seconds=seconds,
+                #   用户在节点上自定义了视频提示词时以它为准（不再叠风格/负面词 ——
+                #   那两样在自定义正文里通常已经有了；图像那条不受影响）。
+                video_cn = _custom_video_prompt(seg) or img_cn
+                video_en = await video_prompt_from(video_cn, seconds=seconds,
                                                    aspect_ratio=ratio, camera_en=camera_en,
                                                    dialogue=_dlg_text, speaker=_dlg_who)
             # 元素绑定：按**这一段真实的参考图数组**现算 <Picture N>（见 prompting.py）
@@ -267,6 +280,8 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
             # 「勾选重生」成对清掉派生译文，这两个原文字段跟着描述一起留/清）
             "dialogue": _dlg_text,
             "dialogue_speaker": _dlg_who,
+            # 用户自定义的视频提示词（原文输入，空串 = 跟随本段描述）
+            "video_prompt_cn": _custom_video_prompt(seg),
             "mode": "reference" if ref_images else "text",
             "seconds": str(seconds),
             "aspect_ratio": ratio,

@@ -228,6 +228,10 @@ def _parse_segments(raw: str | None) -> list:
                 "dialogue": str(s.get("dialogue") or s.get("dialogueText") or "").strip(),
                 "dialogue_speaker": str(s.get("dialogue_speaker")
                                         or s.get("dialogueSpeaker") or "").strip(),
+                # ★ 2026-09-24：用户自定义的视频提示词（画布节点编辑框）。
+                #   有则 agent 以它为准改写，不再用本段描述。同样是白名单键，加了才透传。
+                "video_prompt_cn": str(s.get("video_prompt_cn")
+                                       or s.get("videoPromptCn") or "").strip(),
             })
         return segments
     except json.JSONDecodeError:

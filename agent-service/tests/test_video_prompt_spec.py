@@ -300,6 +300,47 @@ def test_parse_segments_keeps_dialogue():
     assert segs[0]["dialogue_speaker"] == "陈浔", "camelCase 也要认"
 
 
+def test_parse_segments_keeps_custom_video_prompt():
+    from app.main import _parse_segments
+
+    segs = _parse_segments(json.dumps([{
+        "image_url": "http://x/a.png", "prompt": "描述", "seconds": 5,
+        "video_prompt_cn": "我写的视频提示词",
+    }]))
+
+    assert segs[0]["video_prompt_cn"] == "我写的视频提示词"
+
+
+@pytest.mark.asyncio
+async def test_custom_video_prompt_overrides_segment_description(monkeypatch):
+    """用户在节点上写的视频提示词优先；**图像那条不受影响**（仍来自本段描述）。"""
+    monkeypatch.setattr(sb, "translate_to_en", _echo_translate)
+    state = _canvas_state()
+    state["segments"] = [{
+        "image_url": FIRST, "prompt": "本段描述里的画面", "seconds": 5,
+        "video_prompt_cn": "我自定义的视频提示词正文",
+    }]
+
+    shot = (await sb.canvas_storyboarder_node(state))["storyboard"][0]
+
+    assert "我自定义的视频提示词正文" in shot["video_prompt_en"]
+    assert "本段描述里的画面" not in shot["video_prompt_en"], "自定义后不该再混入原描述"
+    assert "本段描述里的画面" in shot["prompt_en"], "图像提示词仍须来自本段描述"
+    assert shot["video_prompt_cn"] == "我自定义的视频提示词正文", "原文要随段落库回传"
+
+
+@pytest.mark.asyncio
+async def test_no_custom_video_prompt_falls_back_to_description(monkeypatch):
+    monkeypatch.setattr(sb, "translate_to_en", _echo_translate)
+    state = _canvas_state()
+    state["segments"] = [{"image_url": FIRST, "prompt": "本段描述里的画面", "seconds": 5}]
+
+    shot = (await sb.canvas_storyboarder_node(state))["storyboard"][0]
+
+    assert "本段描述里的画面" in shot["video_prompt_en"]
+    assert shot["video_prompt_cn"] == ""
+
+
 def test_novel_segment_schema_has_dialogue_defaults():
     """小说分镜 schema：LLM 漏给台词时必须是空串，不能让校验炸掉整次预处理。"""
     from app.novel.storyboarder import NovelSegmentPydantic
