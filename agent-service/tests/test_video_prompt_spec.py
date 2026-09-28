@@ -12,6 +12,8 @@
   4. video_generator 取 `video_prompt_en`，缺失时回退 `prompt_en`（老会话）
 """
 
+import json
+
 import pytest
 
 from app.nodes import storyboard as sb
@@ -190,6 +192,21 @@ def test_video_generator_falls_back_for_old_sessions():
 
 def test_fix_hint_still_appended_to_video_prompt():
     assert vb._effective_prompt({"video_prompt_en": "V", "fix_hint": " H"}) == "V H"
+
+
+# ============================ 段重生：video_prompt_en 必须能穿过 API 白名单 ============================
+
+def test_parse_segments_keeps_video_prompt():
+    """`_parse_segments` 是**白名单** dict —— 不加这个键，Java 侧保留的复用译文会被静默丢掉。"""
+    from app.main import _parse_segments
+
+    segs = _parse_segments(json.dumps([{
+        "image_url": "http://x/a.png", "prompt": "描述",
+        "prompt_en": "IMG", "video_prompt_en": "VID", "seconds": 5,
+    }]))
+
+    assert segs[0]["prompt_en"] == "IMG"
+    assert segs[0]["video_prompt_en"] == "VID", "复用段要能跳过视频改写那次 LLM 调用"
 
 
 # ============================ 小说链路的中文视频提示词 ============================

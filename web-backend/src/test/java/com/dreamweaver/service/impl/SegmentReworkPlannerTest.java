@@ -40,7 +40,7 @@ class SegmentReworkPlannerTest {
 
     // ---------------------------------------------------------------- 构造工具
 
-    /** 造 3 段配置：每段带 prompt / prompt_en / camera */
+    /** 造 3 段配置：每段带 prompt / prompt_en / video_prompt_en / camera */
     private String segmentsJson(int n) {
         StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < n; i++) {
@@ -49,6 +49,8 @@ class SegmentReworkPlannerTest {
             }
             sb.append("{\"prompt\":\"描述").append(i).append("\",")
               .append("\"prompt_en\":\"en").append(i).append("\",")
+              // 视频提示词（agent 的 storyboard 现在两个字段都给，见 nodes/storyboard.py）
+              .append("\"video_prompt_en\":\"vid").append(i).append("\",")
               .append("\"seconds\":\"5\"}");
         }
         return sb.append(']').toString();
@@ -96,6 +98,9 @@ class SegmentReworkPlannerTest {
         assertEquals("新中文描述", get(seg1, "prompt"), "新描述必须覆盖 prompt");
         // 中文改了 → 旧译文失效，必须删掉让 agent 重新翻译
         assertNull(get(seg1, "prompt_en"), "改了描述就必须清 prompt_en 重新翻译");
+        // ★ 2026-09-24：video_prompt_en 是同一份中文描述的另一条派生译文，
+        //   漏删 = 视频仍按旧描述生成（画面与用户改后的描述不符，且没有任何报错）
+        assertNull(get(seg1, "video_prompt_en"), "改了描述也必须清 video_prompt_en");
         assertNull(get(seg1, SegmentReworkPlanner.KEY_EXISTING_VIDEO));
         assertNull(get(seg1, SegmentReworkPlanner.KEY_EXISTING_IMAGE));
 
@@ -134,6 +139,11 @@ class SegmentReworkPlannerTest {
         assertNull(get(plan.segments().get(0), SegmentReworkPlanner.KEY_EXISTING_IMAGE));
         // 复用段的 prompt_en 保留（没有重新翻译的必要）
         assertNotNull(get(plan.segments().get(0), "prompt_en"));
+        // ★ 2026-09-24：复用段的 video_prompt_en 同样保留 —— agent 侧据此**跳过视频改写
+        //   的那次 LLM 调用**（描述没变，改了才是浪费额度）
+        assertNotNull(get(plan.segments().get(0), "video_prompt_en"),
+                "复用段保留 video_prompt_en，agent 才能跳过改写调用");
+        assertNull(get(plan.segments().get(1), "video_prompt_en"), "勾选段必须清掉它");
     }
 
     @Test

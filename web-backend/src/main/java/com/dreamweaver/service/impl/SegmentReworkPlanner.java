@@ -48,6 +48,15 @@ public class SegmentReworkPlanner {
     static final String KEY_EXISTING_IMAGE = "existing_image_url";
     /** 改了中文描述后旧译文失效，必须删掉让 agent 重新翻译 */
     static final String KEY_PROMPT_EN = "prompt_en";
+    /**
+     * 视频提示词（Agnes Video 2.5 规范改写产物，2026-09-24 起单开此字段）。
+     *
+     * <p>它和 {@code prompt_en} 是**同一份中文描述的两个派生译文**（一个喂出图、
+     * 一个喂视频），所以生命周期完全一致：描述一改两者都失效、复用段两者都保留。
+     * ⚠️ 漏删的后果不是『多花一次翻译』而是**画面与提示词不符**：用户改了描述、
+     * 视频仍按旧描述生成。
+     */
+    static final String KEY_VIDEO_PROMPT_EN = "video_prompt_en";
 
     private final TaskJsonCodec taskJsonCodec;
 
@@ -101,19 +110,21 @@ public class SegmentReworkPlanner {
             Map<String, Object> seg = new HashMap<>(segs.get(i));
             if (reworkSet.contains(i)) {
                 applyEditedPrompt(seg, editedPrompts, i);
-                // ⚠️ 重生段**无条件**清掉 prompt_en（即便是没改描述的情况）：
-                //    它是「用户修改前的中文描述」的旧译文，重生场景下不能信任。
+                // ⚠️ 重生段**无条件**清掉两个派生译文（即便是没改描述的情况）：
+                //    它们是「用户修改前的中文描述」的旧译文，重生场景下不能信任。
                 //    （原实现同样是无条件删除，重构时别把它挪进 if 里 —— 会回归。）
-                seg.remove(KEY_PROMPT_EN);
+                clearDerivedPrompts(seg);
                 clearReuseFields(seg);
                 effectiveRework.add(i);
             } else if (i < existingUrls.size() && isUsable(existingUrls.get(i))) {
                 // 未勾选且有历史产物 → 复用（下游不再重新生成，省额度）
+                // 派生译文（prompt_en / video_prompt_en）**保留**：复用段描述没变，
+                // agent 侧据此跳过翻译与视频改写（各一次 LLM 调用）。
                 seg.put(imageTask ? KEY_EXISTING_IMAGE : KEY_EXISTING_VIDEO, existingUrls.get(i));
             } else {
                 // 未勾选但**拿不到**可复用的历史产物（历史上生成失败/产物缺失/索引越界）：
                 // 必须视为需要重生 —— 否则这一段永远修不好
-                seg.remove(KEY_PROMPT_EN);
+                clearDerivedPrompts(seg);
                 clearReuseFields(seg);
                 effectiveRework.add(i);
             }
@@ -128,7 +139,7 @@ public class SegmentReworkPlanner {
         return new ReworkPlan(out, taskJsonCodec.toJsonString(out), effectiveRework);
     }
 
-    /** 用用户改过的中文描述覆盖 prompt（清 prompt_en 由调用方统一做，见上面的说明） */
+    /** 用用户改过的中文描述覆盖 prompt（清派生译文由调用方统一做，见上面的说明） */
     private static void applyEditedPrompt(Map<String, Object> seg,
                                           Map<String, String> editedPrompts, int index) {
         String edited = editedPrompts == null ? null : editedPrompts.get(String.valueOf(index));
@@ -136,6 +147,17 @@ public class SegmentReworkPlanner {
             return;
         }
         seg.put("prompt", edited);
+    }
+
+    /**
+     * 清掉中文描述的两个派生译文（图像 {@code prompt_en} + 视频 {@code video_prompt_en}）。
+     *
+     * <p>⚠️ 必须成对清：只清一个会让另一条按**旧描述**生成（用户改了描述、画面却不变），
+     * 且这类错配极难发现 —— 两个字段名不同、都在同一个 dict 里，漏一个不会有任何报错。
+     */
+    private static void clearDerivedPrompts(Map<String, Object> seg) {
+        seg.remove(KEY_PROMPT_EN);
+        seg.remove(KEY_VIDEO_PROMPT_EN);
     }
 
     private static void clearReuseFields(Map<String, Object> seg) {

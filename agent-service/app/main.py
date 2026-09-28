@@ -211,6 +211,11 @@ def _parse_segments(raw: str | None) -> list:
                 "existing_video_url": str(s.get("existing_video_url") or "").strip(),
                 # 预翻译英文提示词（段重生时 storyboard 已带，跳过 LLM 翻译）
                 "prompt_en": str(s.get("prompt_en", "")).strip(),
+                # ★ 2026-09-24：视频提示词（Agnes Video 2.5 规范改写产物）也要透传 ——
+                #   段重生的**复用段**带着它，canvas_storyboarder 就能跳过改写那次 LLM
+                #   调用（Java 侧 SegmentReworkPlanner 只在「勾选重生」时才清掉它）。
+                #   ⚠️ 这里是白名单 dict：不加这一行，上游传了也会被静默丢掉。
+                "video_prompt_en": str(s.get("video_prompt_en", "")).strip(),
                 # 该段已有图片 URL（图片任务段重生复用）
                 "existing_image_url": str(s.get("existing_image_url") or "").strip(),
                 # 可灵式结构化运镜：{shot_size, angle, movement}
