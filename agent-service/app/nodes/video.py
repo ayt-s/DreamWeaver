@@ -21,14 +21,19 @@ logger = logging.getLogger(__name__)
 
 
 def _effective_prompt(shot: dict) -> str:
-    """提交时用的实际提示词 = 原始 prompt_en + 本轮修正后缀（fix_hint）。
+    """提交时用的实际提示词 = 本镜的**视频提示词** + 本轮修正后缀（fix_hint）。
 
-    **为什么分开存**：`storyboard` 会被 `notify_final` 当作 `segments_json` 交给 Java，
-    那是「按段重生」的输入基线。把修正后缀直接追加进 `prompt_en` 会污染这个基线，
-    而且每轮修复都会再叠加一次、prompt 持续膨胀漂移。
+    ★ 2026-09-24：优先取 `video_prompt_en`（storyboard 按 Agnes Video 2.5 规范改写：
+      时长+画幅头 / 时间轴分段 / 声音段），回退到 `prompt_en`（老会话/老 storyboard
+      里没有这个字段）。两者分开存是因为 `prompt_en` 还要喂 image_generator 出图 ——
+      视频规范那份提示词对图像模型只是噪音（见 nodes/storyboard.py 的说明）。
+
+    **为什么 fix_hint 分开存**：`storyboard` 会被 `notify_final` 当作 `segments_json`
+    交给 Java，那是「按段重生」的输入基线。把修正后缀直接追加进 `prompt_en` 会污染这个
+    基线，而且每轮修复都会再叠加一次、prompt 持续膨胀漂移。
     所以 `fix_looping` 只写 `fix_hint`（覆盖式），拼接发生在这里。
     """
-    base = str(shot.get("prompt_en") or "")
+    base = str(shot.get("video_prompt_en") or shot.get("prompt_en") or "")
     hint = str(shot.get("fix_hint") or "")
     return f"{base}{hint}" if hint else base
 

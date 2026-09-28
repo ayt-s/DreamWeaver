@@ -131,6 +131,9 @@ class CreateVideoTaskRequest(BaseModel):
     lock_first_frame: Optional[bool] = None
     # 段间衔接（默认关）：把下一段的首帧当本段尾帧，让相邻段首尾接得上
     chain_frames: Optional[bool] = None
+    # 背景音乐开关（None/False = **不添加**，视频提示词里写明排除；True = 让模型自行配乐）。
+    # 不写这一句时模型会自己配 BGM，而每段各自配 → 成片音轨段段不同。
+    bgm: Optional[bool] = None
 
 
 class CreateVideoTaskResponse(BaseModel):
@@ -527,6 +530,9 @@ async def create_video_task(req: CreateVideoTaskRequest) -> ApiResponse:
         # 首帧锁定：None（未传）按开 —— 有首帧图时这才是「视频从这张图长出来」的路
         "lock_first_frame": True if req.lock_first_frame is None else bool(req.lock_first_frame),
         "chain_frames": bool(req.chain_frames),
+        # 背景音乐：None（未传）按关 = 提示词里明确写「不要额外添加背景音乐」
+        # （每段各自配的 BGM 拼在一起是段段不同的曲子；见 state.py 的说明）
+        "bgm": bool(req.bgm),
         "status": TaskStatus.QUEUED,
         "fix_round": 0,
         "max_fix_rounds": 3,

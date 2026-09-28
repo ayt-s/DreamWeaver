@@ -14,10 +14,13 @@ from app.gateway.agnes import gateway
 from app.nodes.script import _coerce_int
 from app.state import CreativeSessionState, TaskStatus
 from app.utils.prompting import (
+    FIRST_FRAME_EN,
     build_cn_description,
     build_reference_bindings,
+    build_video_rewrite_input,
     camera_phrase,
     normalize_camera_spec,
+    sound_clause,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,6 +28,8 @@ logger = logging.getLogger(__name__)
 # Agnes 视频时长合法范围：4~12 秒（实测 API 返回 "seconds must be in [4, 12]"）
 MIN_SECONDS = 4
 MAX_SECONDS = 12
+# 标准模式画幅（画布模式取每段自己的 aspect_ratio）
+STANDARD_ASPECT_RATIO = "16:9"
 
 TRANSLATE_TEMPLATE = (
     "Translate the following Chinese video description to an English video-generation "
@@ -33,12 +38,59 @@ TRANSLATE_TEMPLATE = (
 
 
 async def translate_to_en(text: str) -> str:
+    """中文 → 英文提示词（**唯一的 LLM 出口**，两条链路都从这里走）。
+
+    ⚠️ 视频链路（`video_prompt_from`）刻意复用本函数，而不是另开一个 LLM 出口：
+    测试只要 patch 这一处就能拦下 storyboard 的全部 LLM 调用（见
+    tests/test_first_frame_and_ratio.py 的 `_fake_translate`）。
+    """
     resp = await gateway.chat(
         TRANSLATE_TEMPLATE.format(text=text),
         model=settings.text_model,
         temperature=0.1,
     )
     return resp.strip()
+
+
+async def video_prompt_from(
+    cn_description: str, seconds: object, aspect_ratio: object, camera_en: str = ""
+) -> str:
+    """中文分镜描述 → 英文**视频**提示词（Agnes Video 2.5 规范）。
+
+    ★ 2026-09-24：此前视频提交的是「图像提示词整段翻译」—— 实测 payload 里
+      没有时间轴、没有任何声音指令（而产物 ffprobe 全带 aac 音轨，即 BGM 由模型
+      自由发挥、段段不同）。这里按官方规范（时长+画幅头 / 核心创意 / 时间轴分段 /
+      声音段 / 一镜到底）改写一次。
+
+    `camera_en` 注入模板内部（不事后追加）：实测事后追加会得到
+    「…watermark., medium shot, slow push-in」——运镜重复、且把排除句挤出末位。
+    """
+    return await translate_to_en(
+        build_video_rewrite_input(cn_description, seconds, aspect_ratio, camera_en))
+
+
+def _decorate_prompt(
+    base: str,
+    role: list[str] | tuple[str, ...] = (),
+    keep: list[str] | tuple[str, ...] = (),
+    camera_en: str = "",
+    sound: str = "",
+) -> str:
+    """给提示词补**确定性**后缀：元素绑定 → 运镜 → 声音段（顺序固定、逐字拼接）。
+
+    ⚠️ 一律不经 LLM：`<Picture N>` 绑定、运镜术语、声音排除句被模型改写就失去意义
+    （排除句尤其如此 —— 文档要求它是个明确的反向约束）。
+    """
+    out = str(base or "").strip()
+    if role:
+        out = f"{role[0]} {out}"
+    if keep:
+        out = f"{out} {keep[0]}"
+    if camera_en:
+        out = f"{out}, {camera_en}"
+    if sound:
+        out = f"{out} {sound}"
+    return out
 
 
 def _control_context(state: CreativeSessionState) -> tuple[str, str, list[str], list[str]]:
@@ -86,27 +138,34 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
             style_prompt=style_prompt,
             negative_prompt=negative_prompt,
         )
-        en_prompt = await translate_to_en(cn_description)
-        # 元素语义绑定：<Picture N> 角色定义放句首（agnes 官方推荐显式点名每个占位符）
-        if role_clauses:
-            en_prompt = f"{role_clauses[0]} {en_prompt}"
-        if keep_clauses:
-            en_prompt = f"{en_prompt} {keep_clauses[0]}"
-        # 确定性英文运镜片段（翻译之后再拼，保证术语精确）
-        if global_camera_en:
-            en_prompt = f"{en_prompt}, {global_camera_en}"
         # 时长钳制到 [4, 12]：分镜可能给 2-3s 短镜，但 Agnes 下限是 4s
         raw_seconds = _coerce_int(shot.get("duration")) or 5
         seconds = max(MIN_SECONDS, min(raw_seconds, MAX_SECONDS))
+        # 图像/参考提示词（纯翻译）
+        en_prompt = await translate_to_en(cn_description)
+        # ★ 2026-09-24：视频规范提示词单开一个字段 —— 本节点产出的 `prompt_en` 还要
+        #   喂 `image_generator` 出图（nodes/image.py:396），把时间轴/声音塞进去对图像
+        #   模型只是噪音。视频提示词只在 video_generator 里消费（见 nodes/video.py）。
+        video_en = await video_prompt_from(cn_description, seconds=seconds,
+                                           aspect_ratio=STANDARD_ASPECT_RATIO,
+                                           camera_en=global_camera_en)
+        # 元素语义绑定：<Picture N> 角色定义放句首（agnes 官方推荐显式点名每个占位符）
+        # 确定性英文运镜片段：翻译之后再拼，保证术语精确
+        en_prompt = _decorate_prompt(en_prompt, role_clauses, keep_clauses, global_camera_en)
+        # 视频那条**不再事后追加运镜**（已注入改写模板内部，见 video_prompt_from）；
+        # 声音段必须是最后一句（文档：末尾约束权重最高）
+        video_en = _decorate_prompt(video_en, role_clauses, keep_clauses,
+                                    sound=sound_clause(bool(state.get("bgm"))))
         # mode 和 reference_images 的填充规则：
         # - 用户传了参考图 → 用用户图，走 mode="reference"（agnès 参考模式）
         # - 否则留空，由 image_generator 节点自动生图回填
         storyboard.append({
             "shot_id": shot.get("shot_id", len(storyboard)),
             "prompt_en": en_prompt,
+            "video_prompt_en": video_en,
             "mode": "reference" if user_ref_images else "text",
             "seconds": str(seconds),
-            "aspect_ratio": "16:9",
+            "aspect_ratio": STANDARD_ASPECT_RATIO,
             "reference_images": list(user_ref_images),
             "cn_description": cn_description,
             # 精细控制参数随段落库（段重生时原样复用）
@@ -155,26 +214,34 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
         seg_negative = str(seg.get("negative_prompt") or "").strip() or negative_prompt
         camera_spec = normalize_camera_spec(seg.get("camera_spec"))
         camera_en = camera_phrase(camera_spec)
-        # 段重生时 storyboard 已带 prompt_en，直接复用（跳过 LLM 翻译，省额度）
-        en_prompt = str(seg.get("prompt_en", "")).strip()
-        if not en_prompt:
-            cn_description = build_cn_description([cn], style_prompt=style_prompt,
-                                                  negative_prompt=seg_negative)
-            en_prompt = await translate_to_en(cn_description)
-            # 元素绑定：按**这一段真实的参考图数组**现算 <Picture N>（见 prompting.py）
-            seg_role, seg_keep = build_reference_bindings(bindings, ref_images)
-            if seg_role:
-                en_prompt = f"{seg_role[0]} {en_prompt}"
-            if seg_keep:
-                en_prompt = f"{en_prompt} {seg_keep[0]}"
-            if camera_en:
-                en_prompt = f"{en_prompt}, {camera_en}"
+        # 段重生时 storyboard 已带 prompt_en / video_prompt_en，直接复用（跳过 LLM，省额度）
         raw_seconds = _coerce_int(seg.get("seconds")) or 5
         seconds = max(MIN_SECONDS, min(raw_seconds, MAX_SECONDS))
-        ratio = str(seg.get("aspect_ratio") or "16:9").strip() or "16:9"
+        ratio = str(seg.get("aspect_ratio") or STANDARD_ASPECT_RATIO).strip() or STANDARD_ASPECT_RATIO
+        en_prompt = str(seg.get("prompt_en", "")).strip()
+        video_en = str(seg.get("video_prompt_en", "")).strip()
+        if not en_prompt or not video_en:
+            cn_description = build_cn_description([cn], style_prompt=style_prompt,
+                                                  negative_prompt=seg_negative)
+            if not en_prompt:
+                en_prompt = await translate_to_en(cn_description)
+            if not video_en:
+                # ★ 2026-09-24：视频提示词按 Agnes Video 2.5 规范改写（时长+画幅头 /
+                #   时间轴分段 / 声音段）—— 画布链路没有出图环节，这条正文就是提交给
+                #   agnes 的那条；此前它是「图像提示词整段翻译」，没有时间轴与声音。
+                video_en = await video_prompt_from(cn_description, seconds=seconds,
+                                                   aspect_ratio=ratio, camera_en=camera_en)
+            # 元素绑定：按**这一段真实的参考图数组**现算 <Picture N>（见 prompting.py）
+            # 声音段：确定性后缀（已排除运镜 —— 它注入了改写模板内部），
+            # BGM 开关关闭时明确排除背景音乐，且必须是最后一句
+            seg_role, seg_keep = build_reference_bindings(bindings, ref_images)
+            en_prompt = _decorate_prompt(en_prompt, seg_role, seg_keep, camera_en)
+            video_en = _decorate_prompt(video_en, seg_role, seg_keep,
+                                        sound=sound_clause(bool(state.get("bgm"))))
         storyboard.append({
             "shot_id": idx,
             "prompt_en": en_prompt,
+            "video_prompt_en": video_en,
             "mode": "reference" if ref_images else "text",
             "seconds": str(seconds),
             "aspect_ratio": ratio,
@@ -222,13 +289,22 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
             #   子句文本由 build_reference_bindings 现算，与注入时同一来源）。
             #   设计上本就不指望绑定在锁定首帧时生效 —— 跨段一致性由每段已被用户认可的首帧图承担。
             _seg_refs = list(sb_shot.get("reference_images") or [])
-            if _seg_refs and sb_shot.get("prompt_en"):
+            if _seg_refs:
                 _role, _keep = build_reference_bindings(bindings, _seg_refs)
-                for _clause in (*_role, *_keep):
-                    _clause = str(_clause).strip()
-                    if _clause:
-                        sb_shot["prompt_en"] = sb_shot["prompt_en"].replace(_clause, "")
-                sb_shot["prompt_en"] = " ".join(sb_shot["prompt_en"].split())
+                _dead = [str(c).strip() for c in (*_role, *_keep) if str(c).strip()]
+                # ★ 2026-09-24：两个提示词字段都要清 —— `video_prompt_en` 里同样带着
+                #   这批指向不存在图片的悬空引用（它才是实际提交给 agnes 的那条）。
+                for _field in ("prompt_en", "video_prompt_en"):
+                    _text = str(sb_shot.get(_field) or "")
+                    if not _text:
+                        continue
+                    for _clause in _dead:
+                        _text = _text.replace(_clause, "")
+                    sb_shot[_field] = " ".join(_text.split())
+            # ★ 2026-09-24：keyframe（只给首帧）按官方语义是「只补首帧之后的动作/光影/声音」，
+            #   补一句确定性说明，免得模型按 reference 的理解重构图、重计时。
+            if sb_shot.get("video_prompt_en"):
+                sb_shot["video_prompt_en"] = f"{sb_shot['video_prompt_en']} {FIRST_FRAME_EN}"
             # 段间衔接：下一段的首帧当本段尾帧（last_frame）——让相邻段首尾接得上。
             # 默认关：强制结尾构图会压住本段的运动，不是所有题材都想要。
             if chain and idx + 1 < len(storyboard):

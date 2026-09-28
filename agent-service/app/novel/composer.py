@@ -18,6 +18,8 @@ from __future__ import annotations
 import logging
 import re
 
+from app.utils.prompting import SOUND_NO_BGM_CN, video_duration_head
+
 logger = logging.getLogger(__name__)
 
 # 全局红线，追加到每个 prompt 末尾（agnès 会优先识别末尾约束）
@@ -394,12 +396,27 @@ def compose_image_prompt(seg: dict, style: str, analysis: dict | None = None) ->
 
 
 def compose_video_prompt(
-    seg: dict, style: str, analysis: dict | None = None
+    seg: dict, style: str, analysis: dict | None = None, bgm: bool = False
 ) -> str:
-    """视频 prompt：在 image prompt 基础上追加以秒为单位的时长提示。
+    """视频 prompt（Agnes Video 2.5 规范的中文版）：时长+画幅头 + 画面描述 + 声音段。
 
-    时长放在最前面，agnès 视频模式会优先读取时长约束。
+    ★ 2026-09-24 相对旧版的三处改动（旧版 = 图像提示词前面加一句「时长 N 秒。」）：
+      1. 时长与画幅一起写在开头（文档 §2.2 要求一句话锁定全片信息，含时长与画幅）；
+      2. 追加**声音段**（文档 §2.3「反向 = 必须写」）：BGM 开关关闭时明确排除背景音乐；
+      3. 视频专属信息只加在这里，`compose_image_prompt` 保持纯图像口径。
+
+    ⚠️ 这里**不生成时间轴分段**（文档 §2.3 的画面过程说明）：本模块是纯模板、无 LLM，
+       而时间轴依赖「这一镜里动作怎么推进」的语义判断 —— 靠拆分句硬造时间轴只会得到
+       假的时间轴（比不写更糟）。实际提交给 agnes 的视频提示词走
+       `nodes/storyboard.video_prompt_from` 的 LLM 改写路径，时间轴在那里生成；
+       本函数的产物是 Java 落库 + 前端预览用的中文版。
     """
     base = compose_image_prompt(seg, style, analysis)
-    seconds = int(seg.get("seconds", 5))
-    return f"时长 {seconds} 秒。{base}"
+    try:
+        seconds = int(seg.get("seconds", 5))
+    except (TypeError, ValueError):
+        seconds = 5
+    head = video_duration_head(seconds, seg.get("aspect_ratio") or "16:9", lang="cn")
+    out = f"时长 {head}。{base}"
+    # 声音段：BGM 开关关闭 → 明确排除（开着就不写，让模型自行配乐）
+    return out if bgm else f"{out} {SOUND_NO_BGM_CN}"

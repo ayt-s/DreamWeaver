@@ -61,6 +61,11 @@ class CreativeSessionState(TypedDict):
     lock_first_frame: NotRequired[bool]
     # 段间衔接：把下一段的首帧当本段尾帧（last_frame），让相邻段首尾接得上
     chain_frames: NotRequired[bool]
+    # 背景音乐开关（默认关 = 视频提示词里明确写「不要额外添加背景音乐」）。
+    # ★ 2026-09-24：实测此前视频提示词里**一个字的声音指令都没有**，而产物 ffprobe
+    #   全是 h264+aac —— 每段 BGM 由模型自由发挥、段段不同，拼接（acrossfade）救不了
+    #   「每段换一首曲子」。官方文档要求「不想要就必须明确写」。
+    bgm: NotRequired[bool]
     # 全局运镜倾向：{shot_size, angle, movement}（标准模式 LLM 自由分镜时注入）
     shot_language: NotRequired[dict]
     # 元素语义绑定：[{name, image_index}]，image_index 为 1-based（对应 <Picture N>）

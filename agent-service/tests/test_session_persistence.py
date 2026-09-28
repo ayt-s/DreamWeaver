@@ -553,13 +553,15 @@ async def test_storyboard_guard_skips_translation_on_reentry(monkeypatch):
     }
 
     first = await sb_mod.storyboarder_node(state)
-    assert len(fake.calls) == 2  # 每镜一次翻译
-    assert all(s["prompt_en"] for s in first["storyboard"])
+    # 每镜**两次** LLM：图像/参考提示词（translate_to_en）+ 视频规范提示词
+    # （video_prompt_from，2026-09-24 起单开字段，见 tests/test_video_prompt_spec.py）
+    assert len(fake.calls) == 4
+    assert all(s["prompt_en"] and s["video_prompt_en"] for s in first["storyboard"])
 
     state2 = {**state, **first}
     second = await sb_mod.storyboarder_node(state2)
     assert second == {}
-    assert len(fake.calls) == 2  # 没有新增翻译调用
+    assert len(fake.calls) == 4  # 没有新增翻译调用
 
 
 @pytest.mark.asyncio
@@ -700,9 +702,11 @@ async def test_canvas_storyboarder_keeps_recovered_reuse_fields():
     state: CreativeSessionState = {
         "session_id": "sb-rec",
         "segments": [
-            {"image_url": "http://m/a.png", "prompt": "a", "prompt_en": "A", "seconds": 5,
+            {"image_url": "http://m/a.png", "prompt": "a", "prompt_en": "A",
+             "video_prompt_en": "VA", "seconds": 5,
              "existing_video_url": "http://x/0.mp4"},
-            {"image_url": "http://m/b.png", "prompt": "b", "prompt_en": "B", "seconds": 5,
+            {"image_url": "http://m/b.png", "prompt": "b", "prompt_en": "B",
+             "video_prompt_en": "VB", "seconds": 5,
              "pending_video_id": "vid-inflight"},
         ],
     }
@@ -729,12 +733,15 @@ async def test_full_chain_recovery_zero_cost_resume(monkeypatch):
         "raw_prompt": "断点续跑画布任务",
         "gen_type": "image_video",
         "segments": [
-            {"image_url": "http://m/a.png", "prompt": "a", "prompt_en": "A", "seconds": 5,
+            {"image_url": "http://m/a.png", "prompt": "a", "prompt_en": "A",
+             "video_prompt_en": "VA", "seconds": 5,
              "existing_video_url": "http://x/0.mp4"},
             # 进程被杀时该段已提交 agnes、仍在生成 → 恢复流程写了 pending_video_id
-            {"image_url": "http://m/b.png", "prompt": "b", "prompt_en": "B", "seconds": 5,
+            {"image_url": "http://m/b.png", "prompt": "b", "prompt_en": "B",
+             "video_prompt_en": "VB", "seconds": 5,
              "pending_video_id": "vid-inflight"},
-            {"image_url": "http://m/c.png", "prompt": "c", "prompt_en": "C", "seconds": 5,
+            {"image_url": "http://m/c.png", "prompt": "c", "prompt_en": "C",
+             "video_prompt_en": "VC", "seconds": 5,
              "existing_video_url": "http://x/2.mp4"},
         ],
         "video_urls": [],

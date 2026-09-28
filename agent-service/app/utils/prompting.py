@@ -270,3 +270,110 @@ def build_reference_bindings(
             + " exactly consistent with the referenced images."
         )
     return [role_clause], [keep_clause] if keep_clause else []
+
+
+# ============================================================================
+# 视频提示词规范（Agnes Video 2.5 提示词模板指南 v1.0 · 2026-09-08）—— 2026-09-24 落地
+# ============================================================================
+#
+# 文档公式：提示词 = 【参考素材说明】+【核心创意】+【画面过程说明（按时间轴分段，正向+反向）】
+#
+# ★ 为什么必须单开一个字段（`video_prompt_en`）而不是改 `prompt_en`：
+#   标准链路上 `prompt_en` 同时喂给 `image_generator` 出图（nodes/image.py:396）——
+#   把「0-2 秒…/2-5 秒…」和声音段塞进去，对图像模型全是噪音。图像提示词与视频
+#   提示词本来就是两种规范（Java 侧一直有 imagePrompt/videoPrompt 两个字段）。
+#
+# ★ 落地前的实测基线（2026-09-24，读 agent.log 里 3 条真实 submit_video payload）：
+#   - 提交的提示词 = 一段静态画面描述 + 运镜 + 风格 + 红线，**没有任何时间轴**；
+#     5 秒里发生什么完全由模型自己编。
+#   - 提示词里**一个字的声音指令都没有**，而 ffprobe 三个分段全是 h264+aac
+#     —— 即每段的 BGM 都是模型自己配的，段段不同；拼接（acrossfade）救不了
+#     「每段换一首曲子」。
+#   - 出现过中文残留（"a mood of panic and绝望"）：翻译口径没有「必须全英文」约束。
+
+# 时长/画幅头（文档 §2.2「核心创意」要求一句话锁定全片信息，含时长与画幅）。
+_ORIENTATION_CN = {"16:9": "横版", "9:16": "竖版", "1:1": "方形", "4:3": "横版", "3:4": "竖版"}
+_ORIENTATION_EN = {"16:9": "horizontal", "9:16": "vertical", "1:1": "square",
+                   "4:3": "horizontal", "3:4": "vertical"}
+
+
+def video_duration_head(seconds: object, aspect_ratio: object, lang: str = "en") -> str:
+    """「5 秒，16:9 横版」这类时长+画幅头（文档要求在正文里明写，不只在 API 参数里）。"""
+    try:
+        sec = int(float(seconds))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        sec = 5
+    ratio = str(aspect_ratio or "16:9").strip() or "16:9"
+    if lang == "cn":
+        return f"{sec} 秒，{ratio} {_ORIENTATION_CN.get(ratio, '')}".strip()
+    return f"{sec} seconds, {ratio} {_ORIENTATION_EN.get(ratio, '')}".strip()
+
+
+# 视频提示词的**声音段**：文档 §2.3「反向 = 必须写」那一句。
+# BGM 开关打开（bgm=True）时**不追加**：让模型按其默认行为配乐
+# （文档提醒「想要音乐」与「不要 BGM」两句同时出现是自相矛盾的，只能留一句）。
+SOUND_NO_BGM_EN = ("No extra background music; keep only natural ambient sounds "
+                   "and action sounds.")
+SOUND_NO_BGM_CN = "不要额外添加背景音乐，只保留环境音与动作音。"
+
+
+def sound_clause(bgm: bool) -> str:
+    """视频提示词的声音排除句（英文）。BGM 开关打开时返回空串。"""
+    return "" if bgm else SOUND_NO_BGM_EN
+
+
+# keyframe（首帧锁定）模式下补的一句：文档 §4.2「双张图（首帧+尾帧）：Agnes 不会自动
+# 加切镜，只补两帧之间的动作、光影、声音」——我们目前只给首帧，同理只该往后延展，
+# 不该让模型重构图/重计时（reference 模式的语义差别见 gateway/agnes.py:446-448）。
+FIRST_FRAME_EN = ("Use the given first frame as the literal opening frame; extend it forward "
+                  "with motion, light and sound only — do not re-frame or re-time the shot.")
+
+
+# 视频改写模板（送给 LLM 的指令 + 中文分镜描述）。
+# 在 translate_to_en 之上做一次「按视频规范改写」，而不是逐字翻译：
+# 时间轴/声音这两段在中文侧**根本不存在**，必须由这一步生成。
+#
+# ⚠️ 运镜术语走 `{camera}` 注入**模板内部**，不在生成后追加 ——
+#   实测（2026-09-24 首轮真实产出）事后追加会得到
+#   「... watermark., medium shot, slow push-in」：既与首句里的运镜重复，
+#   又把排除句挤到中间（文档明确末尾约束权重最高）。交给模型整合进首句即可。
+VIDEO_PROMPT_TEMPLATE = """Rewrite the Chinese shot description below into ONE English prompt
+for the Agnes Video 2.5 model, following the model's official prompt guide.
+
+Required shape (plain text, no headings, no bullet points, no markdown):
+1. Start with the shot length and frame: "{duration}".
+2. Then one sentence locking the whole shot: subject + place + action + genre/style + camera move.
+3. Then what happens inside the shot, split into 2-3 time phases ("0-2s: ...", "2-{seconds}s: ...").
+   Each phase must state something VISIBLE: subject action, environment, light, camera movement.
+   Concrete visible pictures only; no abstract metaphor or mood-only wording.
+4. Then the sound of the shot: ambient sound and action sound. If the Chinese text contains
+   dialogue, quote it verbatim and keep it short enough for the phase it belongs to; otherwise
+   state that there is no dialogue.
+5. One continuous take; never write a multi-shot / cut structure.
+6. Keep characters, costume, hairstyle and scene wording faithful to the Chinese text.
+   Do NOT invent characters, props, events or dialogue that are not in it.
+7. End with what must NOT appear: deformed hands, extra limbs, on-screen text, watermark.
+8. Output English only. Do not leave any Chinese characters in the output.
+
+Camera (use this exact English wording inside sentence 2, only once): {camera}
+
+Chinese shot description:
+{text}
+"""
+
+
+def build_video_rewrite_input(
+    cn_description: str, seconds: object, aspect_ratio: object, camera_en: str = ""
+) -> str:
+    """拼出「视频改写」的 LLM 输入（模板 + 时长/画幅 + 运镜 + 中文描述）。纯拼接，无 LLM。"""
+    camera = str(camera_en or "").strip() or "as described in the Chinese text below"
+    try:
+        sec = int(float(seconds))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        sec = 5
+    return VIDEO_PROMPT_TEMPLATE.format(
+        duration=video_duration_head(seconds, aspect_ratio),
+        seconds=sec,
+        camera=camera,
+        text=cn_description or "",
+    )
