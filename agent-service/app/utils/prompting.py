@@ -375,7 +375,9 @@ Required shape (plain text, no headings, no bullet points, no markdown):
 7. End with what must NOT appear: deformed hands, extra limbs, on-screen text, watermark.
 8. Output English only — EXCEPT the dialogue line, which must be reproduced character for
    character exactly as given (never translated). Speaker ROLES must be English
-   (e.g. "voice-over" instead of 画外音); character names may stay as given.
+   (e.g. "voice-over" instead of 画外音). Character NAMES outside the quotes must be
+   transliterated into English letters (e.g. 陈浔 → Chen Xun), never left in Chinese;
+   only the quoted dialogue keeps the original characters.
 
 {camera_line}Dialogue — INPUT SPEC, describe it in the prompt; never copy this block or its labels:
 {dialogue_hint}
