@@ -59,6 +59,18 @@ _EN_SOUND_RE = re.compile(
     r"(ambient|background sound|sound of|sounds? of|audio|no dialogue|silence|sfx)", re.I)
 _EN_EXCLUSION_RE = re.compile(
     r"(no |not |without |must not|should not|never )", re.I)
+# 元信息泄漏：模型把「输入规格/指令」的指代写进正文（真机实测：`as described in the
+# Chinese text below`）。这类句子对视频模型是无意义噪音，且指代的文本并不存在于输出里。
+_EN_META_RE = re.compile(
+    r"(as (?:described|mentioned|stated|specified)\b[^.]{0,40}"
+    r"(?:chinese|text|description|prompt|above|below)"
+    r"|the chinese (?:text|description)"
+    r"|(?:text|description|prompt)\s+(?:above|below)"
+    r"|translated from"
+    r"|as per the (?:description|prompt|instruction)"
+    r"|nothing may come after"
+    r"|(?:this|the) (?:final|last) sentence"
+    r"|follow (?:the|these) (?:instructions?|rules?))", re.I)
 
 
 def _issue(code: str, msg: str, rule: str, level: str = "WARN") -> dict[str, str]:
@@ -196,6 +208,15 @@ def lint_video_prompt_en(prompt: str, *, seconds: int | float | None = None) -> 
             f"引号外有 {len(residue)} 个中文字符（如「{''.join(residue[:6])}」）—— "
             "此前真机出过 `a mood of panic and绝望` 这类漏翻。",
             "spec-lang"))
+
+    # 元信息泄漏（指令/输入规格被写成正文）
+    meta = _EN_META_RE.search(text)
+    if meta:
+        issues.append(_issue(
+            "EN_META_REFERENCE",
+            f"正文里出现对输入/指令的指代「{meta.group(0)[:40]}」—— 模型把这句当时画面描述渲染，"
+            "而它指代的文本并不在输出里；删掉，只留画面内容。",
+            "spec-meta"))
 
     return issues
 

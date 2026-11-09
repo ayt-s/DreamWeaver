@@ -114,6 +114,38 @@ def test_empty_prompt():
     assert _codes(lint_video_prompt_en("")) == ["EN_EMPTY"]
 
 
+# 真机回归：2026-09-24 慢测（真 LLM 第 1 轮）产出的正文原样——机检当时返回空列表，
+# 漏了句尾那句「as described in the Chinese text below」。这条用例就是给它钉的。
+REAL_LEAK = (
+    "5 seconds, 16:9 horizontal. A medium close-up of Chen Xun lying on a grassy slope "
+    "with a black bull lying beside him in warm morning light, as described in the Chinese "
+    "text below. 0-2s: The camera slowly tracks horizontally across the scene, showing Chen "
+    "Xun chewing on a foxtail grass stalk. 2-5s: The slow horizontal camera movement continues. "
+    'Ambient sounds of the countryside accompany the scene. Chen Xun says: "今晚的海面。" '
+    "Deformed hands, extra limbs, on-screen text, watermark must not appear. "
+    "Use the given first frame as the literal opening frame; extend it forward with motion. "
+    "No extra background music; keep only natural ambient sounds and action sounds."
+)
+
+
+def test_meta_reference_leak_is_caught_on_real_output():
+    codes = _codes(lint_video_prompt_en(REAL_LEAK, seconds=5))
+    assert codes == ["EN_META_REFERENCE"]
+    # 引号内台词仍是合法中文，不该被当成漏翻
+    assert "EN_CJK_RESIDUE" not in codes
+
+
+def test_meta_reference_variants_and_no_false_positive():
+    for bad in (
+        "0-2s: he walks, as mentioned in the description. Ambient wind. No text.",
+        "0-2s: he walks. Nothing may come after this final sentence. Ambient wind. No text.",
+        "0-2s: he walks. Translate from the text above. Ambient wind. No text.",
+    ):
+        assert "EN_META_REFERENCE" in _codes(lint_video_prompt_en(bad, seconds=5)), bad
+    # 干净的稿子不能误报
+    assert "EN_META_REFERENCE" not in _codes(lint_video_prompt_en(GOOD_EN, seconds=5))
+
+
 # ---------------- 组合 ----------------
 
 def test_lint_segment_merges_both_layers():
