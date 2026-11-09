@@ -55,6 +55,8 @@ _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _QUOTED_RE = re.compile(r'"[^"]*"|“[^”]*”|「[^」]*」')
 _EN_HEAD_RE = re.compile(r"^\s*\d+\s*(?:seconds?|s)\b[^.]{0,30}\d+\s*:\s*\d+", re.I)
 _EN_TIMELINE_RE = re.compile(r"\b0\s*-\s*\d+(?:\.\d+)?\s*s?\s*:", re.I)
+# 时间轴的**段数**（真机：模型偶尔把 0-2s / 2-5s 塌成单段 0-5s，等于没分时间轴）
+_EN_PHASE_RE = re.compile(r"\b(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*s\s*:", re.I)
 _EN_SOUND_RE = re.compile(
     r"(ambient|background sound|sound of|sounds? of|audio|no dialogue|silence|sfx)", re.I)
 _EN_EXCLUSION_RE = re.compile(
@@ -186,10 +188,19 @@ def lint_video_prompt_en(prompt: str, *, seconds: int | float | None = None) -> 
             "spec-head"))
 
     # 时间轴分段
+    phases = _EN_PHASE_RE.findall(text)
     if not _EN_TIMELINE_RE.search(text):
         issues.append(_issue(
             "EN_NO_TIMELINE",
             "没有时间轴分段（`0-2s: … 2-5s: …`）—— 5 秒内发生什么会完全交给模型。",
+            "spec-timeline"))
+    elif len(phases) < 2:
+        # ★ 真机（16:9 展示跑第 2 段）：模型把 0-2s/2-5s 塌成单段 `0-5s:` —— 形式上有
+        #   时间轴、实质上没有分段，等于把「5 秒里怎么演」又交回给模型。
+        issues.append(_issue(
+            "EN_SINGLE_PHASE",
+            f"时间轴只有 {len(phases)} 段（{phases[0][0] if phases else '?'}-"
+            f"{phases[0][1] if phases else '?'}s）—— 要求 2~3 段；单段等于没分时间轴。",
             "spec-timeline"))
 
     # 声音段

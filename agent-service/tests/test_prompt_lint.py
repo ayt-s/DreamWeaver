@@ -269,3 +269,24 @@ def test_instruction_framing_words_do_not_false_positive():
     p = ("5 seconds, 16:9 horizontal. 0-2s: he walks. 2-5s: the shot ends with a smile. "
          "Ambient wind. No text or watermark.")
     assert "EN_META_REFERENCE" not in _codes(lint_video_prompt_en(p, seconds=5))
+
+
+# 真机回归（16:9 展示跑第 2 段）：模型把 0-2s / 2-5s 塌成单段 `0-5s:`。
+REAL_SINGLE_PHASE = (
+    "5 seconds, 16:9 horizontal. A medium shot of Chen Xun squatting by a stove and poking "
+    "the fire. 0-5s: Chen Xun squats at the stove, using a tool to poke the fire; gray kitchen "
+    'smoke rises gently upward; the camera moves forward slowly. A voice-over says: "先别打开那扇门。" '
+    "Ambient crackling of burning wood. Deformed hands, extra limbs, on-screen text, watermark. "
+    "No extra background music; keep only natural ambient sounds and action sounds."
+)
+
+
+def test_single_phase_timeline_is_flagged_on_real_output():
+    codes = _codes(lint_video_prompt_en(REAL_SINGLE_PHASE, seconds=5))
+    assert "EN_SINGLE_PHASE" in codes
+    assert "EN_NO_TIMELINE" not in codes  # 有 0-5s，只是没分段
+
+
+def test_two_phase_timeline_passes():
+    codes = _codes(lint_video_prompt_en(GOOD_EN, seconds=5))
+    assert "EN_SINGLE_PHASE" not in codes
