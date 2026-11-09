@@ -389,7 +389,7 @@ Chinese shot description:
 
 def build_video_rewrite_input(
     cn_description: str, seconds: object, aspect_ratio: object, camera_en: str = "",
-    dialogue: str = "", speaker: str = "",
+    dialogue: str = "", speaker: str = "", dialogue_continues: bool = False,
 ) -> str:
     """拼出「视频改写」的 LLM 输入（模板 + 时长/画幅 + 运镜 + 台词 + 中文描述）。纯拼接。"""
     camera = str(camera_en or "").strip()
@@ -410,7 +410,7 @@ def build_video_rewrite_input(
         duration=video_duration_head(seconds, aspect_ratio),
         seconds=sec,
         camera_line=camera_line,
-        dialogue_hint=dialogue_hint(dialogue, speaker),
+        dialogue_hint=dialogue_hint(dialogue, speaker, continues=dialogue_continues),
         text=cn_description or "",
     )
 
@@ -435,7 +435,7 @@ def is_offscreen(speaker: str) -> bool:
     return any(m.lower() in s for m in OFFSCREEN_MARKERS)
 
 
-def dialogue_hint(dialogue: object, speaker: object = "") -> str:
+def dialogue_hint(dialogue: object, speaker: object = "", continues: bool = False) -> str:
     """台词注入模板的那一行（英文，供改写 LLM 逐字保留）。
 
     ⚠️ 2026-09-24 实测教训：**这一行曾被模型当成正文整段抄进输出**
@@ -443,27 +443,40 @@ def dialogue_hint(dialogue: object, speaker: object = "") -> str:
     verbatim: …" 原样出现在提示词里，还把中文标签留在了英文提示词中）。
     所以这里给的是**输入规格**形状：明确「输出里该写成的样子」，
     并在模板里声明这是 spec、不许照抄。
+
+    `continues=True`：本镜台词是**上一镜台词的续句**（一句长台词被切成两镜）。
+    文档 §3.2 要求这种切法明确标「接上个 shot 继续说」，否则模型会把后半句
+    当成一句全新的台词、重新起句甚至重报一次说话人。
     """
     text = str(dialogue or "").strip()
     if not text:
         return ("NONE — this shot has no dialogue. Do not invent dialogue, and do not show "
                 "anyone speaking or lip-syncing.")
     who = str(speaker or "").strip() or "an unnamed character"
+    cont = ""
+    if continues:
+        cont = ("\nCONTINUATION: this line continues the line spoken in the previous shot. "
+                "Write it as a continuation — do not introduce the speaker again and do not "
+                "restart the sentence; the two shots must read as one continuous line.")
     if is_offscreen(who):
         return (f'LINE (reproduce character for character, never translate): "{text}"\n'
                 f'SPEAKER: {who} — voice-over / offscreen: the speaker is NOT shown talking '
-                f'and must not be lip-synced. Write it as: a voice-over says: "{text}"')
+                f'and must not be lip-synced. Write it as: a voice-over says: "{text}"{cont}')
     return (f'LINE (reproduce character for character, never translate): "{text}"\n'
             f'SPEAKER: {who} — on screen, visible lip-sync. '
-            f'Write it as: {who} says: "{text}"')
+            f'Write it as: {who} says: "{text}"{cont}')
 
 
-def dialogue_clause_cn(dialogue: object, speaker: object = "") -> str:
-    """中文版台词段（落库/预览用的中文视频提示词）。无台词返回空串。"""
+def dialogue_clause_cn(dialogue: object, speaker: object = "", continues: bool = False) -> str:
+    """中文版台词段（落库/预览用的中文视频提示词）。无台词返回空串。
+
+    `continues=True` → 标注「接上一镜」，让用户一眼看出这句是半句续说（文档 §3.2）。
+    """
     text = str(dialogue or "").strip()
     if not text:
         return ""
     who = str(speaker or "").strip()
     mark = "画外音" if is_offscreen(who) else "画内"
     name = who or "角色"
-    return f"【台词】{name}（{mark}）说：「{text}」（原文照读，按镜头时长说完，不要增删）"
+    tail = "，接上一镜继续说" if continues else ""
+    return f"【台词】{name}（{mark}）说：「{text}」（原文照读，按镜头时长说完，不要增删{tail}）"

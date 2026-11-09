@@ -56,7 +56,7 @@ async def translate_to_en(text: str) -> str:
 
 async def video_prompt_from(
     cn_description: str, seconds: object, aspect_ratio: object, camera_en: str = "",
-    dialogue: str = "", speaker: str = "",
+    dialogue: str = "", speaker: str = "", dialogue_continues: bool = False,
 ) -> str:
     """中文分镜描述 → 英文**视频**提示词（Agnes Video 2.5 规范）。
 
@@ -72,7 +72,20 @@ async def video_prompt_from(
     """
     return await translate_to_en(
         build_video_rewrite_input(cn_description, seconds, aspect_ratio, camera_en,
-                                  dialogue=dialogue, speaker=speaker))
+                                  dialogue=dialogue, speaker=speaker,
+                                  dialogue_continues=dialogue_continues))
+
+
+def _dialogue_continues(src: dict) -> bool:
+    """本镜台词是否是**上一镜台词的续句**（一句长台词被切成两镜，文档 §3.2）。
+
+    看电影时后半句单独成镜却被当成新句子，会重新起句、重报说话人，
+    两句读起来像两个人各说一句。兼容 snake / camel。
+    """
+    raw = src.get("dialogue_continues")
+    if raw is None:
+        raw = src.get("dialogueContinues")
+    return bool(raw) if not isinstance(raw, str) else raw.strip().lower() in ("1", "true", "yes")
 
 
 def _dialogue_of(src: dict) -> tuple[str, str]:
@@ -170,10 +183,12 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
         #   喂 `image_generator` 出图（nodes/image.py:396），把时间轴/声音塞进去对图像
         #   模型只是噪音。视频提示词只在 video_generator 里消费（见 nodes/video.py）。
         _dlg_text, _dlg_who = _dialogue_of(shot)
+        _dlg_cont = _dialogue_continues(shot)
         video_en = await video_prompt_from(cn_description, seconds=seconds,
                                            aspect_ratio=STANDARD_ASPECT_RATIO,
                                            camera_en=global_camera_en,
-                                           dialogue=_dlg_text, speaker=_dlg_who)
+                                           dialogue=_dlg_text, speaker=_dlg_who,
+                                           dialogue_continues=_dlg_cont)
         # 元素语义绑定：<Picture N> 角色定义放句首（agnes 官方推荐显式点名每个占位符）
         # 确定性英文运镜片段：翻译之后再拼，保证术语精确
         en_prompt = _decorate_prompt(en_prompt, role_clauses, keep_clauses, global_camera_en)
@@ -205,6 +220,8 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
             # 段重生时原样复用（描述一改由 SegmentReworkPlanner 一并清掉）
             "dialogue": _dlg_text,
             "dialogue_speaker": _dlg_who,
+            # 本镜台词是否接上一镜的续句（文档 §3.2；一句长台词被切成两镜时用）
+            "dialogue_continues": _dlg_cont,
             "mode": "reference" if user_ref_images else "text",
             "seconds": str(seconds),
             "aspect_ratio": STANDARD_ASPECT_RATIO,
@@ -256,6 +273,7 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
         # ★ 2026-09-24：本镜台词（原文 + 说话人）—— 画布节点/段配置里带来，
         #   注入改写模板让正式提示词逐字带上（文档速查表第 2 条「台词 = 原文」）
         _dlg_text, _dlg_who = _dialogue_of(seg)
+        _dlg_cont = _dialogue_continues(seg)
         # 段级负面词覆盖全局
         seg_negative = str(seg.get("negative_prompt") or "").strip() or negative_prompt
         camera_spec = normalize_camera_spec(seg.get("camera_spec"))
@@ -283,7 +301,8 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
                 video_cn = _custom_video_prompt(seg) or img_cn
                 video_en = await video_prompt_from(video_cn, seconds=seconds,
                                                    aspect_ratio=ratio, camera_en=camera_en,
-                                                   dialogue=_dlg_text, speaker=_dlg_who)
+                                                   dialogue=_dlg_text, speaker=_dlg_who,
+                                                   dialogue_continues=_dlg_cont)
             # 元素绑定：按**这一段真实的参考图数组**现算 <Picture N>（见 prompting.py）
             # 声音段：确定性后缀（已排除运镜 —— 它注入了改写模板内部），
             # BGM 开关关闭时明确排除背景音乐，且必须是最后一句
@@ -312,6 +331,8 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
             # 「勾选重生」成对清掉派生译文，这两个原文字段跟着描述一起留/清）
             "dialogue": _dlg_text,
             "dialogue_speaker": _dlg_who,
+            # 本镜台词是否接上一镜的续句（文档 §3.2；一句长台词被切成两镜时用）
+            "dialogue_continues": _dlg_cont,
             # 用户自定义的视频提示词（原文输入，空串 = 跟随本段描述）
             "video_prompt_cn": _custom_video_prompt(seg),
             "mode": "reference" if ref_images else "text",

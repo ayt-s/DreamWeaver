@@ -52,6 +52,11 @@ class NovelSegmentPydantic(BaseModel):
         default="",
         description="说话人：画内角色写角色名；画外音/旁白写「画外音」。无台词留空。",
     )
+    dialogue_continues: bool = Field(
+        default=False,
+        description="本镜台词是否是**上一镜台词的续句**（一句长台词按语义切在两镜时设 true；"
+                    "后半句不要重新起句、不要重报说话人）。默认 false。",
+    )
     # 结构化镜头三字段（供画布下拉预填；不确定就留空，画布显示"不指定"）
     shot_size: str = Field(
         default="",
@@ -113,6 +118,8 @@ SYSTEM_PROMPT_TEMPLATE = """你是小说转漫剧分镜器。请根据输入的�
   中文口播约每字 0.2 秒，即 5 秒镜头最多约 20 字、8 秒约 40 字；
   台词太长就把内容留到下一镜，不要塞。dialogue_speaker 写说话人角色名，
   画外音/旁白写「画外音」（口型问题多半来自台词与镜头时长不匹配，务必对上）。
+- 一句长台词必须切成两镜时：按语义停顿切，后一镜的 dialogue_continues 设为 true，
+  且两镜的台词拼起来要通顺（后一镜不要重复说话人、不要重新起句）。
 - 除上面的字段外，还要给出三个**结构化镜头字段**（画布下拉要用，必须严格从白名单里选）：
   · shot_size 景别：远景 / 全景 / 中景 / 近景 / 特写
   · angle    机位：平视 / 俯拍 / 仰拍 / 航拍 / 过肩

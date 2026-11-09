@@ -154,6 +154,13 @@ interface ImageNodeData {
   dialogue?: string;
   dialogueSpeaker?: string;
   /**
+   * 本镜台词是否接**上一镜台词的续句**（文档 §3.2「一句跨两镜」）。
+   *
+   * 一句长台词按语义停顿切成两镜时勾上：agent 会写成「续句」而不是一句全新台词
+   * （不重报说话人、不重新起句）。只在有台词时有意义。
+   */
+  dialogueContinues?: boolean;
+  /**
    * 视频提示词（★ 2026-09-24）：用户可在此覆盖「由本段描述改写」的那条视频提示词。
    *
    * 留空 = 保持原行为（用 `prompt` 走视频规范改写）。填了就以它为准改写 ——
@@ -1006,6 +1013,19 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
           className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-700 outline-none focus:border-indigo-300"
         />
       </div>
+      {/* 续句标记（文档 §3.2）：一句长台词被切成两镜时，后一镜勾上 ——
+          agent 会写成「续句」，不重报说话人、不重新起句。只在有台词时可勾。 */}
+      {(data.dialogue ?? '').trim() && (
+        <label className="mb-2 flex cursor-pointer items-center gap-1.5 text-[10px] text-slate-500">
+          <input
+            type="checkbox"
+            checked={!!data.dialogueContinues}
+            onChange={(e) => patch({ dialogueContinues: e.target.checked })}
+            className="h-3 w-3 rounded border-slate-300 text-indigo-600"
+          />
+          接上一镜的台词（半句续说）
+        </label>
+      )}
 
       <div className="flex items-center gap-1.5">
         <button
@@ -1792,6 +1812,8 @@ export default function CanvasPage() {
           ...(dialogue
             ? { dialogue, dialogue_speaker: (img.dialogueSpeaker || '').trim() }
             : {}),
+          // 续句标记只在有台词且勾上时提交（文档 §3.2）
+          ...(dialogue && img.dialogueContinues ? { dialogue_continues: true } : {}),
           ...(videoPromptCn ? { video_prompt_cn: videoPromptCn } : {}),
         });
       }

@@ -62,4 +62,12 @@ public class NovelSegment {
 
     /** 说话人：画内角色名 / 「画外音」（画外标记为 voice-over，不做口型） */
     private String dialogueSpeaker;
+
+    /**
+     * 本镜台词是否是**上一镜台词的续句**（★ 2026-09-24，文档 §3.2「一句跨两镜」）。
+     *
+     * <p>一句长台词按语义停顿切成两镜时，后一镜置 true —— agent 会写成「续句」而不是
+     * 一句全新台词（不重报说话人、不重新起句）。默认 null = false。
+     */
+    private Boolean dialogueContinues;
 }

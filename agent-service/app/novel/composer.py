@@ -419,7 +419,8 @@ def compose_video_prompt(
     head = video_duration_head(seconds, seg.get("aspect_ratio") or "16:9", lang="cn")
     out = f"时长 {head}。{base}"
     # 台词段（文档速查表第 2 条「台词 = 原文」）：只在本镜真有台词时出现
-    dialogue = dialogue_clause_cn(seg.get("dialogue"), seg.get("dialogue_speaker"))
+    dialogue = dialogue_clause_cn(seg.get("dialogue"), seg.get("dialogue_speaker"),
+                                  continues=bool(seg.get("dialogue_continues")))
     if dialogue:
         out = f"{out} {dialogue}"
     # 声音段：BGM 开关关闭 → 明确排除（开着就不写，让模型自行配乐）

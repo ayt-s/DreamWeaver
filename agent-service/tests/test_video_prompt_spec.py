@@ -421,3 +421,67 @@ def test_rewrite_input_keeps_camera_line_when_provided():
 
     text = build_video_rewrite_input("少年躺在草坡上", 5, "16:9", camera_en="medium shot")
     assert "Camera (use this exact English wording inside sentence 2, only once): medium shot" in text
+
+
+# ============================ 跨 shot 台词（文档 §3.2） ============================
+
+def test_dialogue_hint_marks_continuation_only_when_flagged():
+    from app.utils.prompting import dialogue_hint
+
+    normal = dialogue_hint("后半句话", "陈浔")
+    assert "CONTINUATION" not in normal
+
+    cont = dialogue_hint("后半句话", "陈浔", continues=True)
+    assert "CONTINUATION" in cont
+    assert "do not introduce the speaker again" in cont
+    # 台词本身仍逐字
+    assert '"后半句话"' in cont
+
+
+def test_rewrite_input_carries_continuation_flag():
+    from app.utils.prompting import build_video_rewrite_input
+
+    text = build_video_rewrite_input("中景，陈浔站在门口", 5, "16:9",
+                                     dialogue="后半句话", speaker="陈浔",
+                                     dialogue_continues=True)
+    assert "CONTINUATION" in text
+
+
+def test_parse_segments_keeps_dialogue_continues():
+    from app.main import _parse_segments
+
+    segs = _parse_segments(json.dumps([{
+        "image_url": "http://x/a.png", "prompt": "描述", "seconds": 5,
+        "dialogue": "后半句话", "dialogueSpeaker": "陈浔", "dialogueContinues": True,
+    }]))
+    assert segs[0]["dialogue_continues"] is True, "白名单漏列会被静默丢掉"
+
+    plain = _parse_segments(json.dumps([{
+        "image_url": "http://x/a.png", "prompt": "描述", "seconds": 5,
+    }]))
+    assert plain[0]["dialogue_continues"] is False
+
+
+@pytest.mark.asyncio
+async def test_canvas_storyboard_marks_continuation_in_video_prompt(monkeypatch):
+    """续句标记要真的进到改写输入里（否则字段只是个装饰）。"""
+    from app.nodes import storyboard as sb
+
+    seen: list[str] = []
+
+    async def fake_chat(prompt, model=None, temperature=None, session_id=None):
+        seen.append(prompt)
+        return ("5 seconds, 16:9 horizontal. 0-2s: x. 2-5s: y. Ambient wind. "
+                "No text or watermark.")
+
+    monkeypatch.setattr(sb.gateway, "chat", fake_chat)
+    out = await sb.canvas_storyboarder_node({
+        "session_id": "cont-1",
+        "segments": [{
+            "image_url": "https://x/a.png", "prompt": "陈浔站在门口",
+            "seconds": 5, "dialogue": "后半句话", "dialogue_speaker": "陈浔",
+            "dialogue_continues": True,
+        }],
+    })
+    assert out["storyboard"][0]["dialogue_continues"] is True
+    assert any("CONTINUATION" in p for p in seen), "改写输入里必须带续句指令"

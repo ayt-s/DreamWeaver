@@ -92,6 +92,48 @@ describe('台词随段提交', () => {
     expect(segs.length).toBeGreaterThanOrEqual(1);
     expect(segs[0].dialogue).toBe(DIALOGUE);
     expect(segs[0].dialogue_speaker).toBe('陈浔');
+    // 没勾「接上一镜」→ 不写该字段（避免给 agent 塞无意义的 false）
+    expect(segs[0].dialogue_continues).toBeUndefined();
+  }, 40_000);
+
+  it('勾了「接上一镜」→ 载荷带 dialogue_continues（文档 §3.2 一句跨两镜）', async () => {
+    const cont = JSON.stringify({
+      nodes: [
+        {
+          id: 'img0', type: 'imageNode', position: { x: 100, y: 60 },
+          data: {
+            prompt: '陈浔站在海边灯塔前', imageUrl: 'https://cdn.local/frame.png', ratio: '16:9',
+            dialogue: '的后半句。', dialogueSpeaker: '陈浔', dialogueContinues: true,
+          },
+        },
+        { id: 'compose', type: 'videoNode', position: { x: 700, y: 200 }, data: { seconds: 5 } },
+      ],
+      edges: [{ id: 'e0', source: 'img0', target: 'compose' }],
+    });
+    vi.mocked(listProjects).mockResolvedValue([
+      { id: 9, name: '续句画布', nodesJson: cont, edgesJson: null, version: 1 } as never,
+    ]);
+    vi.mocked(getProject).mockResolvedValue({
+      id: 9, name: '续句画布', nodesJson: cont, edgesJson: null, version: 1,
+    } as never);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/canvas?project=9']}>
+          <ImageVideoPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByTitle(/切换画布项目/);
+    await screen.findByDisplayValue(/陈浔站在海边灯塔前/);
+
+    fireEvent.click(screen.getByRole('button', { name: '生成成片' }));
+    await waitFor(() => expect(vi.mocked(createVideoTask)).toHaveBeenCalled());
+
+    const segs = JSON.parse(String(vi.mocked(createVideoTask).mock.calls[0][0].segments));
+    expect(segs[0].dialogue).toBe('的后半句。');
+    expect(segs[0].dialogue_continues).toBe(true);
   }, 40_000);
 
   it('画布上现填台词：同样进载荷（用户可编辑，不必回小说页改）', async () => {
