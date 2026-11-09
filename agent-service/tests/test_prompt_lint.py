@@ -246,3 +246,26 @@ async def test_standard_storyboard_attaches_lint(monkeypatch):
     out = await sb_mod.storyboarder_node(state)
     shot = out["storyboard"][0]
     assert [i["code"] for i in shot["prompt_lint"]] == ["CN_BARE_NEGATION"]
+
+
+# 真机回归（2026-09-24 第 5 轮 · 用户看片后重跑）：模型把模板「End with …」的
+# 指令框架词抄进正文 —— `End with: deformed hands, …`。
+REAL_END_WITH = (
+    "5 seconds, 16:9 horizontal. A medium close-up of Chen Xun lying on a grassy slope "
+    "chewing a foxtail grass blade. 0-2s: The camera slowly pans right. 2-5s: Chen Xun says: "
+    '"今晚的海面，好像藏着什么。" Ambient sound of a quiet rural pasture with light wind. '
+    "End with: deformed hands, extra limbs, on-screen text, watermark must not appear. "
+    "No extra background music; keep only natural ambient sounds and action sounds."
+)
+
+
+def test_end_with_instruction_leak_on_real_output():
+    codes = _codes(lint_video_prompt_en(REAL_END_WITH, seconds=5))
+    assert "EN_META_REFERENCE" in codes
+
+
+def test_instruction_framing_words_do_not_false_positive():
+    # 正常英文里「ends with a smile」不是指令框架词
+    p = ("5 seconds, 16:9 horizontal. 0-2s: he walks. 2-5s: the shot ends with a smile. "
+         "Ambient wind. No text or watermark.")
+    assert "EN_META_REFERENCE" not in _codes(lint_video_prompt_en(p, seconds=5))

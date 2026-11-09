@@ -75,7 +75,10 @@ _EN_META_RE = re.compile(
     r"|as per the (?:description|prompt|instruction)"
     r"|nothing may come after"
     r"|(?:this|the) (?:final|last) sentence"
-    r"|follow (?:the|these) (?:instructions?|rules?))", re.I)
+    r"|follow (?:the|these) (?:instructions?|rules?)"
+    # 指令框架词：模板写「End with what must NOT appear」，模型把「End with:」抄进正文
+    r"|(?:^|[.;]\s*)(?:end|start|begin|finish) with\s*:"
+    r"|(?:^|[.;]\s*)then write\s*:)", re.I)
 
 
 def _issue(code: str, msg: str, rule: str, level: str = "WARN") -> dict[str, str]:

@@ -372,7 +372,8 @@ Required shape (plain text, no headings, no bullet points, no markdown):
 5. One continuous take; never write a multi-shot / cut structure.
 6. Keep characters, costume, hairstyle and scene wording faithful to the Chinese text.
    Do NOT invent characters, props, events or dialogue that are not in it.
-7. End with what must NOT appear: deformed hands, extra limbs, on-screen text, watermark.
+7. Final sentence = the negative list (deformed hands, extra limbs, on-screen text, watermark)
+   written as a plain sentence, with no label in front of it.
 8. Output English only — EXCEPT the dialogue line, which must be reproduced character for
    character exactly as given (never translated). Speaker ROLES must be English
    (e.g. "voice-over" instead of 画外音). Character NAMES outside the quotes must be
