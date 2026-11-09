@@ -146,6 +146,32 @@ def test_meta_reference_variants_and_no_false_positive():
     assert "EN_META_REFERENCE" not in _codes(lint_video_prompt_en(GOOD_EN, seconds=5))
 
 
+# 真机回归（2026-09-24 第 3 轮）：整段**没有声音描述**，只有末尾那句排除句。
+# 旧判据被排除句里的 `sounds` 满足 → 漏报；同时说话人留了中文「陈浔」。
+REAL_NO_SOUND = (
+    "5 seconds, 16:9 horizontal. A medium close-up of Chen Xun lying on a grassy slope "
+    "chewing foxtail grass with his black cow resting nearby, bathed in warm morning light "
+    "as the camera slowly pans horizontally across the scene. 0-2s: Chen Xun lies on the "
+    "green grass slope chewing foxtail grass. 2-5s: The camera continues its slow horizontal "
+    'pan across Chen Xun and the cow. 陈浔 says: "今晚的海面，好像藏着什么。" '
+    "Deformed hands, extra limbs, on-screen text, watermark. "
+    "Use the given first frame as the literal opening frame; extend it forward with motion. "
+    "No extra background music; keep only natural ambient sounds and action sounds."
+)
+
+
+def test_sound_rule_ignores_the_exclusion_clause_on_real_output():
+    codes = _codes(lint_video_prompt_en(REAL_NO_SOUND, seconds=5))
+    assert "EN_NO_SOUND" in codes          # 真的没写声音（排除句不算）
+    assert "EN_CJK_RESIDUE" in codes       # 说话人留了中文
+
+
+def test_sound_rule_accepts_a_real_sound_description():
+    p = ("5 seconds, 16:9 horizontal. 0-2s: he walks. 2-5s: he stops. "
+         "Ambient sound of wind through grass. No text or watermark.")
+    assert "EN_NO_SOUND" not in _codes(lint_video_prompt_en(p, seconds=5))
+
+
 # ---------------- 组合 ----------------
 
 def test_lint_segment_merges_both_layers():

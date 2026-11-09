@@ -86,9 +86,17 @@ def test_rewrite_input_carries_camera_inside_the_template():
     assert "medium shot, slow push-in" in text
 
 
-def test_rewrite_input_without_camera_falls_back_to_text():
+def test_rewrite_input_without_camera_omits_camera_line():
+    """没有运镜时**整行不给**，不再回落到「as described in the Chinese text」。
+
+    ★ 旧契约（`assert "as described in the Chinese text" in text`）锁的是缺陷：
+      那个回落文案会被模型**照抄进正文**（2026-09-24 真机慢测 2/2 复现，
+      例：「... warm morning light, as described in the Chinese text below.」），
+      指代的文本在输出里并不存在 —— 机检判据 EN_META_REFERENCE 抓的就是它。
+    """
     text = prompting.build_video_rewrite_input("少年走进山洞", 5, "16:9")
-    assert "as described in the Chinese text" in text
+    assert "as described in the Chinese text" not in text
+    assert "Camera (" not in text
 
 
 # ============================ 画布节点：两个提示词字段 ============================
@@ -392,3 +400,24 @@ def test_compose_video_prompt_includes_dialogue_when_present():
 def test_compose_video_prompt_omits_dialogue_clause_when_absent():
     out = composer.compose_video_prompt({"plot": "少年走上山坡", "seconds": 5}, "电影写实")
     assert "【台词】" not in out
+
+
+def test_rewrite_input_has_no_camera_placeholder_leak_when_camera_absent():
+    """没有运镜时，改写输入里不能出现任何「指代下面中文」的占位文案。
+
+    ★ 真机慢测（2026-09-24，两次）实测：模板的 `{camera}` 占位曾被填成
+      `as described in the Chinese text below`，模型**照抄进正文**——
+      这正是机检 EN_META_REFERENCE 抓到的那句。没有运镜就整行不给。
+    """
+    from app.utils.prompting import build_video_rewrite_input
+
+    text = build_video_rewrite_input("少年躺在草坡上", 5, "16:9", camera_en="")
+    assert "as described in the Chinese text below" not in text
+    assert "Camera (use this exact English wording" not in text
+
+
+def test_rewrite_input_keeps_camera_line_when_provided():
+    from app.utils.prompting import build_video_rewrite_input
+
+    text = build_video_rewrite_input("少年躺在草坡上", 5, "16:9", camera_en="medium shot")
+    assert "Camera (use this exact English wording inside sentence 2, only once): medium shot" in text

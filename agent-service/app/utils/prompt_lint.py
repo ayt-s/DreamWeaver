@@ -59,6 +59,11 @@ _EN_SOUND_RE = re.compile(
     r"(ambient|background sound|sound of|sounds? of|audio|no dialogue|silence|sfx)", re.I)
 _EN_EXCLUSION_RE = re.compile(
     r"(no |not |without |must not|should not|never )", re.I)
+# 我们自己的确定性后缀（声音排除句 / 首帧说明 / 红线）——判「有没有声音描述」时必须先剔除，
+# 否则它们里面的 `sounds` / `watermark` 会满足判据，把「整段没写声音」漏成通过。
+_EN_DETERMINISTIC_RE = re.compile(
+    r"(no extra background music|keep only natural ambient|deformed hands|extra limbs|"
+    r"on-screen text|watermark|do not re-frame|literal opening frame|first frame)", re.I)
 # 元信息泄漏：模型把「输入规格/指令」的指代写进正文（真机实测：`as described in the
 # Chinese text below`）。这类句子对视频模型是无意义噪音，且指代的文本并不存在于输出里。
 _EN_META_RE = re.compile(
@@ -185,10 +190,15 @@ def lint_video_prompt_en(prompt: str, *, seconds: int | float | None = None) -> 
             "spec-timeline"))
 
     # 声音段
-    if not _EN_SOUND_RE.search(text):
+    # ★ 真机漏检（2026-09-24 第 3 轮）：正文里**整段没有声音描述**，只有末尾那句
+    #   `No extra background music; keep only natural ambient sounds…`，而判据被
+    #   那句排除句里的 `sounds` 满足 → 漏报。先剔掉确定性后缀再判。
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    body_no_suffix = " ".join(s for s in sentences if not _EN_DETERMINISTIC_RE.search(s))
+    if not _EN_SOUND_RE.search(body_no_suffix):
         issues.append(_issue(
             "EN_NO_SOUND",
-            "没有声音描述 —— 成片音轨会由模型自由发挥（BGM 开关靠这句兜底）。",
+            "没有声音描述 —— 成片音轨会由模型自由发挥（末尾那句声音排除句不算描述）。",
             "spec-sound"))
 
     # 排除项必须在末位（末尾约束权重最高）

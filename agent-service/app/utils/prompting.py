@@ -377,9 +377,7 @@ Required shape (plain text, no headings, no bullet points, no markdown):
    character exactly as given (never translated). Speaker ROLES must be English
    (e.g. "voice-over" instead of 画外音); character names may stay as given.
 
-Camera (use this exact English wording inside sentence 2, only once): {camera}
-
-Dialogue — INPUT SPEC, describe it in the prompt; never copy this block or its labels:
+{camera_line}Dialogue — INPUT SPEC, describe it in the prompt; never copy this block or its labels:
 {dialogue_hint}
 
 Chinese shot description:
@@ -392,15 +390,24 @@ def build_video_rewrite_input(
     dialogue: str = "", speaker: str = "",
 ) -> str:
     """拼出「视频改写」的 LLM 输入（模板 + 时长/画幅 + 运镜 + 台词 + 中文描述）。纯拼接。"""
-    camera = str(camera_en or "").strip() or "as described in the Chinese text below"
+    camera = str(camera_en or "").strip()
     try:
         sec = int(float(seconds))  # type: ignore[arg-type]
     except (TypeError, ValueError):
         sec = 5
+    # ★ 2026-09-24 真机慢测（第 3、4 轮）实测：这里原先在没有运镜时把 `${camera}`
+    #   填成 `as described in the Chinese text below`，模型**照抄进正文**：
+    #   「... warm morning light, as described in the Chinese text below.」——
+    #   这是**元信息泄漏**，指代的文本在输出里根本不存在（机检 EN_META_REFERENCE 抓到的
+    #   就是它）。没有运镜时整行都不给，别留占位。
+    camera_line = (
+        f"Camera (use this exact English wording inside sentence 2, only once): {camera}\n\n"
+        if camera else ""
+    )
     return VIDEO_PROMPT_TEMPLATE.format(
         duration=video_duration_head(seconds, aspect_ratio),
         seconds=sec,
-        camera=camera,
+        camera_line=camera_line,
         dialogue_hint=dialogue_hint(dialogue, speaker),
         text=cn_description or "",
     )
