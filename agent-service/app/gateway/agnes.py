@@ -514,7 +514,11 @@ class AgnesGateway:
         #     默认 1 次即放弃（换 provider 也不重试：换账号同样会再建一个任务）；
         #   - 连接类（ConnectTimeout/ConnectError/PoolTimeout）：请求根本没送出去，
         #     重试安全，沿用原预算。
-        timeout_attempts = max(1, settings.video_submit_timeout_max_attempts)
+        # ★ 2026-09-24：读超时预算改为**每 provider 独立计数**（原来是全局 1 次）。
+        #   前提变了：agnes 额度是免费的 → 孤儿任务的**金钱成本为 0**，而「整段彻底
+        #   没产物」的代价大得多。所以一个通道排队读超时时，允许换另一个账号再赌 1 次。
+        #   仍然**同 provider 绝不重试**：那最容易撞回同一个队列，也最容易重复建任务。
+        per_provider_timeout_attempts = max(1, settings.video_submit_timeout_max_attempts)
         connect_attempts = max(1, settings.video_submit_connect_max_attempts)
         # 决定起点：如果有 session 粘性走粘性 provider 开始，否则 round-robin
         starting_index = 0
@@ -524,21 +528,19 @@ class AgnesGateway:
         # 收集所有 provider 按起点顺序排列
         rotated = self.provider_names[starting_index:] + self.provider_names[:starting_index]
         last_reason = "未知错误"
-        for provider_name in rotated:
+        for p_idx, provider_name in enumerate(rotated):
             client = self.providers[provider_name]
-            # 读超时已经发生过 → 平台侧可能已建任务，**换 provider 也不该再提交**
-            # （新账号建的是第二个任务，同样拿不到 id）。直接跳出整个 provider 循环。
-            if timeout_attempts <= 0:
-                logger.warning(
-                    "视频提交：读超时后不再重试/不再切换 provider（避免非幂等重复提交），"
-                    "session=%s last_reason=%s", session_id, last_reason)
-                break
+            # 每个 provider 用自己的读超时预算（1 = 该通道只试一次，不回头重试）
+            timeout_attempts = per_provider_timeout_attempts
             attempt = 0
             while attempt < max(attempts_per_provider, timeout_attempts, connect_attempts):
                 attempt += 1
                 await get_video_gate().acquire()
                 try:
-                    resp = await client._client.post("/videos", json=payload)
+                    # 提交接口单独放宽读超时（排队时慢响应是常态，60s 偏短）
+                    resp = await client._client.post(
+                        "/videos", json=payload,
+                        timeout=settings.video_submit_read_timeout_s)
                 except httpx.TransportError as e:
                     is_read_timeout = isinstance(e, httpx.TimeoutException) and not isinstance(
                         e, httpx.ConnectTimeout)
@@ -556,6 +558,11 @@ class AgnesGateway:
                     wait = base_wait * (1 + random.uniform(-0.2, 0.2))
                     last_reason = f"[{provider_name}] {_describe_transport_error(e)}"
                     if budget <= 0:
+                        if is_read_timeout and p_idx < len(rotated) - 1:
+                            logger.warning(
+                                "视频提交[%s] 读超时（平台可能已建任务）→ 换 provider 再试 1 次"
+                                "（同 provider 不重试；免费额度下优先保住出片）session=%s",
+                                provider_name, session_id)
                         break
                     # 格式串里不再重复 `[provider]`：last_reason 本身已带前缀，
                     # 写成 `视频提交[%s]%s` 会输出「视频提交[intl][intl] 读超时…」

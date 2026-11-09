@@ -135,3 +135,98 @@ async def test_submit_video_failure_message_is_diagnosable(monkeypatch):
     assert "读超时" in msg, f"没有给出可定位的病因: {msg!r}"
     assert "ReadTimeout" in msg, f"没有给出异常类型名: {msg!r}"
     assert "网络异常" not in msg, "旧的零信息文案不该再出现"
+
+
+# ============================================================================
+# 读超时的跨 provider 预算（2026-09-24 策略变更）
+# ============================================================================
+# 背景：agnes 额度免费 → 孤儿任务的**金钱成本为 0**，而「整段彻底没产物」代价更大。
+# 所以读超时不再全局一次即放弃，而是**每个 provider 各 1 次**；同 provider 仍不重试。
+
+class _OkResp:
+    status_code = 200
+
+    @staticmethod
+    def json():
+        return {"id": "task_fake_ok"}
+
+
+class _RecordingHttp:
+    """记录每次 post 的 kwargs，行为可编程（抛异常 / 返回成功）。"""
+
+    def __init__(self, behaviour):
+        self.behaviour = behaviour
+        self.calls: list[dict] = []
+
+    async def post(self, url, **kwargs):
+        self.calls.append(kwargs)
+        if isinstance(self.behaviour, Exception):
+            raise self.behaviour
+        return self.behaviour
+
+
+class _FakeProvider:
+    def __init__(self, name: str, behaviour) -> None:
+        self.name = name
+        self.base_url = f"http://fake.{name}"
+        self._client = _RecordingHttp(behaviour)
+
+
+def _gateway(*providers) -> AgnesGateway:
+    gw = AgnesGateway.__new__(AgnesGateway)
+    gw.providers = {p.name: p for p in providers}
+    gw.provider_names = [p.name for p in providers]
+    gw._session_provider = {}
+    return gw
+
+
+@pytest.mark.real_gateway_method
+@pytest.mark.asyncio
+async def test_read_timeout_falls_over_to_next_provider(monkeypatch):
+    """读超时后换另一个账号再试 1 次（免费额度下优先保住出片）。"""
+    monkeypatch.setattr(agnes, "get_video_gate", lambda: _NoopGate())
+    monkeypatch.setattr(agnes.settings, "video_submit_max_attempts", 1)
+    monkeypatch.setattr(agnes.settings, "video_submit_timeout_max_attempts", 1)
+
+    a = _FakeProvider("intl", httpx.ReadTimeout(""))
+    b = _FakeProvider("cn", _OkResp())
+    gw = _gateway(a, b)
+    gw._session_provider["s2"] = "intl"  # 粘性从 intl 起
+
+    out = await gw.submit_video(prompt="一只猫", session_id="s2")
+
+    assert out["provider"] == "cn", "应换到另一个 provider 并成功"
+    assert len(a._client.calls) == 1, "同 provider 不许重试（易撞同一队列 / 重复建任务）"
+    assert len(b._client.calls) == 1
+
+
+@pytest.mark.real_gateway_method
+@pytest.mark.asyncio
+async def test_read_timeout_still_no_same_provider_retry(monkeypatch):
+    """只有一个 provider 时，读超时必须只提交一次。"""
+    monkeypatch.setattr(agnes, "get_video_gate", lambda: _NoopGate())
+    monkeypatch.setattr(agnes.settings, "video_submit_max_attempts", 1)
+    monkeypatch.setattr(agnes.settings, "video_submit_timeout_max_attempts", 1)
+
+    a = _FakeProvider("intl", httpx.ReadTimeout(""))
+    gw = _gateway(a)
+
+    with pytest.raises(RuntimeError):
+        await gw.submit_video(prompt="一只猫", session_id="s3")
+
+    assert len(a._client.calls) == 1, "同 provider 一次读超时即放弃，绝不重复 POST"
+
+
+@pytest.mark.real_gateway_method
+@pytest.mark.asyncio
+async def test_submit_uses_relaxed_read_timeout(monkeypatch):
+    """提交接口单独放宽读超时（默认 180s），不再吃 client 全局的 60s。"""
+    monkeypatch.setattr(agnes, "get_video_gate", lambda: _NoopGate())
+    monkeypatch.setattr(agnes.settings, "video_submit_max_attempts", 1)
+
+    a = _FakeProvider("intl", _OkResp())
+    gw = _gateway(a)
+    await gw.submit_video(prompt="一只猫", session_id="s4")
+
+    assert a._client.calls[0].get("timeout") == agnes.settings.video_submit_read_timeout_s
+    assert agnes.settings.video_submit_read_timeout_s >= 120, "60s 对排队场景偏短"

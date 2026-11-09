@@ -98,6 +98,16 @@ class Settings:
     #   所以它是另一个独立预算 `video_submit_connect_max_attempts`。
     video_submit_timeout_max_attempts: int = int(
         _env("AGNES_VIDEO_TIMEOUT_MAX_ATTEMPTS", "1"))
+    # ★ 2026-09-24：**提交接口**的读超时（秒）。与 client 全局的 60s 分开 ——
+    #   视频提交在平台排队时慢响应是常态（`503 video_queue_full` 之外的另一半形态），
+    #   60s 对「队列要几分钟才消化」明显偏短：一次读超时直接让整段没产物。
+    #   放宽到 180s 只是「愿意等更久」，不改变重试语义（真超时后仍按下面预算处理）。
+    video_submit_read_timeout_s: float = float(
+        _env("AGNES_VIDEO_SUBMIT_TIMEOUT_S", "180"))
+    # ⚠️ 上面的 `video_submit_timeout_max_attempts` 语义已于 2026-09-24 变为
+    #   **每 provider 独立计数**（原来是全局 1 次）：免费额度下孤儿任务的金钱成本为 0，
+    #   而「整段彻底没产物」代价更大 —— 一个通道排队导致读超时时，允许换另一个账号
+    #   再试 1 次；**同 provider 仍绝不重试**（最容易撞回同一队列、也最容易重复建任务）。
     # 连接类错误（ConnectTimeout / ConnectError / PoolTimeout：请求**没送出去**）的重试次数。
     # 安全：平台侧没有建过任务，重试不产生孤儿任务。
     video_submit_connect_max_attempts: int = int(
