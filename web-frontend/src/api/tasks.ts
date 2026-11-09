@@ -110,6 +110,16 @@ export async function regenerateTask(
 }
 
 // 查询任务的段配置 + 每段已有视频 URL（供按段重生 UI 展示）
+/** 视频提示词机检的一条警告（agent 侧 `utils/prompt_lint.py` 产出，随 segments_json 落库） */
+export interface PromptLintIssue {
+  /** 判据码，如 EN_NO_SOUND / CN_GAZE_ON_PROP */
+  code: string;
+  level: 'WARN' | 'FAIL';
+  /** 判据来源，如 C18c / spec-sound */
+  rule: string;
+  msg: string;
+}
+
 export interface TaskSegment {
   index: number;
   /** 画布/图片任务的段描述（用户自己写的）；**标准模式（一句话生成）没有这个字段** */
@@ -117,6 +127,11 @@ export interface TaskSegment {
   /** 标准模式的段描述（LLM 分镜产物，`storyboard.py` 写的是这个）
    *  ⚠️ 展示/编辑取值请统一走 `segmentPromptText()`，别各写各的 `seg.prompt` */
   cn_description?: string;
+  /**
+   * 提示词机检结果（只 WARN、不阻断）。
+   * 空数组 = 查过没事；**缺这个键 = 老任务没查过**（两者别混为一谈）。
+   */
+  prompt_lint?: PromptLintIssue[];
   image_url?: string;
   reference_images?: string[];
   seconds?: number;

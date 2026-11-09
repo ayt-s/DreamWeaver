@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { X, Wand2, Loader2, AlertCircle, ListVideo, RefreshCw } from 'lucide-react';
+import { X, Wand2, Loader2, AlertCircle, AlertTriangle, ListVideo, RefreshCw } from 'lucide-react';
 import { getTaskSegments, reworkTask, type TaskSegment } from '../api/tasks';
 import { segmentPromptText } from '../utils/segmentText';
 import { cachedImageUrl } from '../types/task';
@@ -222,6 +222,22 @@ export default function SegmentManager({ taskId, onClose, onChanged, segments: s
                       <p className="mt-0.5 truncate text-[11px] text-slate-500" title={segmentPromptText(seg)}>
                         {segmentPromptText(seg) || '（空提示词，将用默认运镜）'}
                       </p>
+                      {/* 提示词机检（agent 侧产出，只 WARN）：空数组=查过没事、缺键=老任务没查过 */}
+                      {Array.isArray(seg.prompt_lint) && seg.prompt_lint.length > 0 && (
+                        <div className="mt-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5">
+                          <p className="flex items-center gap-1 text-[10px] font-medium text-amber-700">
+                            <AlertTriangle className="h-3 w-3 shrink-0" />
+                            {seg.prompt_lint.length} 条提示词警告
+                          </p>
+                          <ul className="mt-1 space-y-0.5">
+                            {seg.prompt_lint.map((issue, k) => (
+                              <li key={`${issue.code}-${k}`} className="text-[10px] leading-relaxed text-amber-700/90">
+                                <span className="font-mono">{issue.code}</span> · {issue.msg}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                     </div>
                   </div>
                   {/* 编辑提示词（勾选后展开） */}
