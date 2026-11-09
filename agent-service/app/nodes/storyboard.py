@@ -23,6 +23,7 @@ from app.utils.prompting import (
     normalize_camera_spec,
     sound_clause,
 )
+from app.utils.prompt_lint import lint_segment
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,7 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
     global_camera_spec = normalize_camera_spec(state.get("shot_language") or {})
     global_camera_en = camera_phrase(global_camera_spec)
     storyboard = []
+    _prev_cn = ""  # 上一镜的中文描述：姿态回退判据需要前后对照
     for shot in state["script"]:
         # 有全局运镜时用它替换 LLM 的 camera，避免两种运镜指令互相冲突
         # （中文描述用中文原值，确定性英文片段在翻译后拼接）
@@ -180,6 +182,14 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
         # 把 fix_hint / 首帧说明插到它前面用（见 prompting.insert_before_sound）
         _sound = sound_clause(bool(state.get("bgm")))
         video_en = _decorate_prompt(video_en, role_clauses, keep_clauses, sound=_sound)
+        # 视频提示词机检（只 WARN，不阻断提交）：判据搬自漫剧老李 C 系、按 Agnes 语法重写。
+        # 结果随段落库进 segments_json，供人工复核；空列表也写，便于区分「没查」与「查了没事」。
+        _lint = lint_segment(cn_text=cn_description, video_prompt_en=video_en,
+                             dialogue=_dlg_text, seconds=seconds, prev_cn_text=_prev_cn)
+        if _lint:
+            logger.warning("prompt_lint shot=%s: %s", shot.get("shot_id"),
+                           "; ".join(f"{i['code']}" for i in _lint))
+        _prev_cn = cn_description
         # mode 和 reference_images 的填充规则：
         # - 用户传了参考图 → 用用户图，走 mode="reference"（agnès 参考模式）
         # - 否则留空，由 image_generator 节点自动生图回填
@@ -187,6 +197,8 @@ async def storyboarder_node(state: CreativeSessionState) -> dict:
             "shot_id": shot.get("shot_id", len(storyboard)),
             "prompt_en": en_prompt,
             "video_prompt_en": video_en,
+            # 视频提示词机检结果（WARN 列表；只报不改）
+            "prompt_lint": _lint,
             # 声音排除句单独留一份：提交时要把 fix_hint / 首帧说明插到它**前面**
             "video_sound": _sound,
             # 台词随段落库（原文 + 说话人）：Java 落库后可展示/编辑，
@@ -225,6 +237,7 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
     style_prompt, negative_prompt, _global_role, _global_keep = _control_context(state)
     bindings = state.get("reference_bindings") or []
     storyboard = []
+    _prev_cn = ""  # 上一段的中文描述：姿态回退判据需要前后对照
     for idx, seg in enumerate(segments):
         # 本段自己的首帧图（画布图片节点的产物）—— keyframe 模式用它锁首帧
         own_image = str(seg.get("image_url", "")).strip()
@@ -278,10 +291,21 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
             seg_role, seg_keep = build_reference_bindings(bindings, ref_images)
             en_prompt = _decorate_prompt(en_prompt, seg_role, seg_keep, camera_en)
             video_en = _decorate_prompt(video_en, seg_role, seg_keep, sound=_sound)
+        # 视频提示词机检（只 WARN，不阻断）：中文源取「自定义视频提示词 → 本段描述」，
+        # 因为视频正文就是按这个源改写的；英文层查的是真正提交给 agnes 的那条。
+        _lint_cn = _custom_video_prompt(seg) or cn
+        _lint = lint_segment(cn_text=_lint_cn, video_prompt_en=video_en,
+                             dialogue=_dlg_text, seconds=seconds, prev_cn_text=_prev_cn)
+        if _lint:
+            logger.warning("prompt_lint shot=%s: %s", idx,
+                           "; ".join(f"{i['code']}" for i in _lint))
+        _prev_cn = _lint_cn
         storyboard.append({
             "shot_id": idx,
             "prompt_en": en_prompt,
             "video_prompt_en": video_en,
+            # 视频提示词机检结果（WARN 列表；只报不改）
+            "prompt_lint": _lint,
             # 声音排除句单独留一份：提交时 fix_hint / 首帧说明要插到它前面
             "video_sound": _sound,
             # 台词随段落库（段重生时原样复用；Java 的 SegmentReworkPlanner 会按
