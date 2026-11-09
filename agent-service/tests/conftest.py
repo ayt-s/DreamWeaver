@@ -113,3 +113,21 @@ def _isolate_outputs_and_asset_fetch(monkeypatch, tmp_path):
 
     monkeypatch.setenv("DREAMWEAVER_OUTPUT_DIR", str(tmp_path / "outputs"))
     monkeypatch.setattr(af, "download", _fake_download)
+
+
+@pytest.fixture(autouse=True)
+def _offline_image_probe(monkeypatch):
+    """测试里不真的去下载首帧图算画幅（单测不许依赖网络）。
+
+    生产路径：`storyboard.canvas_storyboarder_node` 会用首帧真实像素校正画幅
+    （keyframe 模式输出跟随首帧）。这里默认让它失效 → 行为退回「信任声明画幅」。
+
+    需要验证校正逻辑的用例在自己用例里重新 patch 该名字
+    （见 tests/test_image_meta.py::test_canvas_ratio_follows_first_frame）。
+    """
+    from app.nodes import storyboard as sb
+
+    async def _no_probe(url: str, **kwargs):  # noqa: ARG001
+        return None
+
+    monkeypatch.setattr(sb, "probe_ratio", _no_probe)

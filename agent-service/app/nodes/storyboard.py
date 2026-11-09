@@ -24,6 +24,7 @@ from app.utils.prompting import (
     sound_clause,
 )
 from app.utils.prompt_lint import lint_segment
+from app.utils.image_meta import probe_ratio
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +283,16 @@ async def canvas_storyboarder_node(state: CreativeSessionState) -> dict:
         raw_seconds = _coerce_int(seg.get("seconds")) or 5
         seconds = max(MIN_SECONDS, min(raw_seconds, MAX_SECONDS))
         ratio = str(seg.get("aspect_ratio") or STANDARD_ASPECT_RATIO).strip() or STANDARD_ASPECT_RATIO
+        # ★ 2026-09-24 真机实测：keyframe 模式下 **输出画幅跟随首帧图**，而提示词第一句写的是
+        #   分镜声明的画幅 —— 声明 16:9 + 1024×1024 首帧 → 出 704×704 方视频：
+        #   ① 提示词与成片自相矛盾；② QC 按声明的 16:9 判「画幅不符」，把期望值错误
+        #   当成模型的问题。所以提交前用首帧的真实像素算一次，两处都跟着首帧走。
+        if own_image and state.get("lock_first_frame", True):
+            probed = await probe_ratio(own_image)
+            if probed and probed != ratio:
+                logger.info("首帧真实画幅 %s（声明 %s）—— 以首帧为准 session=%s",
+                            probed, ratio, state.get("session_id"))
+                ratio = probed
         en_prompt = str(seg.get("prompt_en", "")).strip()
         video_en = str(seg.get("video_prompt_en", "")).strip()
         # 声音排除句：段重生复用时跟着已存的 video_en 一起复用（那段原本的声音句）
