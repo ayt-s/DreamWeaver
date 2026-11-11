@@ -617,6 +617,41 @@ async def cancel_task(session_id: str) -> ApiResponse:
     raise AppError("会话已开始执行，无法取消", status_code=409)
 
 
+@app.get("/health")
+async def health() -> dict:
+    """存活/依赖探针（compose healthcheck、监控、启动自检用）。
+
+    ★ 2026-11-10：此前**没有这个端点** —— 进程被 SIGTERM 后只能靠"任务不动了"才发现。
+    语义刻意宽松：HTTP 永远 200（进程能应答就是活着），Redis 状态放在字段里。
+    因为 agent 在 Redis 不可用时会降级为纯内存运行（见 `session_store`），
+    把它判成"不健康"会导致编排层无谓重启。
+
+    但 `redis=False` 意味着**断点恢复能力失效**，值得告警。
+    """
+    redis_ok = False
+    from app.config import settings  # 与文件内其它函数一致：按需导入
+
+    try:
+        import redis.asyncio as aioredis
+
+        client = aioredis.from_url(settings.redis_url, socket_connect_timeout=2,
+                                   socket_timeout=2)
+        try:
+            redis_ok = bool(await client.ping())
+        finally:
+            await client.aclose()
+    except Exception as exc:  # noqa: BLE001 - 探针不该因为探测失败而 500
+        logger.debug("health: redis 探测失败 %s", exc)
+
+    return {
+        "status": "UP" if redis_ok else "DEGRADED",
+        "service": "agent-service",
+        "redis": redis_ok,
+        "providers": len(settings.agnes_providers),
+        "scheduler": scheduler.snapshot(),
+    }
+
+
 @app.get("/v1/scheduler")
 async def scheduler_snapshot() -> ApiResponse:
     """调度队列快照：执行中 + 排队中的 session 列表（画廊排期展示）。"""

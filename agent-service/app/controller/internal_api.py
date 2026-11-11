@@ -15,11 +15,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app import fallback
+from app.security.internal_guard import require_internal_token
 
-router = APIRouter(prefix="/v1/internal", tags=["internal"])
+# 所有内部端点统一校验来源（未配置 INTERNAL_TOKEN 时放行，见 internal_guard）
+router = APIRouter(prefix="/v1/internal", tags=["internal"],
+                   dependencies=[Depends(require_internal_token)])
 
 
 @router.get("/sync-fallback")

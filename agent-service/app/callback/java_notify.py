@@ -23,6 +23,15 @@ logger = logging.getLogger(__name__)
 _RETRY_DELAYS = (1.0, 3.0, 5.0)
 
 
+def _internal_headers() -> dict[str, str]:
+    """回调 Java `/internal/**` 时带的来源令牌（与 Java 侧 INTERNAL_TOKEN 同一值）。
+
+    未配置时返回空 dict：Java 侧此时也放行（仅本地开发），两端行为一致。
+    """
+    token = (settings.internal_token or "").strip()
+    return {"X-Internal-Token": token} if token else {}
+
+
 def _to_int_seconds(raw) -> int | None:
     """把分镜/段配置里的 seconds 解析成正整数秒；不可判定返回 None。
 
@@ -137,6 +146,7 @@ async def notify_java_completion(
                 resp = await client.post(
                     f"{settings.java_notify_url}/internal/notify",
                     json=payload,
+                    headers=_internal_headers(),
                     timeout=10.0,
                 )
                 if resp.status_code == 200:
@@ -193,7 +203,8 @@ async def probe_session_tracked(session_id: str) -> bool | None:
     url = f"{settings.java_notify_url.rstrip('/')}/internal/heartbeat"
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.post(url, json={"session_id": session_id})
+            resp = await client.post(url, json={"session_id": session_id},
+                                     headers=_internal_headers())
         if resp.status_code != 200:
             return None
         body = resp.json()

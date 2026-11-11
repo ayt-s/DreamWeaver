@@ -41,7 +41,7 @@ class _FakeClient:
     async def __aexit__(self, *args):
         return False
 
-    async def post(self, url, json=None):  # noqa: ARG002
+    async def post(self, url, json=None, **kwargs):  # noqa: ARG002 - 替身要跟上真实调用的签名
         if self._exc:
             raise self._exc
         return self._resp

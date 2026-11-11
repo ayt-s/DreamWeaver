@@ -116,6 +116,12 @@ class Settings:
     # Phase 2 回调目标（Java Spring Boot 地址）
     java_notify_url: str = _env("JAVA_NOTIFY_URL", "")
 
+    # ★ 2026-11-10：内部接口来源令牌（与 Java 侧 `INTERNAL_TOKEN` 同一值）。
+    #   agent → Java 的 /internal/notify、/internal/heartbeat 会带上；
+    #   Java → agent 的 /v1/internal/sync-fallback 也会带上（FallbackSyncScheduler）。
+    #   不配置时两端都放行并各自警告一次（仅限本地开发）。
+    internal_token: str = _env("INTERNAL_TOKEN", "")
+
     # === 会话持久化（Redis 快照 + 启动自动恢复 + 心跳续期）===
     # agent 用 db=1，避免与 Java Redisson 的 dw:task:watchdog 混在 db0
     redis_url: str = _env("AGENT_REDIS_URL", "redis://127.0.0.1:6379/1")
