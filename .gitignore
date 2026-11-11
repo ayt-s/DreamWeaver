@@ -44,3 +44,6 @@ web-backend/uploads/
 .hermes/
 # 密钥/模板备份文件（易误提交，不入库）
 *.bak
+
+# Apifox CLI 本地分支状态（每台机器不同）
+.apifox/
