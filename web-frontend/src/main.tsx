@@ -6,8 +6,10 @@ import CreatePage from './pages/CreatePage';
 import GalleryPage from './pages/GalleryPage';
 import ImageVideoPage from './pages/ImageVideoPage';
 import NovelPage from './pages/NovelPage';
+import LoginPage from './pages/LoginPage';
 import './index.css';
 import NavBar from './components/NavBar';
+import RequireAuth from './components/RequireAuth';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,10 +26,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <BrowserRouter>
         <NavBar />
         <Routes>
-          <Route path="/" element={<CreatePage />} />
-          <Route path="/gallery" element={<GalleryPage />} />
-          <Route path="/canvas" element={<ImageVideoPage />} />
-          <Route path="/novel" element={<NovelPage />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/" element={<RequireAuth><CreatePage /></RequireAuth>} />
+          <Route path="/gallery" element={<RequireAuth><GalleryPage /></RequireAuth>} />
+          <Route path="/canvas" element={<RequireAuth><ImageVideoPage /></RequireAuth>} />
+          <Route path="/novel" element={<RequireAuth><NovelPage /></RequireAuth>} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>
