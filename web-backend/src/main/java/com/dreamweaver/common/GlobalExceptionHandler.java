@@ -2,6 +2,7 @@ package com.dreamweaver.common;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -27,6 +28,16 @@ public class GlobalExceptionHandler {
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public CommonResult<Void> handleIllegalArgument(IllegalArgumentException e) {
         return CommonResult.error(400, e.getMessage());
+    }
+
+    /**
+     * 认证/授权错误：401（未登录/凭证错）或 403（已登录但无权）。
+     * 与 400 分开，前端据此决定「跳登录页」还是「提示输入」。
+     */
+    @ExceptionHandler(AuthException.class)
+    public ResponseEntity<CommonResult<Void>> handleAuth(AuthException e) {
+        int code = e.isForbidden() ? 403 : 401;
+        return ResponseEntity.status(code).body(CommonResult.error(code, e.getMessage()));
     }
 
     @ExceptionHandler(Exception.class)

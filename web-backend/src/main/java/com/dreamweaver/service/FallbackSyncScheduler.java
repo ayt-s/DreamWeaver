@@ -7,6 +7,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -41,10 +42,20 @@ public class FallbackSyncScheduler {
     private final ObjectMapper objectMapper;
     private final AgentServiceProperties agentProps;
 
+    /** 内部接口令牌（与 agent 侧 INTERNAL_TOKEN 同一值；未配置时两端都放行） */
+    @Value("${dreamweaver.internal.token:}")
+    private String internalToken;
+
     private final HttpClient http = HttpClient.newBuilder()
             .version(HttpClient.Version.HTTP_1_1)
             .connectTimeout(Duration.ofSeconds(5))
             .build();
+
+    /** 给请求加上内部接口鉴权头（未配置令牌时不加，agent 侧此时也放行）。 */
+    private HttpRequest.Builder withInternalHeader(HttpRequest.Builder builder) {
+        String token = internalToken == null ? "" : internalToken.trim();
+        return token.isEmpty() ? builder : builder.header("X-Internal-Token", token);
+    }
 
     /** 每 60s 拉一次 agent fallback，首次延迟 20s（让 agent 先启动完）。 */
     @Scheduled(fixedDelayString = "${dreamweaver.fallback-sync.interval-ms:60000}",
@@ -54,10 +65,10 @@ public class FallbackSyncScheduler {
                 ? "http://127.0.0.1:8000" : agentProps.getBaseUrl();
         String listUrl = base.replaceFirst("/+$", "") + "/v1/internal/sync-fallback";
         try {
-            HttpRequest req = HttpRequest.newBuilder()
+            HttpRequest req = withInternalHeader(HttpRequest.newBuilder()
                     .uri(URI.create(listUrl))
                     .timeout(Duration.ofSeconds(10))
-                    .GET()
+                    .GET())
                     .build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() != 200) {
@@ -94,11 +105,11 @@ public class FallbackSyncScheduler {
             if (!ackedIds.isEmpty()) {
                 String ackUrl = base.replaceFirst("/+$", "") + "/v1/internal/sync-fallback/ack";
                 String ackBody = objectMapper.writeValueAsString(Map.of("ids", ackedIds));
-                HttpRequest ackReq = HttpRequest.newBuilder()
+                HttpRequest ackReq = withInternalHeader(HttpRequest.newBuilder()
                         .uri(URI.create(ackUrl))
                         .timeout(Duration.ofSeconds(10))
                         .header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(ackBody))
+                        .POST(HttpRequest.BodyPublishers.ofString(ackBody)))
                         .build();
                 http.send(ackReq, HttpResponse.BodyHandlers.ofString());
                 log.info("fallback 已 ack {} 条记录", ackedIds.size());
