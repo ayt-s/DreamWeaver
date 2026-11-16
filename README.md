@@ -53,6 +53,25 @@ npm run dev   # 打开 http://localhost:5173
 - 回调幂等：乐观锁 + 状态机转移表 + 终态检查三重防护
 - 回调失联不丢数据：本地 JSONL 兜底 + 结构化补拉端点，Java 恢复后主动 `sync-fallback`
 
+## 🔌 MCP Server（对外接入）
+
+`agent-service/app/mcp/` 把创作能力封装成标准 MCP 工具，任何 MCP Host（Cursor / Claude Desktop / 自研 Agent）接一次即用，
+支持 **stdio**（别人 clone 下来本地跑，零部署）与 **streamable-http**（Bearer Token，可信环境/远程演示）两种传输。
+
+- 7 个工具：任务查询、画布读取、节点提示词编辑、图片首帧生成（按张计费，支持 `dry_run`）、MCP 审计查询
+- `read` / `write` 两级 scope，按 Token 授权；stdio 默认只读，写权限需显式开启
+- 每次 `tools/call`（含被拒绝的 401/越权）落 SQLite 审计表 `data/mcp_audit.db`
+- 工具矩阵单一来源：`python -m app.mcp --list-tools`
+
+```bash
+cd agent-service
+python -m app.mcp                     # stdio，默认只读
+MCP_ALLOW_WRITE=1 python -m app.mcp   # 本地自用，放开生成类工具
+python -m app.mcp --transport http --port 8765   # 需配 .mcp-tokens.json，否则拒绝启动
+```
+
+接入配置、审计表结构、鉴权模型见 [`docs/mcp-server.md`](docs/mcp-server.md)。
+
 ## ✨ 项目亮点
 
 - **多 Agent 协作编排**：LangGraph 状态图驱动的创作流水线（需求解析 → 剧本 → 分镜 → 生成 → 质检 → 修正），每个 checkpoint 全量写入 Redis 快照，进程重启自动恢复活跃会话
@@ -123,6 +142,7 @@ React (5173)
 │   │   ├── tools/         # Agent 工具（MCP 风格注册：image / video / qc）
 │   │   ├── nodes/         # LangGraph 节点（一文件一节点）
 │   │   ├── agent/         # 创作对话 Agent（pydantic-ai）
+│   │   ├── mcp/           # MCP Server（工具矩阵 / Token scope / 审计 / stdio+http 双传输）
 │   │   ├── novel/         # 小说/文稿 → 分镜预处理（analyzer/splitter/storyboarder）
 │   │   ├── controller/    # 内部 API（sync-fallback、novel 预处理）
 │   │   ├── callback/      # FastAPI → Java 回调通知
@@ -134,7 +154,7 @@ React (5173)
 │   │   ├── fallback.py    # 回调失败本地 JSONL 兜底
 │   │   ├── events.py      # SSE 事件缓冲（支持断线重连补漏）
 │   │   └── main.py        # FastAPI 入口 + 路由
-│   └── tests/             # pytest：30 个测试模块（冒烟 + 契约 + 回归）
+│   └── tests/             # pytest：69 个测试模块（冒烟 + 契约 + 回归 + MCP 端到端）
 ├── web-backend/     # Spring Boot（用户/任务/资产/配额/画布、回调接收）
 │   └── src/main/java/com/dreamweaver/
 │       ├── controller/  # REST 层（只做参数接收+响应组装）

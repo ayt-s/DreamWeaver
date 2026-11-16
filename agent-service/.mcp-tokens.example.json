@@ -1,0 +1,15 @@
+{
+  "_说明": "复制为 .mcp-tokens.json 后使用；每台机器一份，已被 .gitignore 排除。HTTP 模式必须配，stdio 模式可选。",
+  "tokens": {
+    "dw-demo-readonly-token-change-me": {
+      "name": "demo-readonly",
+      "scopes": ["read"],
+      "note": "只读：看任务、看画布、看审计；不能改提示词、不能生成图片"
+    },
+    "dw-local-write-token-change-me": {
+      "name": "local-write",
+      "scopes": ["read", "write"],
+      "note": "本地自用：可改提示词、可触发生成（按张计费）。不要放到公网环境"
+    }
+  }
+}

@@ -19,6 +19,9 @@ dependencies = [
     # 显式声明 —— 之前它只是 langchain-core 的传递依赖，随时可能消失。
     # 默认关闭（LANGSMITH_TRACING=0），关闭时不 import、零开销。
     "langsmith>=0.12",
+    # MCP Server：把 DreamWeaver 的创作能力暴露成标准 MCP 工具（stdio / streamable-http 双传输）。
+    # 只做 server 侧，不引 LangChain 适配层，保持依赖面最小。
+    "mcp>=2.3",
 ]
 
 [project.optional-dependencies]
