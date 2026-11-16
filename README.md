@@ -3,13 +3,23 @@
 > 用户一句话需求 → AI 导演 Agent 自动产出短视频成片。
 > 「剧本 → 分镜 → 提示词 → 素材生成 → 视频生成 → 质检 → 修正」完整 Agent 闭环。
 
+## 📸 界面预览
+
+| 创作台 | 小说转漫剧 |
+|---|---|
+| ![创作台](docs/images/01-create.png) | ![小说转漫剧](docs/images/04-novel.png) |
+
+**无限画布**：分段编排、逐镜提示词与首帧、成片节点串成长视频
+
+![无限画布](docs/images/03-canvas.png)
+
 ## 🚀 快速开始
 
 ### 0. 前置依赖
 
 - Python ≥ 3.11、Java 17、Node ≥ 18
 - MySQL 8 —— 建库 `dreamweaver`，建表脚本 `web-backend/src/main/resources/db/init.sql`
-- Redis —— **可选**：用于 agent 会话快照与 Java 看门狗；agent 侧连不上会静默降级为纯内存，不阻塞启动
+- Redis 7+ —— **Java 侧必需**：Redisson 在启动时就要连接（`127.0.0.1:6379`），不启动会直接报 `RedisConnectionException` 起不来；agent 侧连不上则静默降级为纯内存，不阻塞启动
 
 ### 1. 配置环境变量（必需）
 
@@ -35,8 +45,8 @@ uvicorn app.main:app --reload --port 8000
 ### 3. 启动业务侧（web-backend）
 
 ```bash
-cd web-backend
-./mvnw spring-boot:run
+# mvnw 在仓库根目录，不在 web-backend 里
+./mvnw -f web-backend/pom.xml spring-boot:run
 ```
 
 ### 4. 启动前端（web-frontend）
