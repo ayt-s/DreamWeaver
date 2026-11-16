@@ -75,7 +75,7 @@ python -m app.mcp --transport http --port 8765   # 需配 .mcp-tokens.json，否
 ## ✨ 项目亮点
 
 - **多 Agent 协作编排**：LangGraph 状态图驱动的创作流水线（需求解析 → 剧本 → 分镜 → 生成 → 质检 → 修正），每个 checkpoint 全量写入 Redis 快照，进程重启自动恢复活跃会话
-- **工具调用与审计**：MCP 风格工具层（`app/tools/`），state 只留 `{node, status, elapsed_ms}` 极简轨迹（结构性防膨胀）+ SSE 推前端画时间线，LLM 出口级细节交给 LangSmith（默认关闭、零开销）
+- **工具调用与审计**：创作对话 Agent 的工具层（`app/tools/`）负责进程内工具调用；另有一层对外的 **MCP Server**（`app/mcp/`，见下节）把创作能力暴露给任何 MCP Host，带 Token scope 与调用审计。state 只留 `{node, status, elapsed_ms}` 极简轨迹（结构性防膨胀）+ SSE 推前端画时间线，LLM 出口级细节交给 LangSmith（默认关闭、零开销）
 - **质检与自愈闭环**：双层 QC（OpenCV 抽帧规则层判黑帧/模糊 + LLM 判分）+ `fix_looping` 失败镜定向重生（修正后缀按原因映射，`random50` 分组做在线 A/B），不留「修不好就整片重跑」
 - **异步解耦**：FastAPI 有界并发调度队列（超出 FIFO 排队）+ `video_id` 轮询 + Java 端 `@Version` 乐观锁幂等回调；回调失败落本地 JSONL，Java 起来后主动补拉
 - **真实产品级细节**：429/503 指数退避 ± 抖动、双端点（国际/国内）按 session 粘性路由 + 提交失败 failover、Redisson TTL 看门狗 + 自动重试、密钥全环境变量隔离
