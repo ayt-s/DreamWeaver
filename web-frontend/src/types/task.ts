@@ -110,6 +110,8 @@ export interface TaskResponse {
   prompt?: string;
   /** 草稿标记：true=草稿（默认，新生成物进草稿区）false=成品 */
   isDraft?: boolean;
+  /** 保存的重生参数快照；画布回填也从这里读取稳定关联 */
+  genParamsJson?: string;
   /** 段配置 JSON 字符串（有值时支持按段重生） */
   segmentsJson?: string;
   /** 本轮生成起点（ISO 格式）：Agent 受理时刻；算「实际生成耗时」用，缺失时回退 createdAt */
@@ -334,6 +336,10 @@ export interface CreateTaskRequest {
   bgm?: boolean;
   /** 产物来源：默认 default（进画廊）；canvas_asset = 画布素材（画廊默认过滤） */
   source?: string;
+  /** 画布项目 ID；与 canvasNodeId 一起用于稳定回填，不依赖提示词文本 */
+  canvasProjectId?: number;
+  /** 画布图片节点的稳定 UUID；任务与节点的关联信息写入 gen_params_json */
+  canvasNodeId?: string;
 }
 
 // === 可灵式结构化运镜（与 agent prompting.py 白名单严格对齐） ===

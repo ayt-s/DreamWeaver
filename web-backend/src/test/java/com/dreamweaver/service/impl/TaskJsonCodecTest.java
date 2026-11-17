@@ -210,6 +210,44 @@ class TaskJsonCodecTest {
     }
 
     @Test
+    @DisplayName("gen_params_json：画布直出图重生保留锚定参考图、直出模式与候选张数")
+    void canvasImageSettingsRoundTripThroughGenParams() {
+        CreateTaskRequest src = new CreateTaskRequest();
+        src.setReferenceImages("[\"https://cdn.example/character.png\"]");
+        src.setDirectImage(Boolean.TRUE);
+        src.setImageCount(1);
+        src.setCanvasProjectId(41L);
+        src.setCanvasNodeId("canvas-node-4");
+
+        String json = codec.buildGenParamsJson(src);
+        assertNotNull(json, "只有画布出图参数也必须落库，否则重生会退化");
+        assertTrue(json.contains("\"canvasProjectId\":41"));
+        assertTrue(json.contains("\"canvasNodeId\":\"canvas-node-4\""));
+
+        CreateTaskRequest restored = new CreateTaskRequest();
+        codec.applyGenParamsJson(json, restored);
+
+        assertEquals(src.getReferenceImages(), restored.getReferenceImages());
+        assertEquals(Boolean.TRUE, restored.getDirectImage());
+        assertEquals(1, restored.getImageCount());
+        assertEquals(41L, restored.getCanvasProjectId());
+        assertEquals("canvas-node-4", restored.getCanvasNodeId());
+    }
+
+    @Test
+    @DisplayName("gen_params_json：旧任务缺少画布出图字段时保持 null")
+    void missingCanvasImageSettingsStayNullForLegacyTasks() {
+        CreateTaskRequest restored = new CreateTaskRequest();
+        codec.applyGenParamsJson("{\"imageRatio\":\"16:9\"}", restored);
+
+        assertNull(restored.getReferenceImages());
+        assertNull(restored.getDirectImage());
+        assertNull(restored.getImageCount());
+        assertNull(restored.getCanvasProjectId());
+        assertNull(restored.getCanvasNodeId());
+    }
+
+    @Test
     @DisplayName("gen_params_json：出图画幅与首帧锁定也往返（否则重新生成退回 1:1 正方形）")
     void genParamsRoundTripCarriesImageRatioAndFrameLock() {
         CreateTaskRequest src = new CreateTaskRequest();

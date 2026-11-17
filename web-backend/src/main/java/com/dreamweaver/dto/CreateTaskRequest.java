@@ -23,7 +23,7 @@ public class CreateTaskRequest {
     /** 生成类型：text_video(纯文本视频)/image_video(图生视频)/text_image(文生图) */
     private String genType;
 
-    /** 用户上传的参考图片 URL 数组（图生视频模式） */
+    /** 用户/画布锚定图 URL 数组 JSON 字符串（图生视频、画布文生图的参考图） */
     private String referenceImages;
 
     /**
@@ -43,20 +43,23 @@ public class CreateTaskRequest {
 
     /**
      * 直出图（画布节点的「一键文生图」）：true 时 agent 跳过需求解析/剧本/分镜，
-     * 直接按 prompt 出图。不传的话「一镜一 prompt」会被 LLM 重新拆镜——
+     * 直接按 prompt 出图。需随任务参数落库，确保重生仍走直出链路。不传的话「一镜一 prompt」会被 LLM 重新拆镜——
      * 一次任务产出多张不同画面的图（实测 5 张/3 张），前端只用得上第 1 张，其余白花额度。
      */
     private Boolean directImage;
 
-    /** 直出图候选张数（1~5，默认 1）：同一 prompt 多次请求，产出多个候选供人选一张 */
+    /** 直出图候选张数（1~5，默认 1）；重生时须保留原张数，避免意外多出图 */
     private Integer imageCount;
 
-    /**
-     * 产物来源：{@code default}（默认，进画廊）/ {@code canvas_asset}（画布素材，画廊过滤）。
-     * 画布节点的一键文生图必须传 canvas_asset，否则一次批量会在草稿区刷出 N 个任务。
-     */
+    /** 产物来源标记：default（画廊作品）/ canvas_asset（画布中间素材） */
     @Size(max = 32, message = "source 过长（≤32）")
     private String source;
+
+    /** 画布来源项目 ID：与 canvasNodeId 一起用于稳定回填画布节点 */
+    private Long canvasProjectId;
+
+    /** 画布图片节点的稳定标识（由前端生成，不依赖可变提示词） */
+    private String canvasNodeId;
 
     /** 图片合成视频：单张停留秒数（1~10，默认 3） */
     private Double slideSeconds;

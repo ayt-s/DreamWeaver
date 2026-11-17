@@ -205,6 +205,7 @@ describe('ImageVideoPage 无限画布页', () => {
     // → 一次白出 3~5 张不同画面的图，而这里只用得上第 1 张。
     // 这条就是 2026-09-17 修的那个额度浪费 bug 的回归护栏（TaskServiceImpl.java:380-383）。
     expect(arg.directImage).toBe(true);
+    expect(arg.canvasNodeId).toEqual(expect.any(String));
   });
 
   it('★ 定点修正：「修一下」把改后新图并入候选并设为该镜首帧', async () => {
@@ -357,6 +358,39 @@ describe('「从历史作品选取」面板', () => {
       page: 1,
       size: 12,
     });
+  });
+
+  it('回填优先按项目 + 节点 UUID 关联，提示词变化也能恢复且不会串到其他项目', async () => {
+    const currentUrl = 'https://cdn.agnes-ai.space/current-node.png';
+    const otherProjectUrl = 'https://cdn.agnes-ai.space/other-project.png';
+    const response = historyList([
+      { id: 902, prompt: '本节点原始提示词', urls: [otherProjectUrl] },
+      { id: 901, prompt: '服务端已补入角色描述的提示词', urls: [currentUrl] },
+    ]);
+    response.list[0].genParamsJson = JSON.stringify({ canvasProjectId: 78, canvasNodeId: 'same-node-key' });
+    response.list[1].genParamsJson = JSON.stringify({ canvasProjectId: 77, canvasNodeId: 'same-node-key' });
+    vi.mocked(listTasks).mockResolvedValue(response);
+    vi.mocked(getProject).mockResolvedValue({
+      id: 77,
+      name: '回填测试',
+      nodesJson: JSON.stringify({
+        nodes: [{
+          id: 'shot-4',
+          type: 'imageNode',
+          position: { x: 0, y: 0 },
+          data: { imageUrl: '', prompt: '本节点原始提示词', ratio: '16:9', canvasNodeKey: 'same-node-key' },
+        }],
+      }),
+      edgesJson: '[]',
+      version: 0,
+    });
+
+    renderPage('/canvas?project=77');
+    fireEvent.click(await screen.findByRole('button', { name: '回填已生成图' }));
+
+    const image = await screen.findByAltText('参考图');
+    expect(image.getAttribute('src')).toContain(encodeURIComponent(currentUrl));
+    expect(image.getAttribute('src')).not.toContain(encodeURIComponent(otherProjectUrl));
   });
 
   it('切「作品」栏 → 用 source=work 重新取数（素材与作品不再混排）', async () => {
@@ -605,6 +639,10 @@ describe('「从历史作品选取」面板', () => {
       () => expect(vi.mocked(listTasks).mock.calls.length).toBeGreaterThan(before),
       { timeout: 20000 },
     );
+    const taskCalls = vi.mocked(createVideoTask).mock.calls;
+    const request = taskCalls[taskCalls.length - 1]?.[0];
+    expect(request?.canvasNodeId).toEqual(expect.any(String));
+    expect(request?.directImage).toBe(true);
   }, 30000);
 });
 

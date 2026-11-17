@@ -133,6 +133,10 @@ interface ImageNodeData {
   imageUrl: string;
   prompt: string;
   ratio: string;
+  /** 与任务表关联时使用的稳定 UUID；React Flow 的展示 id 删除后可能复用 */
+  canvasNodeKey?: string;
+  /** 最近一次生成该节点图片的任务 ID，回填时优先直接读取该任务 */
+  generatedTaskId?: number;
   /** 一键文生图产出的多张候选（同 prompt 多次请求）；点缩略图切换 imageUrl */
   candidates?: string[];
   /** 结构化运镜（景别/机位/运镜），可选；空则不注入提示词 */
@@ -202,7 +206,7 @@ function refImagesField(refs: string[]): string | undefined {
 }
 
 /**
- * 文生图单张：提交 text_image 任务并轮询到完成，返回图片 URL。
+ * 文生图单张：提交 text_image 任务并轮询到完成，返回任务 ID 与图片 URL。
  *
  * 抽成模块级函数是为了「一键文生图」批量流程与单节点按钮共用同一套超时/失败语义，
  * 免得两处各写一套轮询逻辑、各自演化。
@@ -216,7 +220,8 @@ async function generateOneImage(
   ratio = '16:9',
   timeoutMs = 180_000,
   referenceImages: string[] = [],
-): Promise<string[]> {
+  canvas?: { projectId: number | null; nodeId: string },
+): Promise<{ taskId: number; urls: string[] }> {
   const res = await createVideoTask({
     prompt,
     genType: 'text_image',
@@ -231,6 +236,8 @@ async function generateOneImage(
     referenceImages: refImagesField(referenceImages),
     // 素材标记：画廊默认不展示（否则一次批量会在草稿区刷出 N 个任务）
     source: 'canvas_asset',
+    canvasProjectId: canvas?.projectId ?? undefined,
+    canvasNodeId: canvas?.nodeId,
   });
   const taskId = Number(res.id);
   const t0 = Date.now();
@@ -240,7 +247,7 @@ async function generateOneImage(
     if (!cur) throw new Error('任务查询失败');
     if (cur.status === 'completed') {
       const urls = parseImageUrls(cur.imageUrls);
-      if (urls.length > 0) return urls;
+      if (urls.length > 0) return { taskId, urls };
       throw new Error('生成完成但无图片');
     }
     if (cur.status === 'failed' || cur.status === 'expired') {
@@ -372,9 +379,14 @@ function TextNodeView({ id, data }: NodeProps<GraphNode>) {
  * 又**不能塞进 `data`**（data 是业务 JSON，会落库、会被序列化 —— 见画布四条硬规则）。
  * 所以走 context：页面在 `<ReactFlow>` 外层提供，节点里 `useContext` 取。
  */
-const AnchorsCtx = createContext<{ chars: AnchorMap; scenes: AnchorMap }>({
+const AnchorsCtx = createContext<{
+  chars: AnchorMap;
+  scenes: AnchorMap;
+  projectId: number | null;
+}>({
   chars: {},
   scenes: {},
+  projectId: null,
 });
 
 /** 定点修正默认追加的「保真」尾句（2026-09-18，用户实测驱动）。
@@ -594,6 +606,8 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
       urlMapOf(anchors.chars),
       urlMapOf(anchors.scenes),
     );
+    const canvasNodeId = data.canvasNodeKey || createCanvasNodeKey();
+    if (!data.canvasNodeKey) patch({ canvasNodeKey: canvasNodeId });
     setGenerating(true);
     setStatus(refs.length > 0 ? `文生图进行中（带 ${refs.length} 张锚定图参考）…` : '文生图进行中…');
     try {
@@ -613,6 +627,8 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
         //      上面那句 invalidateQueries 是空转）；② 画廊「草稿」筛选下多出一条
         //      与本次创作无关的记录 —— 与代码注释和产品意图正好相反。
         source: 'canvas_asset',
+        canvasProjectId: anchors.projectId ?? undefined,
+        canvasNodeId,
       });
       const taskId = Number(res.id);
       const t0 = Date.now();
@@ -627,7 +643,11 @@ function ImageNodeView({ id, data }: NodeProps<GraphNode>) {
         if (cur.status === 'completed') {
           const urls = parseImageUrls(cur.imageUrls);
           if (urls.length > 0) {
-            patch({ imageUrl: urls[0] });
+            patch({
+              imageUrl: urls[0],
+              generatedTaskId: taskId,
+              ...(urls.length > 1 ? { candidates: urls } : {}),
+            });
             setStatus('已生成参考图');
             // 这条任务同样是画布素材 → 让左侧「从历史作品选取」立刻能选到它
             queryClient.invalidateQueries({ queryKey: HISTORY_IMAGES_KEY });
@@ -1099,6 +1119,13 @@ function VideoNodeView({ id, data }: NodeProps<GraphNode>) {
 /* 主画布页面                                                           */
 /* ------------------------------------------------------------------ */
 
+/** 为画布图片节点生成不可复用的稳定 key；不把 React Flow 展示 id 当持久关联。 */
+function createCanvasNodeKey(): string {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi && typeof cryptoApi.randomUUID === 'function') return cryptoApi.randomUUID();
+  return `canvas-node-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 /** 生成不与现有节点冲突的 id：取现有 `n<数字>` 的最大编号 +1。
  *  原先用模块级自增计数器（从 n1 开始），与 initialNodes 的硬编码 id（n1..n3）撞车：
  *  点「添加节点」生成 n1/n2/n3 会**覆盖同 id 的老节点**，把成片节点悄悄换成文本节点 ——
@@ -1332,8 +1359,8 @@ export default function CanvasPage() {
   // 传给画布节点组件的锚定图（含描述，首帧文生图要用）。必须 useMemo ——
   // 每次渲染新建对象会让所有节点重渲染。
   const anchorsCtxValue = useMemo(
-    () => ({ chars: effectiveCharRefs, scenes: effectiveSceneRefs }),
-    [effectiveCharRefs, effectiveSceneRefs],
+    () => ({ chars: effectiveCharRefs, scenes: effectiveSceneRefs, projectId: currentProjectId }),
+    [effectiveCharRefs, effectiveSceneRefs, currentProjectId],
   );
   // 元素绑定的行与编号见下面「plan 之后」的 bindingRows ——
   // 编号必须按**各段真实数组**现算（依赖 plan.segments），所以定义位置挪到了 plan 之后。
@@ -1927,7 +1954,12 @@ export default function CanvasPage() {
         if (type === 'textNode') {
           base.data = { content: '', mode: '自己编写' };
         } else if (type === 'imageNode') {
-          base.data = { imageUrl: '', prompt: '', ratio: '16:9' };
+          base.data = {
+            imageUrl: '',
+            prompt: '',
+            ratio: '16:9',
+            canvasNodeKey: createCanvasNodeKey(),
+          };
         } else {
           base.data = { seconds: 4 };
         }
@@ -1955,6 +1987,7 @@ export default function CanvasPage() {
             imageUrl: url,
             prompt: '',
             ratio: '16:9',
+            canvasNodeKey: createCanvasNodeKey(),
             // 候选一并带进节点：面板 12 格装不下每个任务的 3 张候选，
             // 而节点里本来就有「候选 N 张 · 点一张设为首帧」的切换器 ——
             // 不带的话用户在画布上永远只能拿到第 1 张（此时另一张可能才是好的）。
@@ -1962,6 +1995,7 @@ export default function CanvasPage() {
             // 来源只记录、不写进 prompt：把 [角色锚]/[镜头] 那套静态设定塞进视频提示词
             // 会触发已知坑（列了谁就画谁、人数措辞凑人数），而图生视频要的是动作描述。
             // 用户点节点上的「填入提示词」才算显式接管（见 ImageNodeView）。
+            ...(origin ? { generatedTaskId: origin.taskId } : {}),
             ...(origin && origin.prompt.trim()
               ? { originTaskId: origin.taskId, originPrompt: origin.prompt }
               : {}),
@@ -2121,18 +2155,28 @@ export default function CanvasPage() {
 
   const runBatchTextToImage = async () => {
     const targets = pendingImageNodes.map((n) => {
-      const rawPrompt = ((n.data as ImageNodeData).prompt || '').trim();
+      const data = n.data as ImageNodeData;
+      const rawPrompt = (data.prompt || '').trim();
       return {
         id: n.id,
+        canvasNodeId: data.canvasNodeKey || createCanvasNodeKey(),
         prompt: rawPrompt,
         // 画幅随节点走：不传 agnes 按 1:1 出图（实测正方形），与节点的 16:9 不一致
-        ratio: (n.data as ImageNodeData).ratio || '16:9',
+        ratio: data.ratio || '16:9',
         // ★ 锚定图当参考图（2026-09-18 A/B 实测：场景侧明显收益、角色侧弱收益）。
         //   用**原始**提示词匹配 —— 见 startTextToImage 里「自证命中」的说明。
         refs: firstFrameRefsFor(rawPrompt, effectiveCharUrls, effectiveSceneUrls),
       };
     });
     if (targets.length === 0) return;
+    const targetById = new Map(targets.map((t) => [t.id, t.canvasNodeId]));
+    setNodes((nds) =>
+      nds.map((n) => {
+        const key = targetById.get(n.id);
+        if (!key || (n.data as ImageNodeData).canvasNodeKey === key) return n;
+        return { ...n, data: { ...n.data, canvasNodeKey: key } };
+      }),
+    );
     batchStopRef.current = false;
     setBatchRunning(true);
     setBatchDone(0);
@@ -2146,17 +2190,27 @@ export default function CanvasPage() {
         // ★ P0-1：首帧提示词同样拼上命中的角色/场景**描述**
         //   （与单节点「文生图」共用 augmentPromptWithAnchors，同一套匹配口径）
         //   + 带上命中的锚定图当参考图（2026-09-18 A/B：场景侧明显收益）
-        const urls = await generateOneImage(
+        const generated = await generateOneImage(
           augmentPromptWithAnchors(t.prompt, effectiveCharRefs, effectiveSceneRefs),
           candidateCount,
           t.ratio,
           180_000,
           t.refs,
+          { projectId: currentProjectId, nodeId: t.canvasNodeId },
         );
         setNodes((nds) =>
           nds.map((n) =>
             n.id === t.id
-              ? { ...n, data: { ...n.data, candidates: urls, imageUrl: urls[0] } }
+              ? {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    candidates: generated.urls,
+                    imageUrl: generated.urls[0],
+                    canvasNodeKey: t.canvasNodeId,
+                    generatedTaskId: generated.taskId,
+                  },
+                }
               : n,
           ),
         );
@@ -2174,10 +2228,10 @@ export default function CanvasPage() {
     queryClient.invalidateQueries({ queryKey: HISTORY_IMAGES_KEY });
   };
 
-  // === 一键回填：从历史素材任务里把已生成的图找回节点 ===
+  // === 一键回填：按任务 ID / 项目 + 节点 UUID 找图；旧任务才回退到提示词 ===
   // 场景：之前生成过、但画布没保存（刷新/重启/换浏览器）→ 节点显示「待生成」，
   // 而图其实还在（素材任务 source=canvas_asset 保留在库里，agnes URL 仍有效）。
-  // 按 prompt 精确匹配即可——节点 prompt 是唯一的，不会张冠李戴。
+  // 稳定关联任务优先，不依赖提示词完全一致；没有关联字段的旧任务仍兼容精确/归一化提示词。
   const [backfillCount, setBackfillCount] = useState<number | null>(null);
   const backfillMutation = useMutation({
     mutationFn: async () => {
@@ -2187,33 +2241,96 @@ export default function CanvasPage() {
         genType: 'text_image',
         includeAssets: true,
       });
-      // 两级索引：精确键优先；归一化键**仅在不冲突时**可用（歧义宁可不填——
-      // 把 A 镜的图填到 B 镜，用户会直接拿去生成视频，比不填更糟）
-      const exact = new Map<string, string[]>();
-      const loose = new Map<string, string[]>();
+      // 先建稳定索引：任务 ID 直接查，项目 ID + 节点 UUID 其次；只有旧任务才走提示词回退。
+      type BackfillMatch = { taskId: number; urls: string[] };
+      const stable = new Map<string, BackfillMatch>();
+      const exact = new Map<string, BackfillMatch>();
+      const loose = new Map<string, BackfillMatch | null>();
       for (const t of list) {
         if (t.status !== 'completed') continue;
-        const key = (t.prompt || '').trim();
         const urls = parseImageUrls(t.imageUrls);
-        if (!key || urls.length === 0) continue;
-        if (!exact.has(key)) exact.set(key, urls);
-        const nk = normalizePrompt(key);
-        if (nk) loose.set(nk, loose.has(nk) ? [] : urls);
+        if (urls.length === 0) continue;
+        let params: Record<string, unknown> = {};
+        try {
+          const parsed = JSON.parse(t.genParamsJson || '{}');
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) params = parsed;
+        } catch {
+          // 历史参数坏数据按旧任务处理，不阻断回填。
+        }
+        const rawProjectId = params.canvasProjectId;
+        const projectId = rawProjectId == null ? null : Number(rawProjectId);
+        const canvasNodeId = typeof params.canvasNodeId === 'string' ? params.canvasNodeId : '';
+        const hasCanvasAssociation = rawProjectId != null || canvasNodeId.length > 0;
+        const match = { taskId: Number(t.id), urls };
+        if (hasCanvasAssociation) {
+          if (
+            currentProjectId !== null &&
+            Number.isFinite(projectId) &&
+            projectId === currentProjectId &&
+            canvasNodeId &&
+            !stable.has(`${projectId}:${canvasNodeId}`)
+          ) {
+            stable.set(`${projectId}:${canvasNodeId}`, match);
+          }
+          continue; // 不把其他项目的新任务误当成提示词相同的旧素材
+        }
+        const prompt = (t.prompt || '').trim();
+        if (!prompt) continue;
+        if (!exact.has(prompt)) exact.set(prompt, match);
+        const normalized = normalizePrompt(prompt);
+        if (normalized) loose.set(normalized, loose.has(normalized) ? null : match);
       }
-      let filled = 0;
-      setNodes((nds) =>
-        nds.map((n) => {
-          if (n.type !== 'imageNode') return n;
-          const d = n.data as ImageNodeData;
-          if ((d.imageUrl || '').trim()) return n;
-          const key = (d.prompt || '').trim();
-          const urls = exact.get(key) ?? loose.get(normalizePrompt(key));
-          if (!urls || urls.length === 0) return n;
-          filled += 1;
-          return { ...n, data: { ...n.data, candidates: urls, imageUrl: urls[0] } };
+      const nodeTaskIds = Array.from(
+        new Set(
+          nodes
+            .filter((n) => n.type === 'imageNode' && !(n.data as ImageNodeData).imageUrl?.trim())
+            .map((n) => (n.data as ImageNodeData).generatedTaskId)
+            .filter((id): id is number => typeof id === 'number' && Number.isFinite(id)),
+        ),
+      );
+      const directByTaskId = new Map<number, BackfillMatch>();
+      await Promise.all(
+        nodeTaskIds.map(async (taskId) => {
+          try {
+            const task = await getTask(taskId);
+            if (task?.status !== 'completed') return;
+            const urls = parseImageUrls(task.imageUrls);
+            if (urls.length > 0) directByTaskId.set(taskId, { taskId, urls });
+          } catch {
+            // 任务可能已删除/不可达；继续尝试稳定关联与旧提示词回退。
+          }
         }),
       );
-      return filled;
+      const matchesByNodeId = new Map<string, BackfillMatch>();
+      for (const n of nodes) {
+        if (n.type !== 'imageNode') continue;
+        const d = n.data as ImageNodeData;
+        if ((d.imageUrl || '').trim()) continue;
+        const direct = d.generatedTaskId == null ? undefined : directByTaskId.get(d.generatedTaskId);
+        const stableMatch =
+          currentProjectId !== null && d.canvasNodeKey
+            ? stable.get(`${currentProjectId}:${d.canvasNodeKey}`)
+            : undefined;
+        const prompt = (d.prompt || '').trim();
+        const match = direct ?? stableMatch ?? exact.get(prompt) ?? loose.get(normalizePrompt(prompt));
+        if (match?.urls.length) matchesByNodeId.set(n.id, match);
+      }
+      setNodes((nds) =>
+        nds.map((n) => {
+          const match = matchesByNodeId.get(n.id);
+          if (n.type !== 'imageNode' || !match || (n.data as ImageNodeData).imageUrl?.trim()) return n;
+          return {
+            ...n,
+            data: {
+              ...n.data,
+              candidates: match.urls.length > 1 ? match.urls : undefined,
+              imageUrl: match.urls[0],
+              generatedTaskId: match.taskId,
+            },
+          };
+        }),
+      );
+      return matchesByNodeId.size;
     },
     onSuccess: (filled) => setBackfillCount(filled),
   });
@@ -3448,7 +3565,7 @@ export default function CanvasPage() {
                       type="button"
                       onClick={() => backfillMutation.mutate()}
                       disabled={backfillMutation.isPending}
-                      title="从历史素材任务里按提示词找回已生成的图，不重新花钱生成（画布没保存过时用这个救回来）"
+                      title="优先按任务 ID / 画布项目 + 节点 UUID 找回；旧任务才按提示词匹配，不重新花钱生成"
                       className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${theme.btn} disabled:opacity-50`}
                     >
                       <RefreshCw className="h-3.5 w-3.5" />

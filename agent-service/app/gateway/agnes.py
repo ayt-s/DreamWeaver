@@ -30,7 +30,8 @@ T = TypeVar("T")
 
 
 async def _with_retry(operation: Callable[[], Awaitable[httpx.Response]],
-                      what: str, *, require_status: bool = False) -> httpx.Response:
+                      what: str, *, require_status: bool = False,
+                      retry_429: bool = True) -> httpx.Response:
     """带指数退避的重试包装（429/5xx/网络错误共用）。
 
     - 429 限流：5s→10s→20s→30s 封顶，最多 3 次
@@ -51,6 +52,8 @@ async def _with_retry(operation: Callable[[], Awaitable[httpx.Response]],
         try:
             resp = await operation()
             if resp.status_code == 429:
+                if not retry_429:
+                    return resp
                 wait = min(5 * (2 ** attempt), 30)
                 logger.warning(f"{what} 429 限流，{wait}s 后退避重试 ({attempt + 1}/{max_retries})")
                 await asyncio.sleep(wait)
@@ -293,6 +296,42 @@ class AgnesGateway:
         self._session_provider[session_id] = provider_name
         logger.info("session %s 粘附切换到 provider %s", session_id, provider_name)
 
+    async def _request_with_429_failover(
+        self,
+        operation: Callable[[AgnesClient], Awaitable[httpx.Response]],
+        what: str,
+        session_id: str | None = None,
+    ) -> tuple[AgnesClient, httpx.Response]:
+        """遇 429 立即换端点；全部端点都限流时，仅在最后一个端点退避重试。
+
+        429 表示该请求被限流、尚未执行，换账号重试不会重复创建产物。
+        其他状态沿用原重试语义；尤其不因 5xx / 读超时盲目跨端点重发，
+        避免图片生成这类非幂等请求被重复计费。
+        """
+        first = await self.pick_client(session_id=session_id)
+        start = self.provider_names.index(first.name)
+        rotated = self.provider_names[start:] + self.provider_names[:start]
+        last: tuple[AgnesClient, httpx.Response] | None = None
+
+        for index, name in enumerate(rotated):
+            client = self.providers[name]
+            resp = await _with_retry(
+                lambda c=client: operation(c),
+                f"{what}({name})",
+                retry_429=index == len(rotated) - 1,
+            )
+            last = (client, resp)
+            if resp.status_code != 429:
+                return client, resp
+            if index + 1 < len(rotated):
+                next_name = rotated[index + 1]
+                logger.warning("%s[%s] 429 限流，立即切换到 provider %s", what, name, next_name)
+                if session_id:
+                    self.bind_session(session_id, next_name)
+
+        assert last is not None
+        return last
+
     # ---------- 文本 ----------
     # 批次 H：出口挂 LangSmith。默认关闭时直接透传（见 utils/observability.py）。
     # run_type=llm 让它出现在 LangSmith 的 LLM 视图里（文本模型才是真正的 LLM）
@@ -305,15 +344,15 @@ class AgnesGateway:
         多 provider 场景：按 session_id 粘性路由（同一 session 内 chat/storyboard/
         script/image/video 都用同一个 provider），无 session_id 时 round-robin。
         """
-        client = await self.pick_client(session_id=session_id)
-        resp = await _with_retry(
-            lambda: client._client.post("/chat/completions", json={
+        client, resp = await self._request_with_429_failover(
+            lambda c: c._client.post("/chat/completions", json={
                 "model": model or settings.text_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": temperature,
                 "max_tokens": max_tokens,
             }),
-            f"文本({client.name})",
+            "文本",
+            session_id,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -334,18 +373,18 @@ class AgnesGateway:
         给小了推理就把额度吃光、`content` 变成空串（实测 13 张图里 7 张返回空，
         同样的图给足 token 重试就正常 —— 别把空答案当成「模型答不出来」）。
         """
-        client = await self.pick_client(session_id=session_id)
         content: list[dict] = [{"type": "text", "text": prompt}]
         for u in image_urls:
             content.append({"type": "image_url", "image_url": {"url": u}})
-        resp = await _with_retry(
-            lambda: client._client.post("/chat/completions", json={
+        _, resp = await self._request_with_429_failover(
+            lambda c: c._client.post("/chat/completions", json={
                 "model": model or settings.text_model,
                 "messages": [{"role": "user", "content": content}],
                 "temperature": temperature,
                 "max_tokens": max_tokens,
             }),
-            f"多模态({client.name})",
+            "多模态",
+            session_id,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -374,7 +413,6 @@ class AgnesGateway:
         这是文生图做不到的能力。⚠️ 取值范围是 `extra_body.image`，
         **不能放顶层 `image`**（实测顶层会 400，还抛上游 LLM Provider 错）。
         """
-        client = await self.pick_client(session_id=session_id)
         refs = [str(u).strip() for u in (reference_images or []) if str(u).strip()]
         extra_body: dict[str, Any] = {"response_format": "url"}
         if refs:
@@ -392,9 +430,10 @@ class AgnesGateway:
             # ⚠️ 别直接 int() 透传：seed 超出 [-1, 999] 会被上游 400 打挂整次出图
             #    （2026-09-18 实测），所以先归一到白名单区间。
             payload["seed"] = normalize_image_seed(seed)
-        resp = await _with_retry(
-            lambda: client._client.post("/images/generations", json=payload),
-            f"图像({client.name})",
+        _, resp = await self._request_with_429_failover(
+            lambda c: c._client.post("/images/generations", json=payload),
+            "图像",
+            session_id,
         )
         resp.raise_for_status()
         data = resp.json()

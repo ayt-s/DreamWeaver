@@ -53,9 +53,8 @@ public class Task {
     private String segmentsJson;
 
     /**
-     * 可灵式精细控制参数 JSON（风格/负面词/总时长/镜头数/元素绑定）。
-     * 单独落库是为了 regenerate（全量重新生成）时不丢这些参数——
-     * 该链路只从 entity 重建 CreateTaskRequest，不从请求体取。
+     * 重生所需的生成请求快照（精细控制、画布参考图/直出选项、画布项目/节点关联）。
+     * regenerate 从 entity 重建 CreateTaskRequest 时使用，避免丢失原始请求语义。
      */
     private String genParamsJson;
 

@@ -27,8 +27,8 @@ public class TaskResponse {
     private String segmentsJson;
 
     /**
-     * 保存的精细控制参数 JSON（风格提示词/负面提示词/总时长/镜头数/运镜倾向/元素绑定）。
-     * 画廊「编辑参数」入口用它反序列化预填；null = 从未配置过。
+     * 重生请求快照 JSON（生成参数、参考图、画布项目/节点关联）。
+     * 画廊「编辑参数」入口用它预填；null = 没有可恢复的额外生成参数。
      */
     private String genParamsJson;
 

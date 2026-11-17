@@ -102,10 +102,10 @@ public class TaskJsonCodec {
     }
 
     /**
-     * 把可灵式精细控制参数序列化为 JSON 落库。
+     * 把可重放的生成请求参数序列化为 JSON 落库：精细控制、画布参考图/直出选项与项目节点关联。
      *
      * <p>全空时返回 {@code null}（**不是** {@code "{}"}）—— 这是调用方判断
-     * 「用户是否配置过精细控制」的依据，写占位符会让「清空参数」永远不生效。
+     * 「用户是否配置过可恢复参数」的依据，写占位符会让「清空参数」永远不生效。
      */
     public String buildGenParamsJson(CreateTaskRequest request) {
         if (request == null) {
@@ -117,6 +117,11 @@ public class TaskJsonCodec {
                 && request.getShotCount() == null
                 && isBlank(request.getShotLanguage())
                 && isBlank(request.getReferenceBindings())
+                && isBlank(request.getReferenceImages())
+                && request.getDirectImage() == null
+                && request.getImageCount() == null
+                && request.getCanvasProjectId() == null
+                && isBlank(request.getCanvasNodeId())
                 && isBlank(request.getImageRatio())
                 && request.getLockFirstFrame() == null
                 && request.getChainFrames() == null
@@ -131,6 +136,13 @@ public class TaskJsonCodec {
         params.put("shotCount", request.getShotCount());
         params.put("shotLanguage", request.getShotLanguage());
         params.put("referenceBindings", request.getReferenceBindings());
+        // 重生必须保留画布直出图的参考 URL 与模式/张数；否则 i2i 会退化成 t2i，且候选数回默认值。
+        params.put("referenceImages", request.getReferenceImages());
+        params.put("directImage", request.getDirectImage());
+        params.put("imageCount", request.getImageCount());
+        // 稳定关联到画布节点，供回填定位和任务追溯；不依赖可能被重算/编辑的 prompt。
+        params.put("canvasProjectId", request.getCanvasProjectId());
+        params.put("canvasNodeId", request.getCanvasNodeId());
         // 出图画幅与首帧锁定：不落库的话「重新生成」会退回 1:1 正方形 / reference 模式
         params.put("imageRatio", request.getImageRatio());
         params.put("lockFirstFrame", request.getLockFirstFrame());
@@ -169,6 +181,11 @@ public class TaskJsonCodec {
             request.setShotCount(asInt(params.get("shotCount")));
             request.setShotLanguage(asText(params.get("shotLanguage")));
             request.setReferenceBindings(asText(params.get("referenceBindings")));
+            request.setReferenceImages(asText(params.get("referenceImages")));
+            request.setDirectImage(asBool(params.get("directImage")));
+            request.setImageCount(asInt(params.get("imageCount")));
+            request.setCanvasProjectId(asLong(params.get("canvasProjectId")));
+            request.setCanvasNodeId(asText(params.get("canvasNodeId")));
             request.setImageRatio(asText(params.get("imageRatio")));
             request.setLockFirstFrame(asBool(params.get("lockFirstFrame")));
             request.setChainFrames(asBool(params.get("chainFrames")));
@@ -280,6 +297,20 @@ public class TaskJsonCodec {
         }
         try {
             return Integer.valueOf(String.valueOf(value).trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    static Long asLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        try {
+            return Long.valueOf(String.valueOf(value).trim());
         } catch (NumberFormatException e) {
             return null;
         }
